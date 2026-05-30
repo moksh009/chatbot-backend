@@ -2,7 +2,8 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { generateMultimodal } = require("../core/gemini");
+const { resolveClientGeminiKey } = require("../core/clientGeminiKey");
 
 /**
  * Handles incoming WhatsApp audio/voice notes.
@@ -62,31 +63,27 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     }
 
     // ── STEP 3: Transcribe with Gemini ─────────────────────
-    const aiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
-    const genAI = new GoogleGenerativeAI(aiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
+    const aiKey = resolveClientGeminiKey(client) || process.env.GEMINI_API_KEY;
     let rawTranscript = "I am a recorded voice mock. Give me a discount!";
-    
-    // Actually call Gemini ONLY if we downloaded valid audio bytes or if we have dev bypass, 
-    // but Gemini will choke on literal string 'mock_audio_data' unless we mock the response string.
-    if (audioBuffer.length > 50) { 
+
+    if (audioBuffer.length > 50 && aiKey) {
       try {
         const audioData = audioBuffer.toString("base64");
-        const result = await model.generateContent([
-          {
-            inlineData: { mimeType: mimeType.split(";")[0] || "audio/ogg", data: audioData }
-          },
-          {
-            text: `Transcribe this WhatsApp voice note exactly as spoken.
-                  If it is in Hindi, Gujarati, or any Indian language: transcribe in that language first,
-                  then add a translation in English in brackets.
-                  Format: "[TRANSCRIPT]: <exact words> | [TRANSLATION]: <english translation>"
-                  If already in English: just write the transcript.
-                  Keep it concise and accurate.`
-          }
-        ]);
-        rawTranscript = result.response.text().trim();
+        const transcriptPrompt = `Transcribe this WhatsApp voice note exactly as spoken.
+If it is in Hindi, Gujarati, or any Indian language: transcribe in that language first,
+then add a translation in English in brackets.
+Format: "[TRANSCRIPT]: <exact words> | [TRANSLATION]: <english translation>"
+If already in English: just write the transcript.
+Keep it concise and accurate.`;
+        const parts = [
+          { inlineData: { mimeType: mimeType.split(";")[0] || "audio/ogg", data: audioData } },
+          { text: transcriptPrompt },
+        ];
+        const transcribed = await generateMultimodal(aiKey, parts, {
+          maxTokens: 512,
+          noEnvFallback: true,
+        });
+        if (transcribed) rawTranscript = transcribed;
       } catch (geminiErr) {
         console.error("[VoiceNoteHandler] Gemini transcription failed:", geminiErr.message);
       }

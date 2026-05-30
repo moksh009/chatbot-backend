@@ -1,56 +1,35 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const log = require('../core/logger')('UpsellEngine');
 const { withShopifyRetry } = require('../shopify/shopifyHelper');
+const { callAIJSON } = require('../core/aiGateway');
 
-/**
- * Triggered by Shopify orders/fulfilled webhook.
- * Analyzes the order to suggest a complementary product and schedules a follow-up WhatsApp message 7 days post-fulfillment.
- * @param {Object} client The Client model instance.
- * @param {Object} orderData The Shopify webhook payload.
- */
 async function schedulePostDeliveryUpsell(client, orderData) {
-    try {
-        const phoneRaw = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone;
-        if (!phoneRaw) {
-            log.info(`No phone found for order ${orderData.id}, skipping upsell.`);
-            return;
-        }
+  try {
+    const phoneRaw = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone;
+    if (!phoneRaw) {
+      log.info(`No phone found for order ${orderData.id}, skipping upsell.`);
+      return;
+    }
 
-        const { normalizePhone } = require('../core/helpers');
-        const phone = normalizePhone(phoneRaw);
+    const { normalizePhone } = require('../core/helpers');
+    const phone = normalizePhone(phoneRaw);
 
-        // Fetch a catalog subset (e.g., 10 top/recently active products)
-        // We do this instead of feeding the whole catalog to Gemini to save tokens
-        let catalogSubset = [];
-        if (client.storeType === 'shopify') {
-            catalogSubset = await withShopifyRetry(client.clientId, async (shopify) => {
-                const res = await shopify.get('/products.json', { params: { limit: 10, status: 'active', fields: 'title,variants,handle,product_type' } });
-                return res.data.products || [];
-            });
-        }
+    let catalogSubset = [];
+    if (client.storeType === 'shopify') {
+      catalogSubset = await withShopifyRetry(client.clientId, async (shopify) => {
+        const res = await shopify.get('/products.json', { params: { limit: 10, status: 'active', fields: 'title,variants,handle,product_type' } });
+        return res.data.products || [];
+      });
+    }
 
-        if (!catalogSubset.length) {
-            log.info(`No products available in catalog for client ${client.clientId}, skipping upsell.`);
-            return;
-        }
+    if (!catalogSubset.length) {
+      log.info(`No products available in catalog for client ${client.clientId}, skipping upsell.`);
+      return;
+    }
 
-        // Format the purchased items
-        const purchasedItems = orderData.line_items?.map(i => i.title).join(', ') || 'their recent order';
+    const purchasedItems = orderData.line_items?.map((i) => i.title).join(', ') || 'their recent order';
+    const catalogText = catalogSubset.map((p) => `- ${p.title} (${p.product_type || 'General'})`).join('\n');
 
-        // Format the available catalog
-        const catalogText = catalogSubset.map(p => `- ${p.title} (${p.product_type || 'General'})`).join('\n');
-
-        // Prepare AI Evaluation
-        const apiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            log.warn(`No Gemini API key found for client ${client.clientId}. Upsell Engine disabled.`);
-            return;
-        }
-
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { responseMimeType: 'application/json' } });
-
-        const prompt = `You are a post-purchase personalized upsell AI for ${client.businessName}.
+    const prompt = `You are a post-purchase personalized upsell AI for ${client.businessName}.
 The customer just received: "${purchasedItems}".
 Here is a sample of our active catalog:
 ${catalogText}
@@ -65,40 +44,36 @@ Return a JSON object:
   "recommendedMessage": "Message body string"
 }`;
 
-        const result = await model.generateContent(prompt);
-        const aiResponse = JSON.parse(result.response.text().trim());
+    const result = await callAIJSON({
+      clientId: client.clientId,
+      feature: 'other',
+      prompt,
+      maxTokens: 600,
+      fast: false,
+    });
+    const aiResponse = result.data;
 
-        if (!aiResponse.recommendedMessage) {
-            throw new Error('AI failed to generate a recommendation message.');
-        }
-
-        // Schedule it 7 days from now (to account for shipping time to delivery + a few days)
-        const sendAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 Days
-        
-        const { scheduleOutboundMessage } = require('./scheduleOutboundMessage');
-        await scheduleOutboundMessage({
-            clientId: client.clientId,
-            phone,
-            messageType: 'text',
-            content: { text: aiResponse.recommendedMessage },
-            sendAt,
-            sourceType: 'post_purchase_upsell',
-            sourceId: `upsell_${orderData.id}`,
-            metadata: {
-                type: 'post_purchase_upsell',
-                orderId: orderData.id,
-                orderNumber: orderData.order_number,
-                recommendedProduct: aiResponse.selectedProduct,
-            },
-        });
-
-        log.info(`✅ Upsell Scheduled for ${phone} in 7 days. Suggested product: *${aiResponse.selectedProduct}*.`);
-        
-    } catch (err) {
-        log.error(`Failed to schedule upsell for order ${orderData.id}:`, { error: err.message });
+    if (!aiResponse?.recommendedMessage) {
+      throw new Error('AI failed to generate a recommendation message.');
     }
+
+    const sendAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const { scheduleOutboundMessage } = require('./scheduleOutboundMessage');
+    await scheduleOutboundMessage({
+      clientId: client.clientId,
+      phone,
+      message: aiResponse.recommendedMessage,
+      sendAt,
+      metadata: { type: 'post_delivery_upsell', product: aiResponse.selectedProduct },
+    });
+
+    log.info(`Scheduled post-delivery upsell for ${phone} at ${sendAt.toISOString()}`);
+  } catch (err) {
+    if (err.code !== 'AI_NOT_CONFIGURED') {
+      log.error('UpsellEngine error:', err.message);
+    }
+  }
 }
 
-module.exports = {
-    schedulePostDeliveryUpsell
-};
+module.exports = { schedulePostDeliveryUpsell };

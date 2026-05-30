@@ -53,6 +53,9 @@ const TENANT_MODELS = [
   'RestockSuggestionDismissal',
   'PurchaseOrder',
   'Supplier',
+  'KnowledgeDocument',
+  'AiWallet',
+  'AiTokenTransaction',
 ];
 
 function registerClientScopeModels() {

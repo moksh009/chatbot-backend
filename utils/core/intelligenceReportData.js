@@ -11,7 +11,6 @@ const Order = require("../../models/Order");
 const Conversation = require("../../models/Conversation");
 const TrainingCase = require("../../models/TrainingCase");
 const Competitor = require("../../models/Competitor");
-const KnowledgeDocument = require("../../models/KnowledgeDocument");
 
 const REPORT_DAYS = 30;
 
@@ -51,7 +50,6 @@ async function gatherIntelligenceReportData(clientId) {
     totalCorrections,
     dropoffs,
     competitors,
-    activeKbCount,
     topProducts,
   ] = await Promise.all([
     AdLead.countDocuments({ clientId, createdAt: { $gte: startDate } }),
@@ -82,7 +80,6 @@ async function gatherIntelligenceReportData(clientId) {
       { $limit: 3 },
     ]),
     Competitor.find({ clientId, isActive: true }).select("name url lastPriceChange").limit(5).lean(),
-    KnowledgeDocument.countDocuments({ clientId, isActive: true }),
     Order.aggregate([
       { $match: { clientId, createdAt: { $gte: startDate } } },
       { $unwind: "$items" },
@@ -139,9 +136,6 @@ async function gatherIntelligenceReportData(clientId) {
   const executiveBlurb = [
     `${displayName} — intelligence snapshot for the ${REPORT_DAYS} days ending ${new Date().toLocaleDateString("en-IN")}.`,
     `New CRM leads: ${leads30}. Conversations: ${convs30}. Confirmed orders in period: ${orderCount}, revenue ₹${Math.round(revenue).toLocaleString("en-IN")}.`,
-    activeKbCount === 0
-      ? "Knowledge base: no active documents — add policies under Knowledge Base so answers stay grounded."
-      : `Knowledge base: ${activeKbCount} active document(s) feeding retrieval.`,
   ].join(" ");
 
   const insights = [];
@@ -185,10 +179,6 @@ async function gatherIntelligenceReportData(clientId) {
     insights.push(`Top ordered line items (by units, ${REPORT_DAYS}d): ${line}.`);
   }
 
-  if (activeKbCount === 0) {
-    insights.push("Import a website or paste policies into Knowledge Base to strengthen WhatsApp and test-panel answers.");
-  }
-
   return {
     stats_grid: {
       leads: { total: leads30 },
@@ -202,7 +192,6 @@ async function gatherIntelligenceReportData(clientId) {
     meta: {
       clientId,
       displayName,
-      activeKbCount,
       qualitySampleSize: qualityDocs.length,
     },
   };

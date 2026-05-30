@@ -1,532 +1,171 @@
+'use strict';
+
 const express = require('express');
 const router = express.Router();
-const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
-const log = require('../utils/core/logger')('KnowledgeRoute');
 const { tenantClientId } = require('../utils/core/queryHelpers');
-const { clearKnowledgeContextCache } = require('../utils/core/personaEngine');
-const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/core/clientCache');
+const KnowledgeDocument = require('../models/KnowledgeDocument');
+const { scrapeWebsiteText } = require('../utils/core/urlScraper');
+const { queueDocumentEmbedding } = require('../workers/knowledgeEmbeddingQueues');
+const {
+  getKnowledgeStats,
+  runKnowledgeTest,
+} = require('../utils/core/ragEngine');
 
-async function invalidateKnowledgeCaches(clientId) {
-  const { clearClientCache } = require('../middleware/apiCache');
-  const { invalidateClientCache } = require('../utils/core/clientCache');
-  await clearClientCache(clientId);
-  invalidateClientCache(clientId);
-  clearKnowledgeContextCache(clientId);
-}
-
-/**
- * @route   GET /api/knowledge
- * @desc    Get the full knowledge base of a client
- */
-router.get('/', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/core/perfLogger');
-  const timer = createTimer('GET /api/knowledge', tenantClientId(req) || '');
+router.get('/stats', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) {
-      timer.finish('403');
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
-
-    const client = await getCachedClient(clientId, 'knowledgeBase clientId');
-    if (!client) {
-      timer.finish('404');
-      return res.status(404).json({ message: 'Client not found' });
-    }
-
-    timer.finish('200 ok');
-    res.json(client.knowledgeBase || {});
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    const stats = await getKnowledgeStats(clientId);
+    res.json(stats);
   } catch (err) {
-    timer.finish(`500 ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * @route   GET /api/knowledge/pending
- * @desc    Get all pending knowledge proposals for a client
- */
-router.get('/pending', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/core/perfLogger');
-  const timer = createTimer('GET /api/knowledge/pending', tenantClientId(req) || '');
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      timer.finish('403');
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
-
-    const client = await getCachedClient(clientId, 'pendingKnowledge clientId');
-    if (!client) {
-      timer.finish('404');
-      return res.status(404).json({ message: 'Client not found' });
-    }
-
-    const pending = (client.pendingKnowledge || []).filter((k) => k.status === 'pending');
-    timer.finish(`200 ok | count=${pending.length}`);
-    res.json(pending);
-  } catch (err) {
-    timer.finish(`500 ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   POST /api/knowledge/action
- * @desc    Approve or Reject a knowledge proposal
- */
-router.post('/action', protect, async (req, res) => {
-  try {
-    const { proposalId, action } = req.body;
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (!['approved', 'rejected'].includes(action)) {
-      return res.status(400).json({ success: false, error: 'Invalid action' });
-    }
-
-    await ensureClientForUser(req.user);
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-
-    const proposalIndex = client.pendingKnowledge.findIndex(k => k._id.toString() === proposalId);
-    if (proposalIndex === -1) return res.status(404).json({ message: 'Proposal not found' });
-
-    const proposal = client.pendingKnowledge[proposalIndex];
-    proposal.status = action;
-
-    if (action === 'approved') {
-      const { type, content } = proposal;
-      if (type === 'faq') {
-        client.knowledgeBase.faqs.push({
-          question: content.question_or_fact || content.question,
-          answer: content.answer
-        });
-      } else if (type === 'fact') {
-        // Append to 'about' or shared facts
-        client.knowledgeBase.about = (client.knowledgeBase.about || '') + '\n' + (content.question_or_fact || content.fact);
-      }
-    }
-
-    // Mark as processed
-    await client.save();
-    await invalidateKnowledgeCaches(clientId);
-    res.json({ message: `Proposal ${action} successfully`, client });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   PUT /api/knowledge/policies
- * @desc    Save core operational policies manually
- */
-router.put('/policies', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    const { about, returnPolicy, shippingPolicy } = req.body;
-
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    if (!client.knowledgeBase) client.knowledgeBase = {};
-    if (about !== undefined) client.knowledgeBase.about = about;
-    if (returnPolicy !== undefined) client.knowledgeBase.returnPolicy = returnPolicy;
-    if (shippingPolicy !== undefined) client.knowledgeBase.shippingPolicy = shippingPolicy;
-
-    await client.save();
-    res.json({ success: true, message: 'Policies saved successfully.', knowledgeBase: client.knowledgeBase });
-  } catch (err) {
-    log.error('Policies Save Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   POST /api/knowledge/faq
- * @desc    Add a manual FAQ entry to the knowledge base
- * BUG 7 FIX: Enables the non-functional "Add FAQ" button in KnowledgeHub UI
- */
-router.post('/faq', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    const { question, answer } = req.body;
-
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (!question?.trim() || !answer?.trim()) {
-      return res.status(400).json({ success: false, message: 'Both question and answer are required.' });
-    }
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    // Initialize knowledgeBase.faqs if missing
-    if (!client.knowledgeBase) client.knowledgeBase = {};
-    if (!client.knowledgeBase.faqs) client.knowledgeBase.faqs = [];
-
-    client.knowledgeBase.faqs.push({ question: question.trim(), answer: answer.trim() });
-    await client.save();
-
-    log.info(`FAQ added for client ${clientId}: "${question.substring(0, 40)}..."`);
-    res.json({ 
-      success: true, 
-      message: 'FAQ added successfully.',
-      faqs: client.knowledgeBase.faqs
-    });
-  } catch (err) {
-    log.error('FAQ Add Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   DELETE /api/knowledge/faq/:index
- * @desc    Delete a specific FAQ entry by index
- * BUG 7 FIX: Enables the non-functional delete button per FAQ in KnowledgeHub UI
- */
-router.delete('/faq/:index', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    const faqIndex = parseInt(req.params.index);
-
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (isNaN(faqIndex) || faqIndex < 0) {
-      return res.status(400).json({ success: false, message: 'Valid FAQ index required.' });
-    }
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const faqs = client.knowledgeBase?.faqs || [];
-    if (faqIndex >= faqs.length) {
-      return res.status(404).json({ success: false, message: 'FAQ entry not found at given index.' });
-    }
-
-    client.knowledgeBase.faqs.splice(faqIndex, 1);
-    await client.save();
-
-    log.info(`FAQ deleted at index ${faqIndex} for client ${clientId}`);
-    res.json({ 
-      success: true, 
-      message: 'FAQ removed successfully.',
-      faqs: client.knowledgeBase.faqs
-    });
-  } catch (err) {
-    log.error('FAQ Delete Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   GET /api/knowledge/audit
- * @desc    Run a system health audit
- */
-router.get('/audit', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
-
-    const { auditClientSystem } = require('../utils/flow/flowAuditor');
-    const audit = await auditClientSystem(clientId);
-    res.json(audit);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-/**
- * ─────────────────────────────────────────────────────────────
- * DOCUMENT-BASED KNOWLEDGE BASE (KnowledgeDocument model)
- * Enterprise-grade CRUD for standalone knowledge documents.
- * ─────────────────────────────────────────────────────────────
- */
-
-/**
- * @route   GET /api/knowledge/documents
- * @desc    List all knowledge documents for a client
- */
 router.get('/documents', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
     const docs = await KnowledgeDocument.find({ clientId })
+      .select('-chunks.embedding')
       .sort({ updatedAt: -1 })
       .lean();
 
-    res.json({ success: true, documents: docs });
+    res.json({ documents: docs });
   } catch (err) {
-    log.error('Knowledge Documents List Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * @route   POST /api/knowledge/documents
- * @desc    Create a new knowledge document
- */
 router.post('/documents', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const {
-      title,
-      content,
-      sourceType,
-      sourceUrl,
-      documentType,
-      type,
-      isActive,
-    } = req.body;
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const { title, content, status = 'draft', source = 'manual', sourceUrl = null } = req.body || {};
     if (!title?.trim() || !content?.trim()) {
-      return res.status(400).json({ success: false, message: 'Title and content are required.' });
+      return res.status(400).json({ error: 'Title and content are required.' });
     }
 
-    const dt = documentType || type || 'custom';
-    const allowedTypes = ['product_catalog', 'sop', 'faq', 'policy', 'custom'];
-    const normalizedType = allowedTypes.includes(dt) ? dt : 'custom';
-
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
     const doc = await KnowledgeDocument.create({
       clientId,
-      title: title.trim(),
-      content: content.trim(),
-      documentType: normalizedType,
-      sourceType: sourceType || 'manual',
-      sourceUrl: sourceUrl || undefined,
-      isActive: isActive !== false,
-      status: 'processed',
+      title: title.trim().slice(0, 200),
+      content: content.trim().slice(0, 20000),
+      status: status === 'active' ? 'active' : 'draft',
+      source,
+      sourceUrl,
+      characterCount: content.trim().length,
+      embeddingStatus: 'pending',
     });
 
-    clearKnowledgeContextCache(clientId);
-    log.info(`Knowledge doc created for ${clientId}: "${title.substring(0, 40)}"`);
-    res.status(201).json({ success: true, document: doc });
+    await queueDocumentEmbedding(doc._id.toString(), clientId);
+    res.status(201).json({ document: doc });
   } catch (err) {
-    log.error('Knowledge Document Create Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * @route   PUT /api/knowledge/documents/:id
- * @desc    Update a knowledge document
- */
 router.put('/documents/:id', protect, async (req, res) => {
   try {
-    const tenantId = tenantClientId(req);
-    if (!tenantId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const { title, content, isActive, documentType, type } = req.body;
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const doc = await KnowledgeDocument.findOne({ _id: req.params.id, clientId });
+    if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
-    const existing = await KnowledgeDocument.findById(req.params.id);
-    if (!existing) return res.status(404).json({ success: false, message: 'Document not found' });
-    if (existing.clientId !== tenantId) {
-      return res.status(403).json({ success: false, message: 'Forbidden' });
+    const { title, content, status } = req.body || {};
+    const updates = { updatedAt: new Date() };
+
+    if (title?.trim()) updates.title = title.trim().slice(0, 200);
+    if (content?.trim()) {
+      updates.content = content.trim().slice(0, 20000);
+      updates.characterCount = updates.content.length;
+      updates.embeddingStatus = 'pending';
+      updates.chunks = [];
+    }
+    if (status === 'active' || status === 'draft') updates.status = status;
+
+    await KnowledgeDocument.updateOne({ _id: doc._id }, { $set: updates });
+    const updated = await KnowledgeDocument.findById(doc._id).select('-chunks.embedding').lean();
+
+    if (content?.trim()) {
+      await queueDocumentEmbedding(doc._id.toString(), clientId);
     }
 
-    const rawType = documentType || type;
-    const allowedTypes = ['product_catalog', 'sop', 'faq', 'policy', 'custom'];
-    const normalizedType =
-      rawType && allowedTypes.includes(rawType) ? rawType : undefined;
-
-    const doc = await KnowledgeDocument.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(title !== undefined && { title: title.trim() }),
-        ...(content !== undefined && { content: content.trim() }),
-        ...(isActive !== undefined && { isActive }),
-        ...(normalizedType && { documentType: normalizedType }),
-      },
-      { new: true }
-    );
-
-    clearKnowledgeContextCache(tenantId);
-    res.json({ success: true, document: doc });
+    res.json({ document: updated });
   } catch (err) {
-    log.error('Knowledge Document Update Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * @route   DELETE /api/knowledge/documents/:id
- * @desc    Delete a knowledge document
- */
 router.delete('/documents/:id', protect, async (req, res) => {
   try {
-    const tenantId = tenantClientId(req);
-    if (!tenantId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const existing = await KnowledgeDocument.findById(req.params.id);
-    if (!existing) return res.status(404).json({ success: false, message: 'Document not found' });
-    if (existing.clientId !== tenantId) {
-      return res.status(403).json({ success: false, message: 'Forbidden' });
-    }
-
-    const doc = await KnowledgeDocument.findByIdAndDelete(req.params.id);
-
-    clearKnowledgeContextCache(tenantId);
-    res.json({ success: true, message: 'Document deleted' });
+    const result = await KnowledgeDocument.deleteOne({ _id: req.params.id, clientId });
+    if (!result.deletedCount) return res.status(404).json({ error: 'Document not found.' });
+    res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * @route   POST /api/knowledge/documents/import-url
- * @desc    Fetch a public URL and create a Draft KnowledgeDocument (same store as retrieval).
- */
-router.post('/documents/import-url', protect, async (req, res) => {
+router.post('/import-url', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const raw = req.body.url || req.body.websiteUrl;
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (!raw || !String(raw).trim()) {
-      return res.status(400).json({ success: false, message: 'url is required' });
-    }
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    let url;
+    const { url, title } = req.body || {};
+    if (!url?.trim()) return res.status(400).json({ error: 'URL is required.' });
+
+    let parsed;
     try {
-      url = new URL(String(raw).trim().startsWith('http') ? String(raw).trim() : `https://${String(raw).trim()}`);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid URL' });
+      parsed = new URL(url.trim());
+    } catch (_) {
+      return res.status(400).json({ error: 'Invalid URL.' });
     }
 
-    const axios = require('axios');
-    let html = '';
-    try {
-      const scrapeRes = await axios.get(url.href, {
-        timeout: 18000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; TopEdgeAI/1.0; +https://topedgeai.com)',
-          Accept: 'text/html,application/xhtml+xml',
-        },
-        maxRedirects: 5,
-      });
-      html = String(scrapeRes.data || '');
-    } catch (e) {
-      return res.status(400).json({ success: false, message: `Could not fetch URL: ${e.message}` });
+    const text = await scrapeWebsiteText(parsed.href);
+    if (!text || text.length < 50) {
+      return res.status(400).json({ error: 'Could not extract enough text from that page.' });
     }
 
-    const text = html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 14500);
-
-    if (text.length < 80) {
-      return res.status(400).json({
-        success: false,
-        message: 'Very little readable text was extracted. Try another page (e.g. FAQ or About).',
-      });
-    }
-
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const hostname = url.hostname.replace(/^www\./, '');
     const doc = await KnowledgeDocument.create({
       clientId,
-      title: `Imported: ${hostname}`,
-      content: `Source: ${url.href}\n\n${text}`,
-      documentType: 'custom',
-      sourceType: 'website',
-      sourceUrl: url.href,
-      isActive: false,
-      status: 'processed',
+      title: (title || parsed.hostname || 'Imported page').slice(0, 200),
+      content: text.slice(0, 20000),
+      status: 'draft',
+      source: 'website_import',
+      sourceUrl: parsed.href,
+      characterCount: Math.min(text.length, 20000),
+      embeddingStatus: 'pending',
     });
 
-    clearKnowledgeContextCache(clientId);
-    res.status(201).json({ success: true, document: doc });
+    await queueDocumentEmbedding(doc._id.toString(), clientId);
+    res.status(201).json({ document: doc });
   } catch (err) {
-    log.error('Knowledge import-url Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message || 'Import failed.' });
   }
 });
 
-/**
- * @route   POST /api/knowledge/test
- * @desc    Test knowledge extraction via Gemini using the dynamic context
- */
 router.post('/test', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const query = req.body.query ?? req.body.question;
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (!query || !String(query).trim()) return res.status(400).json({ success: false, message: 'Query required' });
+    const { question } = req.body || {};
+    if (!question?.trim()) return res.status(400).json({ error: 'Question is required.' });
 
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const { buildKnowledgeContext } = require('../utils/core/personaEngine');
-    const { platformGenerateText } = require('../utils/core/gemini');
-
-    const activeDocs = await KnowledgeDocument.find({ clientId, isActive: true })
-      .select('title')
-      .sort({ updatedAt: -1 })
-      .limit(24)
-      .lean();
-
-    const sources = activeDocs.map((d) => d.title).filter(Boolean);
-
-    const context = await buildKnowledgeContext(clientId);
-
-    if (!context) {
-      return res.json({
-        success: true,
-        answer:
-          'No active knowledge documents yet. Add documents (or import a website as a draft, then mark Active) to test retrieval here.',
-        sources: [],
-        activeDocCount: 0,
-        contextUsed: false,
-      });
+    const result = await runKnowledgeTest(clientId, question.trim());
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
+      return res.status(400).json({ error: 'Configure your Gemini API key in AI Setup first.' });
     }
-
-    const systemPrompt = `You are a helpful business assistant. Use ONLY the following business knowledge to answer the user's question. If the answer is not in the knowledge base, say "I don't have that information in my knowledge base." Do NOT make up answers.\n${context}`;
-
-    const answer = await platformGenerateText(systemPrompt, String(query).trim());
-
-    res.json({
-      success: true,
-      answer,
-      sources,
-      activeDocCount: activeDocs.length,
-      contextUsed: true,
-    });
-  } catch (err) {
-    log.error('Knowledge Test Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/knowledge/stale-docs — docs used recently but not updated in 90+ days (Phase 7)
- */
-router.get('/stale-docs', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false });
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const usedSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const staleBefore = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-    const docs = await KnowledgeDocument.find({
-      clientId,
-      lastUsedAt: { $gte: usedSince },
-      updatedAt: { $lt: staleBefore },
-      status: 'active',
-    })
-      .select('title updatedAt lastUsedAt')
-      .limit(50)
-      .lean();
-    return res.json({ success: true, count: docs.length, documents: docs });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 

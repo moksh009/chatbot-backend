@@ -1,10 +1,10 @@
 "use strict";
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { callAIJSON } = require("../core/aiGateway");
 
 /**
  * Order Parser — Phase 28 Track 5
- * 
+ *
  * Extracts structured order data from natural language messages.
  */
 
@@ -29,16 +29,13 @@ Return a JSON object with:
 - Return ONLY raw JSON. No explanation.
 `;
 
-async function extractOrderDetails(message, productsList, apiKey) {
-  if (!apiKey) return { isOrderIntent: false, items: [] };
+async function extractOrderDetails(message, productsList, clientId) {
+  if (!clientId) return { isOrderIntent: false, items: [] };
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ 
-    model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-    systemInstruction: SYSTEM_PROMPT 
-  });
-
-  const inventoryString = productsList.map(p => `- ${p.title || p.name}: ₹${p.price} (SKU: ${p.sku || 'N/A'})`).join('\n');
+  const inventoryString = (productsList || [])
+    .slice(0, 30)
+    .map((p) => `- ${p.title || p.name}: ₹${p.price} (SKU: ${p.sku || "N/A"})`)
+    .join("\n");
 
   const prompt = `
     INVENTORY:
@@ -49,10 +46,15 @@ async function extractOrderDetails(message, productsList, apiKey) {
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text().trim();
-    const cleaned = responseText.replace(/```json\n?|```/g, "").trim();
-    return JSON.parse(cleaned);
+    const result = await callAIJSON({
+      clientId,
+      feature: 'other',
+      systemPrompt: SYSTEM_PROMPT,
+      prompt,
+      maxTokens: 512,
+      fast: true,
+    });
+    return result.data || { isOrderIntent: false, items: [] };
   } catch (e) {
     console.error("[Order Parser] Error:", e.message);
     return { isOrderIntent: false, items: [], error: e.message };

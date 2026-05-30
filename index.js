@@ -241,9 +241,6 @@ app.use('/api/auth', authLimiter, authRoutes); // ✅ Phase R3: Brute-force prot
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/analytics', analyticsRoutes);
 
-const knowledgeRoutes = require('./routes/knowledge');
-app.use('/api/knowledge', knowledgeRoutes);
-
 const scoringRoutes = require('./routes/scoring');
 app.use('/api/scoring', scoringRoutes);
 
@@ -265,6 +262,9 @@ app.use('/api/flows', flowRoutes);
 
 const aiRoutes = require('./routes/ai');
 app.use('/api/ai', aiRoutes);
+app.use('/api/ai-wallet', require('./routes/aiWallet'));
+app.use('/api/knowledge', require('./routes/knowledge'));
+app.use('/api/ai-brain', require('./routes/aiBrain'));
 
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
@@ -277,7 +277,6 @@ app.use('/api/growth', require('./routes/growth'));
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);
 
-app.use('/api/persona-evolution', require('./routes/personaEvolution'));
 app.use('/api/post-purchase-journeys', require('./routes/postPurchaseJourneys'));
 
 
@@ -535,6 +534,7 @@ connectDB()
       require('./services/TaskWorker');
       require('./workers/igAutomationWorker');
       require('./workers/autoTemplateWorker');
+      require('./workers/knowledgeEmbeddingWorker');
       require('./workers/startPhase3Workers').startPhase3Workers();
     } else {
       log.info('[Boot] RUN_WORKERS=false — BullMQ workers not started');

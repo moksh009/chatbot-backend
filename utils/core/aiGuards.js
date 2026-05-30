@@ -3,7 +3,7 @@
 const { resolveClientGeminiKey } = require('./clientGeminiKey');
 const { isKeyValid } = require('./gemini');
 
-const AI_CALL_TIMEOUT_MS = Number(process.env.AI_CALL_TIMEOUT_MS || 5000);
+const AI_CALL_TIMEOUT_MS = Number(process.env.AI_CALL_TIMEOUT_MS || 12000);
 
 /**
  * @param {'tenant'|'platform'} purpose

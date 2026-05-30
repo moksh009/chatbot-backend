@@ -9,8 +9,8 @@ const LOOKUP = {
   sequence: { model: () => require('../../models/FollowUpSequence'), field: 'clientId' },
   segment: { model: () => require('../../models/Segment'), field: 'clientId' },
   template: { model: () => require('../../models/MetaTemplate'), field: 'clientId' },
-  knowledge: { model: () => require('../../models/KnowledgeDocument'), field: 'clientId' },
   trainingCase: { model: () => require('../../models/TrainingCase'), field: 'clientId' },
+  knowledgeDocument: { model: () => require('../../models/KnowledgeDocument'), field: 'clientId' },
   notification: { model: () => require('../../models/Notification'), field: 'clientId' },
   exportJob: { model: () => require('../../models/ExportJob'), field: 'clientId' },
 };

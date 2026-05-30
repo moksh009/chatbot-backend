@@ -210,14 +210,58 @@ router.post('/', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/ai-build — removed Phase 6 (use POST /api/flow/generate)
-router.post('/ai-build', protect, (req, res) => {
-  return res.status(410).json({
-    success: false,
-    error: 'gone',
-    message: 'This endpoint was removed. Use POST /api/flow/generate instead.',
-    canonical: '/api/flow/generate',
-  });
+// POST /api/flow/ai-build — AI flow from natural language (tenant BYO key only)
+router.post('/ai-build', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { prompt } = req.body || {};
+    if (!String(prompt || '').trim()) {
+      return res.status(400).json({ success: false, message: 'Prompt is required.' });
+    }
+
+    const { resolveApiKeyForClient } = require('../services/ai/aiWalletService');
+    const aiKey = await resolveApiKeyForClient(clientId);
+    if (!aiKey.configured) {
+      return res.status(400).json({
+        success: false,
+        code: 'AI_NOT_CONFIGURED',
+        message: 'Add your Gemini or OpenAI API key in AI Brain → AI Setup before generating flows.',
+      });
+    }
+
+    const Client = require('../models/Client');
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { buildFlowFromPrompt } = require('../utils/flow/aiFlowBuilder');
+    const flow = await buildFlowFromPrompt(String(prompt).trim(), client);
+
+    return res.json({
+      success: true,
+      nodes: flow.nodes,
+      edges: flow.edges,
+      provider: aiKey.provider,
+    });
+  } catch (err) {
+    if (err.code === 'AI_NOT_CONFIGURED') {
+      return res.status(400).json({
+        success: false,
+        code: 'AI_NOT_CONFIGURED',
+        message: err.userMessage || 'Configure your API key in AI Brain → AI Setup.',
+      });
+    }
+    console.error('[POST /flow/ai-build]', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Flow generation failed',
+    });
+  }
 });
 
 // POST /api/flow/simulate

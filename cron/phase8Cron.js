@@ -15,16 +15,6 @@ function registerPhase8Crons() {
     { timezone: 'Asia/Kolkata' }
   );
 
-  const { runPersonaEvolutionBatch } = require('../services/persona/personaEvolutionCron');
-  cron.schedule(
-    '0 3 * * 0',
-    wrapCron('persona_evolution_weekly', async () => {
-      const n = await runPersonaEvolutionBatch(50);
-      log.info(`Persona evolution suggestions: ${n}`);
-    }),
-    { timezone: 'Asia/Kolkata' }
-  );
-
   const { rollupDailyTenantCosts } = require('../services/billing/dailyCostRollup');
   cron.schedule(
     '15 1 * * *',
@@ -35,7 +25,7 @@ function registerPhase8Crons() {
     { timezone: 'Asia/Kolkata' }
   );
 
-  log.info('Phase 8 crons registered (predictive nightly, persona weekly, cost daily)');
+  log.info('Phase 8 crons registered (predictive nightly, cost daily)');
 }
 
 module.exports = { registerPhase8Crons };

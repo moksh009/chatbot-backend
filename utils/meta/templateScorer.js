@@ -1,5 +1,3 @@
-const { generateText } = require('../core/gemini');
-
 // Meta's known rejection patterns (built from experience)
 const RISK_PATTERNS = [
   { pattern: /bit\.ly|tinyurl|goo\.gl|t\.co/i,            risk: 15, reason: "URL shorteners reduce approval rate. Use full URLs." },
@@ -87,14 +85,14 @@ function getFastScore(templateContent, category) {
   };
 }
 
-async function analyzeWithGeminiAndRewrite(templateContent, category, geminiKey) {
+async function analyzeWithGeminiAndRewrite(templateContent, category, clientId) {
   const text = [
-    templateContent.header?.text || "",
-    templateContent.body || templateContent.text || "",
-    templateContent.footer || ""
-  ].join(" \n");
+    templateContent.header?.text || '',
+    templateContent.body || templateContent.text || '',
+    templateContent.footer || '',
+  ].join(' \n');
 
-  if (!text.trim()) return null;
+  if (!text.trim() || !clientId) return null;
 
   const prompt = `
 You are a Meta WhatsApp template reviewer and an expert copywriter. Analyze this template for approval issues and then REWRITE it to ensure approval as a WhatsApp template.
@@ -123,11 +121,17 @@ Return ONLY JSON:
 
 If no internal issues found: { "risks": [], "bonuses": [], "additionalRisk": 0, "additionalBonus": 0, "rewrittenText": "The entire rewritten template text here..." }`;
 
-  const result = await generateText(prompt, geminiKey, { maxTokens: 800, temperature: 0.2 });
-  if (!result) return null;
-
   try {
-    return JSON.parse(result.replace(/\`\`\`json|\`\`\`/g, "").trim());
+    const { callAI, parseJsonContent } = require('../core/aiGateway');
+    const result = await callAI({
+      clientId,
+      feature: 'template_gen',
+      prompt,
+      maxTokens: 800,
+      temperature: 0.2,
+      fast: false,
+    });
+    return parseJsonContent(result.content);
   } catch {
     return null;
   }

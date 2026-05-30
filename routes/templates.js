@@ -1087,10 +1087,7 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         const { prompt, tone, audience } = req.body;
         
         const client = await Client.findOne({ clientId });
-        const { GoogleGenerativeAI } = require("@google/generative-ai");
-        const apiKey = client.geminiApiKey?.trim() || client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const { callAIJSON } = require("../utils/core/aiGateway");
         
         const finalPrompt = `
         Act as a master WhatsApp marketer.
@@ -1099,11 +1096,18 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         Context: ${prompt}
         Output ONLY a JSON array of 3 strings. Provide NO other text, markdown blocks are okay if standard JSON.
         `;
-        const result = await model.generateContent(finalPrompt);
-        let outputText = result.response.text().trim();
-        if (outputText.startsWith('\`\`\`json')) outputText = outputText.slice(7, -3).trim();
-        
-        res.json({ success: true, copies: JSON.parse(outputText) });
+        const result = await callAIJSON({
+          clientId,
+          feature: 'template_gen',
+          prompt: finalPrompt,
+          maxTokens: 1200,
+          fast: false,
+        });
+        const copies = result.data;
+        if (!Array.isArray(copies)) {
+          return res.status(500).json({ success: false, message: "AI returned invalid format" });
+        }
+        res.json({ success: true, copies });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -1127,12 +1131,9 @@ router.post('/:clientId/score', protect, async (req, res) => {
             const client = await Client.findOne({ clientId });
             if (!client) throw new Error('Client not found');
 
-            const apiKey = client.geminiKey?.trim() || client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
-            if (!apiKey) throw new Error('AI API Key not configured');
-
-            const geminiAnalysis = await analyzeWithGeminiAndRewrite(templateContent, category, apiKey);
+            const geminiAnalysis = await analyzeWithGeminiAndRewrite(templateContent, category, clientId);
             if (!geminiAnalysis) {
-                return res.status(500).json({ success: false, message: 'Failed to generate suggestions' });
+                return res.status(500).json({ success: false, message: 'Failed to generate suggestions. Configure Gemini in AI Setup.' });
             }
 
             return res.json({ success: true, data: geminiAnalysis });

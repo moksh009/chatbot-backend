@@ -62,12 +62,12 @@ const MERCHANT_PLAYBOOK_STEPS = [
     cta: 'Order messages',
   },
   {
-    id: 'configure_persona',
+    id: 'train_intents',
     order: 8,
-    title: 'Configure AI persona',
-    description: 'Set how your bot sounds when it replies to customers.',
-    href: '/intelligence-hub?tab=persona',
-    cta: 'AI persona',
+    title: 'Train bot intents',
+    description: 'Define what customers ask and how your bot should respond.',
+    href: '/intelligence-hub?tab=intent-engine',
+    cta: 'Train intents',
   },
   {
     id: 'score_rules',

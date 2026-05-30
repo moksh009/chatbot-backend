@@ -13,7 +13,7 @@ const ProcessingLock = require('../../models/ProcessingLock');
 const redisClient = require('../core/redisClient');
 const InboundDeduplication = require('../../models/InboundDeduplication');
 const log = require('../core/logger')('DualBrain');
-const { generateText, getGeminiModel } = require('../core/gemini');
+const { generateText, getGeminiModel, AI_BOT_TIMEOUT_MS } = require('../core/gemini');
 const { createMessage } = require('../core/createMessage');
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require('../core/variableInjector');
 const { findMatchingFlow, findGreetingFlowFast, findFlowStartNode, isGreetingLikeText } = require('../flow/triggerEngine');
@@ -477,15 +477,45 @@ function isGreeting(text) {
     return greetings.includes(text.toLowerCase().trim());
 }
 
-async function checkIntent(userText, intentDescription, apiKey) {
+/** Slim product list for AI prompts — keyword-ranked, max N items */
+function buildRelevantProductSnippet(products, queryText, maxItems = 8) {
+  const list = Array.isArray(products) ? products : [];
+  if (!list.length) return '';
+  const q = String(queryText || '').toLowerCase();
+  const scored = list.map((p) => {
+    const title = String(p.title || p.name || '').toLowerCase();
+    let score = 0;
+    for (const w of q.split(/\s+/)) {
+      if (w.length > 2 && title.includes(w)) score += 1;
+    }
+    return { p, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const picked =
+    scored.filter((x) => x.score > 0).slice(0, maxItems).map((x) => x.p).length > 0
+      ? scored.filter((x) => x.score > 0).slice(0, maxItems).map((x) => x.p)
+      : list.slice(0, maxItems);
+  return picked
+    .map((p) => `- ${p.title || p.name}: ₹${p.price}. ${p.description || ''} ${p.url ? `Link: ${p.url}` : ''}`)
+    .join('\n');
+}
+
+async function checkIntent(userText, intentDescription, clientId) {
   try {
     const prompt = `You are an intent classifier.
 User Message: "${userText}"
 Intent Description: "${intentDescription}"
 Does the user message match the intent description? Reply ONLY with "YES" or "NO".`;
-    const { generateTextFast } = require('../core/gemini');
-    const response = await generateTextFast(prompt, apiKey, { noEnvFallback: true });
-    if (response && response.toUpperCase().includes('YES')) {
+    const { callAI } = require('../core/aiGateway');
+    const result = await callAI({
+      clientId,
+      feature: 'other',
+      prompt,
+      maxTokens: 8,
+      temperature: 0,
+      fast: true,
+    });
+    if (result?.content && result.content.toUpperCase().includes('YES')) {
       return true;
     }
   } catch (err) {
@@ -2683,17 +2713,15 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       // 2. AI Intent Detection Fallback (Priority 1B)
       if (!matchingTrigger && userText.length > 3) {
           const intentNodes = flowNodes.filter(n => (n.type === 'trigger' || n.type === 'TriggerNode') && n.data?.triggerType === 'intent' && n.data?.intentDescription);
-          const apiKey = resolveClientGeminiKey(client);
-          
-          if (intentNodes.length > 0 && apiKey) {
+
+          if (intentNodes.length > 0) {
               log.info(`AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
-              // limit to first 3 intent nodes to prevent excessive API calls
               for (const node of intentNodes.slice(0, 3)) {
-                  const matched = await checkIntent(userText, node.data.intentDescription, apiKey);
+                  const matched = await checkIntent(userText, node.data.intentDescription, client.clientId);
                   if (matched) {
                       log.info(`AI Intent: Matched intent "${node.data.intentDescription}" for node ${node.id}`);
                       matchingTrigger = node;
-                      break; 
+                      break;
                   }
               }
           }
@@ -2849,40 +2877,51 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   try {
     let ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
     if (rawNode.type === "message" && rawNode.data?.isAiResponse) {
-      const aiKey = resolveClientGeminiKey(client);
       const staticFallback = String(
         rawNode.data?.text || rawNode.data?.message || rawNode.data?.body || ""
       ).trim();
-      if (!aiKey) {
-        ctx.ai_response = staticFallback;
-        ctx.ai_needs_human = staticFallback ? "false" : "true";
-      } else {
-        const { generateTextFast } = require('../core/gemini');
-        const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
-        const kb = String(
-          client.ai?.persona?.knowledgeBase || client.ai?.systemPrompt || ""
-        );
-        const brand = ctx.brand_name || client.businessName || "our store";
-        const tone = client.ai?.persona?.tone || "friendly";
-        const prompt =
-          `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
-          `Knowledge:\n${kb.slice(0, 3500)}\n\nCustomer says: "${userIssue}"\n` +
-          `Reply in under 280 characters for WhatsApp.\n` +
-          `If you cannot answer from the knowledge above, reply exactly: NEEDS_HUMAN`;
-        let reply = "";
-        try {
-          reply = await Promise.race([
-            generateTextFast(prompt, aiKey, { noEnvFallback: true }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), 5000)),
-          ]);
-        } catch (_) {
-          reply = "";
+      const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
+      const brand = ctx.brand_name || client.businessName || "our store";
+      const tone = client.ai?.persona?.tone || "friendly";
+      let ragContext = "";
+      try {
+        const { retrieveKnowledge } = require('../core/ragEngine');
+        const ragChunks = await retrieveKnowledge(client.clientId, userIssue, 3);
+        if (ragChunks.length) {
+          ragContext = ragChunks.map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`).join('\n');
         }
-        const clean = String(reply || "").trim();
-        const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
-        ctx.ai_response = needs ? staticFallback : clean.slice(0, 500);
-        ctx.ai_needs_human = needs && !staticFallback ? "true" : "false";
+      } catch (_) {}
+      const kbFallback = String(
+        client.ai?.persona?.knowledgeBase || client.nicheData?.aiPromptContext || ""
+      ).slice(0, 600);
+      const prompt =
+        `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
+        (ragContext ? `Knowledge:\n${ragContext}\n\n` : kbFallback ? `Context:\n${kbFallback}\n\n` : "") +
+        `Customer says: "${userIssue}"\n` +
+        `Reply in under 280 characters for WhatsApp.\n` +
+        `If you cannot answer from the context above, reply exactly: NEEDS_HUMAN`;
+      let reply = "";
+      try {
+        const { callAI } = require('../core/aiGateway');
+        const aiResult = await Promise.race([
+          callAI({
+            clientId: client.clientId,
+            feature: 'whatsapp_bot',
+            prompt,
+            maxTokens: 120,
+            temperature: 0.4,
+            fast: true,
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), AI_BOT_TIMEOUT_MS)),
+        ]);
+        reply = aiResult?.content || "";
+      } catch (_) {
+        reply = "";
       }
+      const clean = String(reply || "").trim();
+      const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
+      ctx.ai_response = needs ? staticFallback : clean.slice(0, 500);
+      ctx.ai_needs_human = needs && !staticFallback ? "true" : "false";
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: {
           "metadata.ai_response": ctx.ai_response,
@@ -5068,11 +5107,12 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       if (orderIntentRegex.test(text)) {
         log.info(`[NativeOrder] Detecting products in message: "${text}"`);
         const products = client.nicheData?.products || [];
-        const orderParseKey = resolveClientGeminiKey(client);
-        if (!orderParseKey) {
+        const { resolveApiKeyForClient } = require('../services/ai/aiWalletService');
+        const aiWallet = await resolveApiKeyForClient(client.clientId);
+        if (!aiWallet.configured) {
           log.warn(`[NativeOrder] Skipping order NLP — no merchant Gemini key for ${client.clientId}`);
         } else {
-        const parsed = await extractOrderDetails(text, products, orderParseKey);
+        const parsed = await extractOrderDetails(text, products, client.clientId);
 
         if (parsed.isOrderIntent && Array.isArray(parsed.items) && parsed.items.length > 0) {
           log.info(`[NativeOrder] Valid items parsed: ${parsed.items.length}`);
@@ -5115,9 +5155,10 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       }
     }
 
-    const tenantGeminiKey = resolveClientGeminiKey(client);
-    if (!tenantGeminiKey) {
-      log.warn(`[AI Fallback] No merchant Gemini key for ${client.clientId} — skipping AI (platform key is not used for tenant bots).`);
+    const { resolveApiKeyForClient } = require('../services/ai/aiWalletService');
+    const aiResolved = await resolveApiKeyForClient(client.clientId);
+    if (!aiResolved.configured) {
+      log.warn(`[AI Fallback] No configured BYO AI key for ${client.clientId} — skipping AI.`);
       return false;
     }
 
@@ -5150,33 +5191,26 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     const detectedLang = parsedMessage._detectedLanguage || convo?.detectedLanguage || 'en';
     const langInstruction = getLanguageInstructions(detectedLang);
     
-    // Structured Knowledge Architecture
-    const productCatalog = (client.nicheData?.products || [])
-      .map(p => `- ${p.title}: ₹${p.price}. ${p.description || ''} ${p.url ? `Link: ${p.url}` : ''}`)
-      .join('\n');
-    
-    const policyStore = client.nicheData?.policies || "Standard 7-day return policy applies unless specified.";
-    let knowledgeDocumentsCtx = '';
+    const productCatalog = buildRelevantProductSnippet(client.nicheData?.products || [], text, 8);
+    const policyStore = String(client.nicheData?.policies || "Standard 7-day return policy applies unless specified.").slice(0, 600);
+
+    let ragContext = '';
     try {
-      const { buildKnowledgeContext } = require('../core/personaEngine');
-      knowledgeDocumentsCtx = await buildKnowledgeContext(client.clientId);
-    } catch (kErr) {
-      log.warn('[AI] Knowledge document context unavailable:', kErr.message);
-    }
-    // Phase 29 Track 3: AI Persona
-    const persona = client.ai?.persona;
-    const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
-    
-    // Phase 29 Track 4: AI Training (Few-Shot Retrieval)
-    const examples = await getRelevantExamples(client.clientId, text);
-    let fewShot = buildFewShotPrompt(examples);
-    try {
-      const { retrieveKnowledge, formatCitations } = require('../../services/knowledge/knowledgeRetrieval');
-      const chunks = await retrieveKnowledge(client.clientId, text, client, 3);
-      if (chunks?.length) {
-        fewShot += `\n\nKNOWLEDGE:\n${chunks.map((c) => c.text).join('\n')}${formatCitations(chunks)}`;
+      const { retrieveKnowledge } = require('../core/ragEngine');
+      const ragChunks = await retrieveKnowledge(client.clientId, text, 3);
+      if (ragChunks.length > 0) {
+        ragContext = ragChunks
+          .map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`)
+          .join('\n');
       }
-    } catch (_) {}
+    } catch (ragErr) {
+      log.warn('[AI Fallback] RAG retrieval skipped:', ragErr.message);
+    }
+
+    const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
+
+    const examples = await getRelevantExamples(client.clientId, text, 3);
+    let fewShot = buildFewShotPrompt(examples);
     try {
       const { detectProductIntent, lookupProduct } = require('./liveProductLookup');
       const intent = detectProductIntent(text);
@@ -5246,14 +5280,11 @@ CUSTOMER CONTEXT:
 ${personalization}
 
 KNOWLEDGE BASE:
-[Products]
+${ragContext ? `[Retrieved knowledge]\n${ragContext}\n\n` : ''}[Products]
 ${productCatalog || "General inquiry handling."}
 
-[Policies & short FAQ snippets]
+[Policies]
 ${policyStore}
-
-[Intelligence Hub — curated documents]
-${knowledgeDocumentsCtx || "[No active Knowledge Base documents yet — add long-form FAQs, SOPs, and policies under Intelligence → Knowledge Base.]"}
 
 ${fewShot}
 
@@ -5263,6 +5294,7 @@ INSTRUCTIONS:
 3. MULTILINGUAL: ${langInstruction}
 4. ESCALATION: If the customer asks for a human, is angry, or you cannot answer, say: "I'm connecting you to our specialist now. ⏳"
 5. GOAL: Guide the user towards a purchase or booking.
+6. Use retrieved knowledge when it directly answers the customer; do not invent facts outside provided context.
 
 CONVERSATION HISTORY (Last 5):
 ${recentMessageHistory}
@@ -5285,12 +5317,28 @@ REPLY:
 
     let reply;
     try {
-      reply = await withTimeout(
-        generateText(prompt, tenantGeminiKey, { noEnvFallback: true }),
-        8000,
+      const { callAI } = require('../core/aiGateway');
+      const aiResult = await withTimeout(
+        callAI({
+          clientId: client.clientId,
+          feature: 'whatsapp_bot',
+          prompt,
+          maxTokens: 150,
+          temperature: 0.4,
+          fast: true,
+          model: aiResolved.model,
+        }),
+        AI_BOT_TIMEOUT_MS,
         "Gemini AI Fallback Generation"
       );
+      reply = aiResult?.content;
+      if (!reply) {
+        throw new Error("Gemini AI returned empty response");
+      }
     } catch (aiErr) {
+      if (aiErr.code === 'AI_NOT_CONFIGURED' || aiErr.message === 'AI_NOT_CONFIGURED') {
+        return false;
+      }
       log.error(`[AI Fallback] Error resolving AI Fallback reply for ${client.clientId}:`, { error: aiErr.message });
       
       // If AI fails but we haven't matched a flow, we shouldn't necessarily PAUSE the bot

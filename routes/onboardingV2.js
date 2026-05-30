@@ -41,7 +41,6 @@ const {
   filterActivationPackForPlan,
   wizardFeatureUpdatesToMongoSet,
 } = require('../utils/onboarding/activationPackFromGoals');
-const { seedKnowledgeFromBrandProfile } = require('../utils/onboarding/seedKnowledgeFromBrandProfile');
 const {
   resolveSubscriptionForClient,
   hasPaidEntitlements,
@@ -703,15 +702,6 @@ router.patch("/complete", protect, async (req, res) => {
           clientId,
           client.onboardingData?.brandProfile?.name || client.businessName
         ).catch((err) => log.warn(`Cart recovery drafts failed: ${err.message}`));
-      }
-
-      if (goals.includes("support_bot") && client.onboardingData?.brandProfile) {
-        await seedKnowledgeFromBrandProfile(
-          clientId,
-          client.onboardingData.brandProfile
-        ).catch((err) => {
-          log.warn(`KB seed failed for ${clientId}: ${err.message}`);
-        });
       }
 
       const refreshed = await Client.findOne({ clientId })

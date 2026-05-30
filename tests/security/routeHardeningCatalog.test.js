@@ -35,7 +35,7 @@ function testRouteFilesUseProtectOrPublic() {
 const ROUTE_FILES = [
   'leads.js', 'campaigns.js', 'sequences.js', 'conversations.js', 'orders.js', 'flow.js',
   'templates.js', 'segments.js', 'analytics.js', 'billing.js', 'team.js', 'workspace.js',
-  'settings.js', 'warranty.js', 'knowledge.js', 'training.js', 'scoring.js',
+  'settings.js', 'warranty.js', 'training.js', 'scoring.js',
   'notifications.js', 'dashboard.js', 'ecommerce.js', 'shopify.js', 'shopifyHub.js',
   'shopifyCatalog.js', 'whatsapp.js', 'whatsappFlows.js', 'metaTemplates.js', 'keywords.js',
   'rules.js', 'routingRules.js', 'audience.js', 'insights.js', 'intelligenceDna.js',

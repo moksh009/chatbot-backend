@@ -1850,25 +1850,7 @@ router.put('/client/settings', protect, async (req, res) => {
   }
 });
 
-// @route   POST /api/admin/persona/sync
-// @desc    Manually push global AI persona to all Flow Builder nodes
-// @access  Private
-router.post('/persona/sync', protect, async (req, res) => {
-  try {
-    await ensureClientForUser(req.user);
-    const clientId = req.user.clientId;
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-
-    const { syncPersonaToFlows } = require('../utils/core/personaEngine');
-    await syncPersonaToFlows(clientId, client.ai?.persona || {});
-
-    res.json({ success: true, message: 'AI Persona pushed to all flows successfully.' });
-  } catch (error) {
-    log.error('Persona sync error:', error);
-    res.status(500).json({ message: 'Failed to synchronize flows', error: error.message });
-  }
-});
+// @route   POST /api/admin/persona/sync — removed (AI Brain persona page retired)
 
 // --- GET SETTINGS BY CLIENTID (Super Admin) ---
 router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {

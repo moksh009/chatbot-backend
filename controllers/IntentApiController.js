@@ -7,7 +7,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const { CONFIDENCE_THRESHOLD } = require('../utils/core/nlpConfig');
 const ClientModel = require('../models/Client');
-const { botGenerateJSON } = require('../utils/core/gemini');
+const { callAIJSON } = require('../utils/core/aiGateway');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 
 /**
@@ -755,19 +755,7 @@ exports.generateTrainingData = async (req, res) => {
     if (!clientId) {
       return res.status(401).json({ success: false, message: 'Client ID required for generation.' });
     }
-    
-    const client = await ClientModel.findOne({ clientId });
-    const apiKey = client?.ai?.geminiApiKey || process.env.GEMINI_API_KEY;
 
-    if (!apiKey) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'AI Generation unavailable. Please check your API key in Settings.' 
-      });
-    }
-
-    // Moved to top for performance
-    
     const prompt = `You are an expert NLP training data architect for a professional customer service chatbot.
 The user wants to detect the following INTENT in customer messages: "${description}".
 
@@ -790,12 +778,29 @@ Expected Structure:
 }`;
 
     console.log(`[IntentGeneration] AI generation started for: "${description.substring(0, 50)}"`);
-    const generatedData = await botGenerateJSON(prompt, apiKey, { 
-      maxTokens: 1500, 
-      temperature: 0.8, 
-      maxRetries: 1, 
-      timeout: 14000 
-    });
+    let generatedData;
+    try {
+      const result = await callAIJSON({
+        clientId,
+        feature: 'other',
+        prompt,
+        maxTokens: 1500,
+        temperature: 0.8,
+        fast: true,
+      });
+      generatedData = result.data;
+    } catch (aiErr) {
+      if (aiErr.code === 'AI_NOT_CONFIGURED') {
+        return res.status(403).json({
+          success: false,
+          message: 'Configure your Gemini API key in AI Brain → AI Setup.',
+        });
+      }
+      return res.status(504).json({
+        success: false,
+        error: 'The AI service is currently unresponsive or timed out. Please try again in a few moments.',
+      });
+    }
 
     if (!generatedData) {
       return res.status(504).json({ 

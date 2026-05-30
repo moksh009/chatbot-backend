@@ -1,23 +1,40 @@
+'use strict';
+
 const mongoose = require('mongoose');
 
-const knowledgeDocumentSchema = new mongoose.Schema({
+const chunkSchema = new mongoose.Schema(
+  {
+    text: { type: String },
+    embedding: [{ type: Number }],
+    chunkIndex: { type: Number },
+  },
+  { _id: false }
+);
+
+const knowledgeDocumentSchema = new mongoose.Schema(
+  {
     clientId: { type: String, required: true, index: true },
-    title: { type: String, required: true },
-    content: { type: String, required: true },
-    /** Dashboard taxonomy (Product catalog, SOP, FAQ, …) */
-    documentType: {
+    title: { type: String, required: true, maxlength: 200 },
+    content: { type: String, required: true, maxlength: 20000 },
+    status: { type: String, enum: ['draft', 'active'], default: 'draft' },
+    source: { type: String, enum: ['manual', 'website_import'], default: 'manual' },
+    sourceUrl: { type: String, default: null },
+    chunks: [chunkSchema],
+    totalChunks: { type: Number, default: 0 },
+    embeddingStatus: {
       type: String,
-      enum: ['product_catalog', 'sop', 'faq', 'policy', 'custom'],
-      default: 'custom'
+      enum: ['pending', 'complete', 'failed'],
+      default: 'pending',
     },
-    sourceType: { type: String, enum: ['manual', 'upload', 'website'], default: 'manual' },
-    sourceUrl: { type: String },
-    /** When false, excluded from bot / test retrieval (Draft in UI). */
-    isActive: { type: Boolean, default: true },
-    /** Async ingest pipeline (scrapers); manual docs stay `processed`. */
-    status: { type: String, enum: ['pending', 'processed', 'failed'], default: 'processed' },
-    chunks: [{ index: Number, text: String, embedding: [Number] }],
-    lastUsedAt: { type: Date },
-}, { timestamps: true });
+    embeddingProvider: { type: String, default: 'gemini' },
+    embeddingDimensions: { type: Number, default: 768 },
+    characterCount: { type: Number, default: 0 },
+    lastUsedAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
+knowledgeDocumentSchema.index({ clientId: 1, status: 1 });
+knowledgeDocumentSchema.index({ clientId: 1, embeddingStatus: 1 });
 
 module.exports = mongoose.model('KnowledgeDocument', knowledgeDocumentSchema);

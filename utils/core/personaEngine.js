@@ -328,70 +328,10 @@ async function syncPersonaAcrossSystem(clientId, personaPatch = {}, options = {}
   return updated;
 }
 
-const knowledgeCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-/**
- * Build dynamic knowledge context from KnowledgeDocument collection.
- * Fetches all active documents for a client and concatenates them into
- * a single context string for injection into the AI system prompt.
- * Falls back gracefully if the model doesn't exist yet.
- * Includes caching and 12000 character truncation to prevent token overflow.
- */
-async function buildKnowledgeContext(clientId) {
-  try {
-    const now = Date.now();
-    const cached = knowledgeCache.get(clientId);
-    if (cached && (now - cached.timestamp < CACHE_TTL)) {
-      return cached.data;
-    }
-
-    const KnowledgeDocument = require('../../models/KnowledgeDocument');
-    const docs = await KnowledgeDocument.find({
-      clientId,
-      isActive: true,
-    })
-      .sort({ updatedAt: -1 })
-      .limit(24)
-      .select('title content documentType')
-      .lean();
-
-    if (!docs || docs.length === 0) return '';
-
-    const sections = docs.map((doc) => {
-      const label = doc.documentType
-        ? String(doc.documentType).replace(/_/g, ' ')
-        : '';
-      const tag = label ? `[${label}] ` : '';
-      return `### ${tag}${doc.title}\n${doc.content}`;
-    });
-    let contextString = `\n\nDYNAMIC KNOWLEDGE BASE (${docs.length} documents):\n${sections.join('\n\n')}`;
-    
-    if (contextString.length > 12000) {
-      contextString = contextString.substring(0, 12000) + '\n... [Content Truncated]';
-    }
-
-    knowledgeCache.set(clientId, { data: contextString, timestamp: now });
-
-    return contextString;
-  } catch (err) {
-    // Graceful fallback if model doesn't exist or DB error
-    console.warn('[PersonaEngine] buildKnowledgeContext failed:', err.message);
-    return '';
-  }
-}
-
-function clearKnowledgeContextCache(clientId) {
-  if (clientId) knowledgeCache.delete(clientId);
-  else knowledgeCache.clear();
-}
-
 module.exports = {
   buildPersonaSystemPrompt,
   applyPersonaPostProcess,
   syncPersonaToFlows,
-  buildKnowledgeContext,
-  clearKnowledgeContextCache,
   normalizePersonaTone,
   syncPersonaAcrossSystem,
 };

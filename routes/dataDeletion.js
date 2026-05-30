@@ -17,7 +17,6 @@ const Order          = require("../models/Order");
 const Campaign       = require("../models/Campaign");
 const CampaignMessage = require("../models/CampaignMessage");
 const Segment        = require("../models/Segment");
-const KnowledgeDocument = require("../models/KnowledgeDocument");
 const Notification   = require("../models/Notification");
 const OTP            = require("../models/OTP");
 const AuditLog       = require("../models/AuditLog");
@@ -152,7 +151,6 @@ router.post("/account/delete", protect, async (req, res) => {
         Campaign.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         CampaignMessage.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         Segment.deleteMany({ clientId: clientMongoId }),
-        KnowledgeDocument.deleteMany({ clientId: clientMongoId }),
         Notification.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         AuditLog.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         // Clean up wizard state

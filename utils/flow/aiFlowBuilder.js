@@ -16,7 +16,7 @@
  *    welome flow rather than throwing
  */
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { callAIJSON } = require("../core/aiGateway");
 
 // ─── CANONICAL NODE TYPE REGISTRY ────────────────────────────────────────────
 // This MUST stay in sync with the nodeTypes object in FlowCanvas.jsx.
@@ -264,8 +264,8 @@ function buildFallbackFlow(prompt, yOffset = 0) {
  * @param {string} strategy - Optional strategy hint injected at start of prompt
  */
 async function buildFlowFromPrompt(prompt, client, yOffset = 0, strategy = null) {
-  const apiKey = (client?.geminiApiKey?.trim()) || (process.env.GEMINI_API_KEY?.trim());
-  if (!apiKey) throw new Error("No Gemini API key configured");
+  const clientId = client?.clientId;
+  if (!clientId) throw new Error("No client configured for AI flow builder");
 
   const businessCtx = buildBusinessContext(client);
   const systemPrompt = buildSystemPrompt(businessCtx);
@@ -274,40 +274,29 @@ async function buildFlowFromPrompt(prompt, client, yOffset = 0, strategy = null)
     ? `Strategy directive: ${strategy}\n\nBusiness requirement: ${prompt}`
     : `Business requirement: ${prompt}`;
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    systemInstruction: systemPrompt
-  });
-
-  let raw = '';
+  let parsed;
   try {
-    const result = await model.generateContent(fullPrompt);
-    raw = result.response.text();
+    const result = await callAIJSON({
+      clientId,
+      feature: 'flow_builder',
+      prompt: fullPrompt,
+      systemPrompt,
+      maxTokens: 8192,
+      fast: false,
+      temperature: 0.3,
+    });
+    parsed = result.data;
   } catch (geminiErr) {
-    console.error("[AI Flow Builder] Gemini API error:", geminiErr.message);
+    if (geminiErr.code === 'AI_NOT_CONFIGURED') {
+      const err = new Error(geminiErr.userMessage || 'AI_NOT_CONFIGURED');
+      err.code = 'AI_NOT_CONFIGURED';
+      throw err;
+    }
+    console.error("[AI Flow Builder] AI API error:", geminiErr.message);
     return buildFallbackFlow(prompt, yOffset);
   }
 
-  // Strip markdown fences
-  const cleaned = raw
-    .replace(/```json\n?/gi, '')
-    .replace(/```\n?/g, '')
-    .trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    // Try extracting JSON from within prose
-    const match = cleaned.match(/\{[\s\S]*"nodes"[\s\S]*\}/);
-    if (match) {
-      try { parsed = JSON.parse(match[0]); } catch { /* fall through */ }
-    }
-  }
-
   if (!parsed) {
-    console.warn("[AI Flow Builder] Could not parse JSON from Gemini. Using fallback.");
     return buildFallbackFlow(prompt, yOffset);
   }
 

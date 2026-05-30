@@ -46,7 +46,7 @@ class CircuitBreaker {
 }
 
 const shopifyBreaker = new CircuitBreaker("Shopify", 5, 30000);
-const geminiBreaker = new CircuitBreaker("Gemini", 3, 60000);
+const geminiBreaker = new CircuitBreaker("Gemini", 5, 45000);
 
 const namedBreakers = new Map();
 

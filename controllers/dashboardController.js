@@ -472,7 +472,6 @@ exports.getQualityStats = async (req, res) => {
     startDate.setDate(startDate.getDate() - days);
 
     const TrainingCase = require('../models/TrainingCase');
-    const KnowledgeDocument = require('../models/KnowledgeDocument');
     const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     const IntentRule = require('../models/IntentRule');
@@ -486,8 +485,6 @@ exports.getQualityStats = async (req, res) => {
       totalCorrections,
       dropoffs,
       pendingPhrases,
-      activeKb,
-      draftKb,
       publishedFlows,
       intentsDefined,
       intentsCold,
@@ -512,8 +509,6 @@ exports.getQualityStats = async (req, res) => {
         { $limit: 5 },
       ]),
       UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' }),
-      KnowledgeDocument.countDocuments({ clientId, isActive: true }),
-      KnowledgeDocument.countDocuments({ clientId, isActive: false }),
       WhatsAppFlow.countDocuments({ clientId, status: 'PUBLISHED' }),
       IntentRule.countDocuments({ clientId, isActive: true }),
       IntentRule.countDocuments({
@@ -618,8 +613,6 @@ exports.getQualityStats = async (req, res) => {
 
     const { recommendations, summaryLine, gradeLetter, gradeTone } = buildBotQualityRecommendations({
       pendingPhrases,
-      activeKb,
-      draftKb,
       publishedFlows,
       qualitySample,
       conversations30d: allConvs,

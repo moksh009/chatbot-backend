@@ -16,7 +16,7 @@ const PATH_RESOURCE_RULES = [
   { pattern: /^\/api\/segments\/[^/]+/i, lookupBy: 'segment', param: 'id' },
   { pattern: /^\/api\/templates\/[^/]+/i, lookupBy: 'template', param: 'id' },
   { pattern: /^\/api\/meta-templates\/[^/]+/i, lookupBy: 'template', param: 'id' },
-  { pattern: /^\/api\/knowledge\/[^/]+/i, lookupBy: 'knowledge', param: 'id' },
+  { pattern: /^\/api\/knowledge\/documents\/[a-f0-9]{24}/i, lookupBy: 'knowledgeDocument', param: 'id' },
   { pattern: /^\/api\/training\/[^/]+/i, lookupBy: 'trainingCase', param: 'id' },
 ];
 

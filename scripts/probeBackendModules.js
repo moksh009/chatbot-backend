@@ -18,7 +18,6 @@ const modules = [
   './routes/dynamicClientRouter',
   './routes/templates',
   './routes/whatsapp',
-  './routes/knowledge',
   './routes/scoring',
   './routes/insights',
   './routes/segments',
