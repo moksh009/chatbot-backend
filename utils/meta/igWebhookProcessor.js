@@ -247,7 +247,7 @@ async function handleIncomingDM(pageId, msg) {
     // Ignore our own messages (echo)
     if (senderId === pageId) return;
 
-    const messageText = msg.message?.text || '';
+    let messageText = msg.message?.text || '';
     const attachments = msg.message?.attachments || [];
     let messageType = 'text';
     let attachmentUrl = null;
@@ -260,8 +260,17 @@ async function handleIncomingDM(pageId, msg) {
       } else if (firstAttachment.type === 'story_mention') {
         messageType = 'story_reply';
         attachmentUrl = firstAttachment.payload?.url || null;
+      } else if (firstAttachment.type === 'audio' || firstAttachment.type === 'video') {
+        messageType = firstAttachment.type;
+        attachmentUrl = firstAttachment.payload?.url || null;
       } else {
         messageType = 'unsupported';
+        if (!messageText) {
+          const label = firstAttachment.type
+            ? firstAttachment.type.replace(/_/g, ' ')
+            : 'attachment';
+          messageText = `Unsupported ${label}`;
+        }
       }
     }
 

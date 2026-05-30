@@ -5,9 +5,9 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const KnowledgeDocument = require('../models/KnowledgeDocument');
-const { scrapeWebsiteText } = require('../utils/core/urlScraper');
-const { queueDocumentEmbedding } = require('../workers/knowledgeEmbeddingQueues');
+const { buildKnowledgeFromWebsite } = require('../utils/core/websiteKnowledgeBuilder');
 const {
+  processDocumentEmbedding,
   getKnowledgeStats,
   runKnowledgeTest,
 } = require('../utils/core/ragEngine');
@@ -60,7 +60,7 @@ router.post('/documents', protect, async (req, res) => {
       embeddingStatus: 'pending',
     });
 
-    await queueDocumentEmbedding(doc._id.toString(), clientId);
+    await embedDocumentNow(doc._id.toString());
     res.status(201).json({ document: doc });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -91,7 +91,9 @@ router.put('/documents/:id', protect, async (req, res) => {
     const updated = await KnowledgeDocument.findById(doc._id).select('-chunks.embedding').lean();
 
     if (content?.trim()) {
-      await queueDocumentEmbedding(doc._id.toString(), clientId);
+      await embedDocumentNow(doc._id.toString());
+    } else if (status === 'active' && (doc.embeddingStatus === 'pending' || doc.embeddingStatus === 'failed')) {
+      await embedDocumentNow(doc._id.toString());
     }
 
     res.json({ document: updated });
@@ -128,26 +130,110 @@ router.post('/import-url', protect, async (req, res) => {
       return res.status(400).json({ error: 'Invalid URL.' });
     }
 
-    const text = await scrapeWebsiteText(parsed.href);
-    if (!text || text.length < 50) {
-      return res.status(400).json({ error: 'Could not extract enough text from that page.' });
-    }
-
-    const doc = await KnowledgeDocument.create({
+    const built = await buildKnowledgeFromWebsite(parsed.href, {
       clientId,
-      title: (title || parsed.hostname || 'Imported page').slice(0, 200),
-      content: text.slice(0, 20000),
-      status: 'draft',
-      source: 'website_import',
-      sourceUrl: parsed.href,
-      characterCount: Math.min(text.length, 20000),
-      embeddingStatus: 'pending',
+      useAiEnhance: true,
     });
 
-    await queueDocumentEmbedding(doc._id.toString(), clientId);
-    res.status(201).json({ document: doc });
+    const docTitle = (title || built.title || parsed.hostname).slice(0, 200);
+    const hostname = parsed.hostname.replace(/^www\./, '');
+
+    const existing = await KnowledgeDocument.findOne({
+      clientId,
+      source: 'website_import',
+      $or: [
+        { sourceUrl: parsed.href },
+        { sourceUrl: { $regex: hostname, $options: 'i' } },
+        { title: { $regex: hostname, $options: 'i' } },
+      ],
+    }).sort({ updatedAt: -1 });
+
+    let doc;
+    if (existing) {
+      await KnowledgeDocument.updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            title: docTitle,
+            content: built.content,
+            sourceUrl: parsed.href,
+            characterCount: built.content.length,
+            status: 'active',
+            embeddingStatus: 'pending',
+            chunks: [],
+            updatedAt: new Date(),
+          },
+        }
+      );
+      doc = await KnowledgeDocument.findById(existing._id);
+    } else {
+      doc = await KnowledgeDocument.create({
+        clientId,
+        title: docTitle,
+        content: built.content,
+        status: 'active',
+        source: 'website_import',
+        sourceUrl: parsed.href,
+        characterCount: built.content.length,
+        embeddingStatus: 'pending',
+      });
+    }
+
+    await embedDocumentNow(doc._id.toString());
+    res.status(existing ? 200 : 201).json({
+      document: doc,
+      productCount: built.productCount,
+      replaced: !!existing,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Import failed.' });
+  }
+});
+
+async function embedDocumentNow(documentId) {
+  try {
+    await processDocumentEmbedding(documentId);
+  } catch (err) {
+    console.warn(`[knowledge] embed ${documentId}:`, err.message);
+  }
+}
+
+router.post('/documents/:id/reembed', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+
+    const doc = await KnowledgeDocument.findOne({ _id: req.params.id, clientId });
+    if (!doc) return res.status(404).json({ error: 'Document not found.' });
+
+    await KnowledgeDocument.updateOne(
+      { _id: doc._id },
+      { $set: { embeddingStatus: 'pending', updatedAt: new Date() } }
+    );
+    await embedDocumentNow(doc._id.toString());
+    res.json({ success: true, message: 'Embedding processed.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/process-pending-embeddings', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+
+    const pending = await KnowledgeDocument.find({
+      clientId,
+      status: 'active',
+      embeddingStatus: { $in: ['pending', 'failed'] },
+    }).limit(8);
+
+    for (const doc of pending) {
+      await embedDocumentNow(doc._id.toString());
+    }
+    res.json({ success: true, processed: pending.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -163,7 +249,7 @@ router.post('/test', protect, async (req, res) => {
     res.json(result);
   } catch (err) {
     if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
-      return res.status(400).json({ error: 'Configure your Gemini API key in AI Setup first.' });
+      return res.status(400).json({ error: 'Add a Gemini or OpenAI key in AI Setup to generate answers.' });
     }
     res.status(500).json({ error: err.message });
   }

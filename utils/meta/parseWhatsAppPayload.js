@@ -99,6 +99,14 @@ function parseWhatsAppPayload(body) {
       case "document":
         parsed.document = { id: messages.document.id, mime_type: messages.document.mime_type, filename: messages.document.filename, caption: messages.document.caption };
         break;
+
+      case "sticker":
+        parsed.sticker = { id: messages.sticker.id, mime_type: messages.sticker.mime_type, animated: messages.sticker.animated };
+        break;
+
+      case "order":
+        parsed.order = messages.order;
+        break;
       
       case "button":
         // Legacy button type

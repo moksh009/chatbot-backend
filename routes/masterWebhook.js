@@ -459,6 +459,28 @@ async function processMessages(messages, metadata, contacts) {
         const client = await discoverClientByPhoneId(phone_number_id);
         if (client) {
           const convo = await Conversation.findOneAndUpdate({ phone: from, clientId: client.clientId }, { $setOnInsert: { phone: from, clientId: client.clientId, botPaused: false, status: 'BOT_ACTIVE' } }, { upsert: true, new: true, lean: true });
+          const { saveInboundMessage } = require('../utils/commerce/dualBrainEngine');
+          const { resolveAndSaveMedia } = require('../utils/meta/whatsappMedia');
+          let mediaUrl = null;
+          const mediaObj = message.audio || message.voice;
+          if (mediaObj?.id) {
+            try {
+              mediaUrl = await resolveAndSaveMedia(mediaObj.id, client);
+            } catch (mediaErr) {
+              log.warn('Voice note media resolve failed', { error: mediaErr.message });
+            }
+          }
+          const parsedForSave = {
+            from,
+            phone: from,
+            messageId: message.id,
+            type: message.type,
+            audio: message.audio,
+            channel: 'whatsapp',
+            profileName,
+            mediaUrl,
+          };
+          await saveInboundMessage(from, client.clientId, parsedForSave, global.io, 'whatsapp', convo._id, convo);
           require('../utils/meta/voiceNoteHandler').processVoiceNote(message, client, from, convo._id, global.io, phone_number_id, profileName).catch(e => log.error('VoiceNote error', { error: e.message }));
         }
         continue;
@@ -468,7 +490,7 @@ async function processMessages(messages, metadata, contacts) {
       // handleWhatsAppMessage is the SINGLE entry point that parses the payload,
       // resolves the client, and calls runDualBrainEngine internally.
       // DO NOT use processInboundMessage (deleted legacy dual-pipeline).
-      handleWhatsAppMessage(message, from, phone_number_id, (contacts || []).find(c => c.wa_id === from)?.profile?.name || '')
+      handleWhatsAppMessage(from, message, phone_number_id, (contacts || []).find(c => c.wa_id === from)?.profile?.name || '')
         .then(async () => {
           const Client = require('../models/Client');
           const cdoc = waClientFilter

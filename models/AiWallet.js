@@ -13,6 +13,12 @@ const aiWalletSchema = new mongoose.Schema(
       enum: ['byo_gemini', 'byo_openai', 'byo_both', 'not_configured'],
       default: 'not_configured',
     },
+    /** Single active BYO provider — only one key at a time. */
+    activeProvider: {
+      type: String,
+      enum: ['gemini', 'openai', null],
+      default: null,
+    },
     preferredProvider: {
       type: String,
       enum: ['auto', 'gemini', 'openai'],
@@ -23,6 +29,13 @@ const aiWalletSchema = new mongoose.Schema(
       enum: ['gemini', 'openai', null],
       default: null,
     },
+    /** When false, bot uses linear flows only — no RAG/AI fallback. */
+    aiSupportEnabled: { type: Boolean, default: true },
+    /** Merchant cap for AI reply length (words). */
+    maxOutputWords: { type: Number, default: 150, min: 30, max: 800 },
+    /** Cached model ids returned from provider on last validation. */
+    cachedGeminiModels: { type: [String], default: [] },
+    cachedOpenaiModels: { type: [String], default: [] },
     byoApiKeyEncrypted: { type: String, default: null, select: false },
     byoModelSelected: { type: String, default: null },
     byoKeyValidatedAt: { type: Date, default: null },

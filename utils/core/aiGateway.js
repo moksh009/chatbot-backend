@@ -3,7 +3,7 @@
 const AiTokenTransaction = require('../../models/AiTokenTransaction');
 const { generateTextWithUsage: geminiGenerate, isKeyValid } = require('./gemini');
 const { generateTextWithUsage: openaiGenerate, validateOpenAiKey } = require('./openaiProvider');
-const { resolveApiKeyForClient, incrementWalletTotals } = require('../../services/ai/aiWalletService');
+const { resolveApiKeyForClient, incrementWalletTotals, getMaxOutputTokens } = require('../../services/ai/aiWalletService');
 
 const CREDIT_RATE = {
   gemini: {
@@ -68,9 +68,12 @@ async function callAI({
   if (!resolved.configured) {
     const err = new Error('AI_NOT_CONFIGURED');
     err.code = 'AI_NOT_CONFIGURED';
-    err.userMessage = 'Add your Gemini or OpenAI API key in AI Brain → AI Setup (or onboarding step).';
+    err.userMessage = 'Add your API key in Intelligence Hub → AI Setup.';
     throw err;
   }
+
+  const walletMaxTokens = await getMaxOutputTokens(clientId);
+  const effectiveMaxTokens = maxTokens ? Math.min(maxTokens, walletMaxTokens) : walletMaxTokens;
 
   const activeProvider = resolved.provider;
   const activeModel = model || resolved.model;
@@ -80,7 +83,7 @@ async function callAI({
   if (activeProvider === 'openai') {
     result = await openaiGenerate(prompt, apiKey, {
       systemInstruction: systemPrompt || undefined,
-      maxTokens,
+      maxTokens: effectiveMaxTokens,
       temperature,
       model: activeModel,
       responseMimeType: jsonMode ? 'application/json' : undefined,
@@ -89,7 +92,7 @@ async function callAI({
     result = await geminiGenerate(prompt, apiKey, {
       noEnvFallback: true,
       fast,
-      maxTokens,
+      maxTokens: effectiveMaxTokens,
       temperature,
       model: activeModel,
       systemInstruction: systemPrompt || undefined,
@@ -168,15 +171,16 @@ async function callAIJSON(options) {
   return { data: parsed, usage: result.usage, model: result.model, provider: result.provider };
 }
 
-/** Log embedding usage (Gemini embeddings require a Gemini key). */
-async function logEmbeddingUsage(clientId, textLength = 0, success = true, errorCode = null) {
+async function logEmbeddingUsage(clientId, textLength = 0, success = true, errorCode = null, provider = 'gemini') {
   const estimatedTokens = Math.max(1, Math.ceil(textLength / 4));
-  const model = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
-  const costUsd = calculateCost('gemini', model, estimatedTokens, 0) || 0;
+  const model = provider === 'openai'
+    ? 'text-embedding-3-small'
+    : (process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004');
+  const costUsd = calculateCost(provider, model, estimatedTokens, 0) || 0;
   await logTransaction({
     clientId,
     feature: 'embedding',
-    provider: 'gemini',
+    provider: provider || 'gemini',
     model,
     inputTokens: estimatedTokens,
     outputTokens: 0,
@@ -197,15 +201,13 @@ async function validateGeminiKey(apiKey) {
   }
   try {
     const axios = require('axios');
+    const { filterGeminiModelsFromApi, mergeModelLists, GEMINI_MODELS } = require('../../constants/aiModels');
     const resp = await axios.get(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
       { timeout: 12000 }
     );
     if (resp.status === 200) {
-      const models = (resp.data?.models || [])
-        .map((m) => m.name?.replace(/^models\//, ''))
-        .filter((n) => n && (n.includes('gemini-2.5') || n.includes('gemini-2.0')))
-        .slice(0, 20);
+      const models = mergeModelLists(GEMINI_MODELS, filterGeminiModelsFromApi(resp.data?.models || []));
       return { valid: true, models };
     }
     return { valid: false, error: 'Key validation failed.' };

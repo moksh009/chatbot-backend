@@ -116,8 +116,9 @@ Keep it concise and accurate.`;
           voiceTranscript: cleanTranscript,
           voiceTranslation: englishTranslation,
           voiceProcessed: true,
-          originalType: "audio"
-        }
+          originalType: 'audio',
+          content: cleanTranscript,
+        },
       }
     );
 

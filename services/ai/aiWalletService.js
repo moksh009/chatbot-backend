@@ -1,22 +1,19 @@
 'use strict';
 
 const AiWallet = require('../../models/AiWallet');
+const AiTokenTransaction = require('../../models/AiTokenTransaction');
 const Client = require('../../models/Client');
 const { encrypt, decrypt } = require('../../utils/core/encryption');
 const { isKeyValid } = require('../../utils/core/gemini');
 const { isOpenAiKey } = require('../../utils/core/openaiProvider');
 const { resolveClientGeminiKey } = require('../../utils/core/clientGeminiKey');
-
-const GEMINI_MODELS = [
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-];
-
-const OPENAI_MODELS = [
-  'gpt-4o-mini',
-  'gpt-4o',
-  'gpt-4.1-mini',
-];
+const {
+  GEMINI_MODELS,
+  OPENAI_MODELS,
+  CUSTOMER_INQUIRY_FEATURES,
+  mergeModelLists,
+  isAllowedModel,
+} = require('../../constants/aiModels');
 
 function detectProviderFromKey(apiKey) {
   const k = String(apiKey || '').trim();
@@ -25,11 +22,20 @@ function detectProviderFromKey(apiKey) {
   return null;
 }
 
-function computeMode(geminiOk, openaiOk) {
+function computeMode(activeProvider, geminiOk, openaiOk) {
+  if (activeProvider === 'gemini' && geminiOk) return 'byo_gemini';
+  if (activeProvider === 'openai' && openaiOk) return 'byo_openai';
   if (geminiOk && openaiOk) return 'byo_both';
   if (geminiOk) return 'byo_gemini';
   if (openaiOk) return 'byo_openai';
   return 'not_configured';
+}
+
+function modelsForWallet(wallet, provider) {
+  if (provider === 'openai') {
+    return mergeModelLists(OPENAI_MODELS, wallet?.cachedOpenaiModels || []);
+  }
+  return mergeModelLists(GEMINI_MODELS, wallet?.cachedGeminiModels || []);
 }
 
 function sanitizeWallet(doc) {
@@ -38,13 +44,19 @@ function sanitizeWallet(doc) {
   delete o.byoApiKeyEncrypted;
   delete o.byoOpenaiApiKeyEncrypted;
 
-  const geminiConnected = o.byoKeyIsValid === true;
-  const openaiConnected = o.byoOpenaiKeyIsValid === true;
+  const geminiConnected = o.byoKeyIsValid === true && o.activeProvider === 'gemini';
+  const openaiConnected = o.byoOpenaiKeyIsValid === true && o.activeProvider === 'openai';
+  const activeProvider = o.activeProvider || (geminiConnected ? 'gemini' : openaiConnected ? 'openai' : null);
+  const connected = geminiConnected || openaiConnected;
+
+  const geminiModels = modelsForWallet(o, 'gemini');
+  const openaiModels = modelsForWallet(o, 'openai');
 
   return {
     clientId: o.clientId,
     mode: o.mode,
-    byoProvider: o.byoProvider,
+    activeProvider,
+    byoProvider: activeProvider || o.byoProvider,
     byoModelSelected: o.byoModelSelected,
     byoOpenaiModelSelected: o.byoOpenaiModelSelected,
     byoKeyValidatedAt: o.byoKeyValidatedAt,
@@ -53,14 +65,18 @@ function sanitizeWallet(doc) {
     byoOpenaiKeyIsValid: openaiConnected,
     geminiConnected,
     openaiConnected,
-    anyConnected: geminiConnected || openaiConnected,
-    preferredProvider: o.preferredProvider || 'auto',
+    anyConnected: connected,
+    preferredProvider: activeProvider || o.preferredProvider || 'auto',
+    aiSupportEnabled: o.aiSupportEnabled !== false,
+    maxOutputWords: o.maxOutputWords ?? 150,
     totalTokensUsed: o.totalTokensUsed || 0,
     totalInputTokens: o.totalInputTokens || 0,
     totalOutputTokens: o.totalOutputTokens || 0,
     totalCostUsd: o.totalCostUsd || 0,
-    availableGeminiModels: GEMINI_MODELS,
-    availableOpenaiModels: OPENAI_MODELS,
+    availableGeminiModels: geminiModels,
+    availableOpenaiModels: openaiModels,
+    availableModels: activeProvider === 'openai' ? openaiModels : geminiModels,
+    selectedModel: activeProvider === 'openai' ? o.byoOpenaiModelSelected : o.byoModelSelected,
     updatedAt: o.updatedAt,
   };
 }
@@ -87,35 +103,33 @@ function resolveLegacyKeyPlain(client, field) {
 
 async function syncLegacyKey(clientId) {
   const wallet = await getOrCreateWallet(clientId);
-  const client = await Client.findOne({ clientId }).lean();
-  const updates = {};
-
-  if (!wallet.byoKeyIsValid || !wallet.byoApiKeyEncrypted) {
-    const legacyGemini = resolveLegacyKeyPlain(client, 'gemini');
-    if (legacyGemini) {
-      updates.byoApiKeyEncrypted = encrypt(legacyGemini);
-      updates.byoKeyIsValid = true;
-      updates.byoKeyValidatedAt = new Date();
-      updates.byoProvider = 'gemini';
-      updates.byoModelSelected = wallet.byoModelSelected || process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite';
-    }
+  if (wallet.activeProvider && (wallet.byoKeyIsValid || wallet.byoOpenaiKeyIsValid)) {
+    return AiWallet.findOne({ clientId }).select('+byoApiKeyEncrypted +byoOpenaiApiKeyEncrypted');
   }
 
-  if (!wallet.byoOpenaiKeyIsValid || !wallet.byoOpenaiApiKeyEncrypted) {
-    const legacyOpenai = resolveLegacyKeyPlain(client, 'openai');
-    if (legacyOpenai) {
-      updates.byoOpenaiApiKeyEncrypted = encrypt(legacyOpenai);
-      updates.byoOpenaiKeyIsValid = true;
-      updates.byoOpenaiKeyValidatedAt = new Date();
-      updates.byoOpenaiModelSelected = wallet.byoOpenaiModelSelected || 'gpt-4o-mini';
-    }
+  const client = await Client.findOne({ clientId }).lean();
+  const updates = {};
+  const legacyGemini = resolveLegacyKeyPlain(client, 'gemini');
+  const legacyOpenai = resolveLegacyKeyPlain(client, 'openai');
+
+  if (legacyGemini && !wallet.byoKeyIsValid) {
+    updates.byoApiKeyEncrypted = encrypt(legacyGemini);
+    updates.byoKeyIsValid = true;
+    updates.byoKeyValidatedAt = new Date();
+    updates.byoModelSelected = wallet.byoModelSelected || process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite';
+    updates.activeProvider = 'gemini';
+    updates.byoProvider = 'gemini';
+  } else if (legacyOpenai && !wallet.byoOpenaiKeyIsValid) {
+    updates.byoOpenaiApiKeyEncrypted = encrypt(legacyOpenai);
+    updates.byoOpenaiKeyIsValid = true;
+    updates.byoOpenaiKeyValidatedAt = new Date();
+    updates.byoOpenaiModelSelected = wallet.byoOpenaiModelSelected || 'gpt-4o-mini';
+    updates.activeProvider = 'openai';
+    updates.byoProvider = 'openai';
   }
 
   if (Object.keys(updates).length) {
-    updates.mode = computeMode(
-      updates.byoKeyIsValid ?? wallet.byoKeyIsValid,
-      updates.byoOpenaiKeyIsValid ?? wallet.byoOpenaiKeyIsValid
-    );
+    updates.mode = computeMode(updates.activeProvider, updates.byoKeyIsValid ?? wallet.byoKeyIsValid, updates.byoOpenaiKeyIsValid ?? wallet.byoOpenaiKeyIsValid);
     await AiWallet.updateOne({ clientId }, { $set: updates });
   }
 
@@ -123,7 +137,7 @@ async function syncLegacyKey(clientId) {
 }
 
 function readGeminiKey(wallet) {
-  if (!wallet?.byoKeyIsValid || !wallet.byoApiKeyEncrypted) return null;
+  if (wallet?.activeProvider !== 'gemini' || !wallet?.byoKeyIsValid || !wallet.byoApiKeyEncrypted) return null;
   const apiKey = decrypt(wallet.byoApiKeyEncrypted);
   if (!isKeyValid(apiKey)) return null;
   return {
@@ -135,7 +149,7 @@ function readGeminiKey(wallet) {
 }
 
 function readOpenAiKey(wallet) {
-  if (!wallet?.byoOpenaiKeyIsValid || !wallet.byoOpenaiApiKeyEncrypted) return null;
+  if (wallet?.activeProvider !== 'openai' || !wallet?.byoOpenaiKeyIsValid || !wallet.byoOpenaiApiKeyEncrypted) return null;
   const apiKey = decrypt(wallet.byoOpenaiApiKeyEncrypted);
   if (!isOpenAiKey(apiKey)) return null;
   return {
@@ -146,46 +160,52 @@ function readOpenAiKey(wallet) {
   };
 }
 
-/**
- * Resolve tenant BYO key. Never uses platform keys.
- * @param {string} clientId
- * @param {{ provider?: 'gemini'|'openai'|'auto', requireGemini?: boolean }} options
- */
 async function resolveApiKeyForClient(clientId, options = {}) {
   const { provider = null, requireGemini = false } = options;
   await syncLegacyKey(clientId);
   const wallet = await AiWallet.findOne({ clientId }).select('+byoApiKeyEncrypted +byoOpenaiApiKeyEncrypted');
+  const sanitized = sanitizeWallet(wallet);
   const gemini = readGeminiKey(wallet);
   const openai = readOpenAiKey(wallet);
-  const sanitized = sanitizeWallet(wallet);
 
-  if (requireGemini) {
-    if (!gemini) return { configured: false, wallet: sanitized };
-    return { ...gemini, wallet: sanitized };
+  if (requireGemini && !gemini) {
+    return { configured: false, wallet: sanitized, embeddingProvider: null };
   }
 
-  const pref = provider || wallet?.preferredProvider || 'auto';
+  const pref = provider || wallet?.activeProvider || wallet?.preferredProvider || 'auto';
 
-  if (pref === 'gemini' && gemini) return { ...gemini, wallet: sanitized };
-  if (pref === 'openai' && openai) return { ...openai, wallet: sanitized };
+  if (pref === 'openai' && openai) return { ...openai, wallet: sanitized, embeddingProvider: 'openai' };
+  if (pref === 'gemini' && gemini) return { ...gemini, wallet: sanitized, embeddingProvider: 'gemini' };
+  if (openai) return { ...openai, wallet: sanitized, embeddingProvider: 'openai' };
+  if (gemini) return { ...gemini, wallet: sanitized, embeddingProvider: 'gemini' };
 
-  if (gemini) return { ...gemini, wallet: sanitized };
-  if (openai) return { ...openai, wallet: sanitized };
-
-  return { configured: false, wallet: sanitized };
+  return { configured: false, wallet: sanitized, embeddingProvider: null };
 }
 
-async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini') {
+async function mirrorAiSettingsToClient(clientId, patch) {
+  const clientPatch = {};
+  if (patch.aiSupportEnabled !== undefined) {
+    clientPatch['config.aiConfig.aiSupportEnabled'] = patch.aiSupportEnabled;
+  }
+  if (patch.maxOutputWords !== undefined) {
+    clientPatch['config.aiConfig.maxOutputWords'] = patch.maxOutputWords;
+  }
+  if (Object.keys(clientPatch).length) {
+    await Client.updateOne({ clientId }, { $set: clientPatch });
+  }
+}
+
+async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini', fetchedModels = []) {
   const detected = detectProviderFromKey(apiKey);
   const normalizedProvider = provider === 'openai' ? 'openai' : 'gemini';
 
   if (detected === 'openai' && normalizedProvider === 'gemini') {
-    const err = new Error('This looks like an OpenAI key (sk-…). Switch provider to OpenAI or paste a Gemini key (AIza…).');
+    const err = new Error('This looks like an OpenAI key (sk-…). Choose OpenAI as provider.');
     err.code = 'WRONG_PROVIDER';
     throw err;
   }
   if (detected === 'gemini' && normalizedProvider === 'openai') {
-    const err = new Error('This looks like a Gemini key (AIza…). Switch provider to Gemini or paste an OpenAI key (sk-…).');
+    const err = new Error('This looks like a Gemini key (AIza…). Choose Google Gemini as provider.');
     err.code = 'WRONG_PROVIDER';
     throw err;
   }
@@ -197,20 +217,35 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini') {
 
   const key = String(apiKey).trim();
   const enc = encrypt(key);
+  const available = mergeModelLists(
+    normalizedProvider === 'openai' ? OPENAI_MODELS : GEMINI_MODELS,
+    fetchedModels
+  );
+  const defaultModel = normalizedProvider === 'openai' ? 'gpt-4o-mini' : (process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite');
+  const selectedModel = model && isAllowedModel(normalizedProvider, model, available) ? model : defaultModel;
+
+  const clearOther = {
+    byoKeyIsValid: false,
+    byoOpenaiKeyIsValid: false,
+    byoApiKeyEncrypted: null,
+    byoOpenaiApiKeyEncrypted: null,
+  };
 
   if (normalizedProvider === 'openai') {
-    const selectedModel = model && OPENAI_MODELS.includes(model) ? model : 'gpt-4o-mini';
-    const wallet = await AiWallet.findOne({ clientId });
-    const geminiOk = wallet?.byoKeyIsValid === true;
     await AiWallet.findOneAndUpdate(
       { clientId },
       {
         $set: {
+          ...clearOther,
+          activeProvider: 'openai',
+          byoProvider: 'openai',
           byoOpenaiApiKeyEncrypted: enc,
           byoOpenaiModelSelected: selectedModel,
           byoOpenaiKeyIsValid: true,
           byoOpenaiKeyValidatedAt: new Date(),
-          mode: computeMode(geminiOk, true),
+          cachedOpenaiModels: available,
+          mode: 'byo_openai',
+          preferredProvider: 'openai',
         },
         $setOnInsert: { clientId },
       },
@@ -218,24 +253,26 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini') {
     );
     await Client.updateOne(
       { clientId },
-      { $set: { openaiApiKey: enc, 'ai.openaiKey': enc } }
+      {
+        $set: { openaiApiKey: enc, 'ai.openaiKey': enc },
+        $unset: { geminiApiKey: '', 'ai.geminiKey': '' },
+      }
     );
   } else {
-    const selectedModel = model && GEMINI_MODELS.includes(model)
-      ? model
-      : process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite';
-    const wallet = await AiWallet.findOne({ clientId });
-    const openaiOk = wallet?.byoOpenaiKeyIsValid === true;
     await AiWallet.findOneAndUpdate(
       { clientId },
       {
         $set: {
-          mode: computeMode(true, openaiOk),
+          ...clearOther,
+          activeProvider: 'gemini',
           byoProvider: 'gemini',
           byoApiKeyEncrypted: enc,
           byoModelSelected: selectedModel,
           byoKeyIsValid: true,
           byoKeyValidatedAt: new Date(),
+          cachedGeminiModels: available,
+          mode: 'byo_gemini',
+          preferredProvider: 'gemini',
         },
         $setOnInsert: { clientId },
       },
@@ -243,39 +280,119 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini') {
     );
     await Client.updateOne(
       { clientId },
-      { $set: { geminiApiKey: enc, 'ai.geminiKey': enc } }
+      {
+        $set: { geminiApiKey: enc, 'ai.geminiKey': enc },
+        $unset: { openaiApiKey: '', 'ai.openaiKey': '' },
+      }
     );
   }
 
   return getWalletStatus(clientId);
 }
 
+async function removeApiKey(clientId) {
+  await AiWallet.findOneAndUpdate(
+    { clientId },
+    {
+      $set: {
+        mode: 'not_configured',
+        activeProvider: null,
+        byoProvider: null,
+        byoKeyIsValid: false,
+        byoOpenaiKeyIsValid: false,
+        byoApiKeyEncrypted: null,
+        byoOpenaiApiKeyEncrypted: null,
+        preferredProvider: 'auto',
+      },
+    }
+  );
+  await Client.updateOne(
+    { clientId },
+    { $unset: { geminiApiKey: '', openaiApiKey: '', 'ai.geminiKey': '', 'ai.openaiKey': '' } }
+  );
+  return getWalletStatus(clientId);
+}
+
+async function updateWalletSettings(clientId, { aiSupportEnabled, maxOutputWords } = {}) {
+  const patch = {};
+  if (typeof aiSupportEnabled === 'boolean') patch.aiSupportEnabled = aiSupportEnabled;
+  if (maxOutputWords != null) {
+    const n = Math.min(800, Math.max(30, parseInt(maxOutputWords, 10) || 150));
+    patch.maxOutputWords = n;
+  }
+  if (Object.keys(patch).length) {
+    await AiWallet.updateOne({ clientId }, { $set: patch });
+    await mirrorAiSettingsToClient(clientId, patch);
+  }
+  return getWalletStatus(clientId);
+}
+
+async function getUsageBreakdown(clientId) {
+  const [inquiryAgg, totalAgg] = await Promise.all([
+    AiTokenTransaction.aggregate([
+      { $match: { clientId, success: true, feature: { $in: CUSTOMER_INQUIRY_FEATURES } } },
+      {
+        $group: {
+          _id: null,
+          totalTokens: { $sum: '$totalTokens' },
+          inputTokens: { $sum: '$inputTokens' },
+          outputTokens: { $sum: '$outputTokens' },
+          costUsd: { $sum: '$costUsd' },
+          calls: { $sum: 1 },
+        },
+      },
+    ]),
+    AiTokenTransaction.aggregate([
+      { $match: { clientId, success: true } },
+      {
+        $group: {
+          _id: null,
+          totalTokens: { $sum: '$totalTokens' },
+          inputTokens: { $sum: '$inputTokens' },
+          outputTokens: { $sum: '$outputTokens' },
+          costUsd: { $sum: '$costUsd' },
+          calls: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  return {
+    customerInquiries: inquiryAgg[0] || { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 },
+    platformTotal: totalAgg[0] || { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 },
+  };
+}
+
 async function getWalletStatus(clientId) {
   await syncLegacyKey(clientId);
   const wallet = await AiWallet.findOne({ clientId });
-  return sanitizeWallet(wallet);
+  const sanitized = sanitizeWallet(wallet);
+  const usage = await getUsageBreakdown(clientId);
+  return { ...sanitized, usage };
 }
 
 async function selectModel(clientId, model, provider = 'gemini') {
-  if (provider === 'openai') {
-    if (!OPENAI_MODELS.includes(model)) {
-      const err = new Error('Unsupported OpenAI model');
-      err.code = 'INVALID_MODEL';
-      throw err;
-    }
+  const wallet = await AiWallet.findOne({ clientId });
+  const active = provider === 'openai' ? 'openai' : (wallet?.activeProvider || 'gemini');
+  const available = modelsForWallet(wallet, active);
+  if (!isAllowedModel(active, model, available)) {
+    const err = new Error('Unsupported model for this provider');
+    err.code = 'INVALID_MODEL';
+    throw err;
+  }
+  if (active === 'openai') {
     await AiWallet.updateOne({ clientId }, { $set: { byoOpenaiModelSelected: model } });
   } else {
-    if (!GEMINI_MODELS.includes(model)) {
-      const err = new Error('Unsupported Gemini model');
-      err.code = 'INVALID_MODEL';
-      throw err;
-    }
     await AiWallet.updateOne({ clientId }, { $set: { byoModelSelected: model } });
   }
   return getWalletStatus(clientId);
 }
 
 async function setPreferredProvider(clientId, preferredProvider) {
+  const wallet = await AiWallet.findOne({ clientId });
+  if (wallet?.activeProvider) {
+    return getWalletStatus(clientId);
+  }
   const allowed = ['auto', 'gemini', 'openai'];
   if (!allowed.includes(preferredProvider)) {
     const err = new Error('Invalid preferred provider');
@@ -300,17 +417,30 @@ async function incrementWalletTotals(clientId, inputTokens, outputTokens, costUs
   );
 }
 
+async function getMaxOutputTokens(clientId) {
+  const wallet = await AiWallet.findOne({ clientId }).select('maxOutputWords').lean();
+  const words = wallet?.maxOutputWords ?? 150;
+  return Math.ceil(words * 1.35);
+}
+
 module.exports = {
   GEMINI_MODELS,
   OPENAI_MODELS,
+  CUSTOMER_INQUIRY_FEATURES,
   detectProviderFromKey,
   getOrCreateWallet,
   syncLegacyKey,
   resolveApiKeyForClient,
   saveValidatedKey,
+  removeApiKey,
+  updateWalletSettings,
   getWalletStatus,
+  getUsageBreakdown,
   selectModel,
   setPreferredProvider,
   incrementWalletTotals,
+  getMaxOutputTokens,
   sanitizeWallet,
+  modelsForWallet,
+  isAllowedModel,
 };

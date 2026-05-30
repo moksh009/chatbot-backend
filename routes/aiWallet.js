@@ -9,7 +9,9 @@ const {
   saveValidatedKey,
   getWalletStatus,
   selectModel,
-  setPreferredProvider,
+  removeApiKey,
+  updateWalletSettings,
+  getUsageBreakdown,
   GEMINI_MODELS,
   OPENAI_MODELS,
 } = require('../services/ai/aiWalletService');
@@ -22,9 +24,9 @@ router.get('/status', protect, async (req, res) => {
     const status = await getWalletStatus(clientId);
     res.json({
       ...status,
-      availableModels: GEMINI_MODELS,
-      availableGeminiModels: GEMINI_MODELS,
-      availableOpenaiModels: OPENAI_MODELS,
+      availableModels: status.availableModels || GEMINI_MODELS,
+      availableGeminiModels: status.availableGeminiModels || GEMINI_MODELS,
+      availableOpenaiModels: status.availableOpenaiModels || OPENAI_MODELS,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -44,40 +46,27 @@ router.post('/validate-key', protect, async (req, res) => {
 
     if (normalizedProvider === 'openai') {
       if (key.startsWith('AIza')) {
-        return res.status(400).json({
-          error: 'This looks like a Gemini key. Choose Google Gemini as provider or paste an OpenAI key (sk-…).',
-        });
+        return res.status(400).json({ error: 'This looks like a Gemini key. Choose Google Gemini as provider.' });
       }
       const validation = await validateOpenAiKey(key);
-      if (!validation.valid) {
-        return res.status(400).json({ error: validation.error });
-      }
-      const selectedModel = model && OPENAI_MODELS.includes(model) ? model : 'gpt-4o-mini';
-      const status = await saveValidatedKey(clientId, key, selectedModel, 'openai');
-      return res.json({
-        success: true,
-        detectedProvider: 'openai',
-        models: validation.models || OPENAI_MODELS,
-        wallet: status,
-      });
+      if (!validation.valid) return res.status(400).json({ error: validation.error });
+      const selectedModel = model && validation.models.includes(model) ? model : 'gpt-4o-mini';
+      const status = await saveValidatedKey(clientId, key, selectedModel, 'openai', validation.models);
+      return res.json({ success: true, detectedProvider: 'openai', models: validation.models, wallet: status });
     }
 
     if (key.startsWith('sk-')) {
-      return res.status(400).json({
-        error: 'This looks like an OpenAI key. Choose OpenAI as provider or paste a Gemini key (AIza…).',
-      });
+      return res.status(400).json({ error: 'This looks like an OpenAI key. Choose OpenAI as provider.' });
     }
 
     const validation = await validateGeminiKey(key);
-    if (!validation.valid) {
-      return res.status(400).json({ error: validation.error });
-    }
+    if (!validation.valid) return res.status(400).json({ error: validation.error });
 
-    const selectedModel = model && GEMINI_MODELS.includes(model)
+    const selectedModel = model && validation.models.includes(model)
       ? model
       : process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite';
 
-    const status = await saveValidatedKey(clientId, key, selectedModel, 'gemini');
+    const status = await saveValidatedKey(clientId, key, selectedModel, 'gemini', validation.models);
     res.json({
       success: true,
       detectedProvider: 'gemini',
@@ -89,29 +78,39 @@ router.post('/validate-key', protect, async (req, res) => {
   }
 });
 
+router.delete('/disconnect', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    const status = await removeApiKey(clientId);
+    res.json({ success: true, wallet: status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/settings', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    const { aiSupportEnabled, maxOutputWords } = req.body || {};
+    const status = await updateWalletSettings(clientId, { aiSupportEnabled, maxOutputWords });
+    res.json({ success: true, wallet: status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/select-model', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
-    const { model, provider = 'gemini' } = req.body || {};
+    const { model, provider } = req.body || {};
     if (!model) return res.status(400).json({ error: 'Model is required.' });
-    const status = await selectModel(clientId, model, provider === 'openai' ? 'openai' : 'gemini');
+    const status = await selectModel(clientId, model, provider);
     res.json({ success: true, wallet: status });
   } catch (err) {
     res.status(err.code === 'INVALID_MODEL' ? 400 : 500).json({ error: err.message });
-  }
-});
-
-router.post('/preferred-provider', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
-    const { preferredProvider } = req.body || {};
-    if (!preferredProvider) return res.status(400).json({ error: 'preferredProvider is required.' });
-    const status = await setPreferredProvider(clientId, preferredProvider);
-    res.json({ success: true, wallet: status });
-  } catch (err) {
-    res.status(err.code === 'INVALID_PROVIDER' ? 400 : 500).json({ error: err.message });
   }
 });
 
@@ -119,25 +118,19 @@ router.post('/test-prompt', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
-    const { prompt, provider } = req.body || {};
+    const { prompt } = req.body || {};
     if (!prompt?.trim()) return res.status(400).json({ error: 'Prompt is required.' });
 
     const result = await callAI({
       clientId,
       feature: 'other',
       prompt: prompt.trim(),
-      maxTokens: 200,
       temperature: 0.5,
-      provider: provider || null,
     });
     res.json({ success: true, reply: result.content, usage: result.usage, provider: result.provider });
   } catch (err) {
-    const code = err.code || err.message;
-    if (code === 'AI_NOT_CONFIGURED') {
-      return res.status(400).json({
-        error: 'Add your Gemini or OpenAI API key in AI Brain → AI Setup first.',
-        code: 'AI_NOT_CONFIGURED',
-      });
+    if (err.code === 'AI_NOT_CONFIGURED') {
+      return res.status(400).json({ error: 'Connect an API key first.', code: 'AI_NOT_CONFIGURED' });
     }
     res.status(500).json({ error: err.message });
   }
@@ -172,8 +165,9 @@ router.get('/usage-summary', protect, async (req, res) => {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const [wallet, monthAgg, byFeature] = await Promise.all([
+    const [wallet, usage, monthAgg, byFeature] = await Promise.all([
       getWalletStatus(clientId),
+      getUsageBreakdown(clientId),
       AiTokenTransaction.aggregate([
         { $match: { clientId, timestamp: { $gte: startOfMonth }, success: true } },
         {
@@ -199,6 +193,9 @@ router.get('/usage-summary', protect, async (req, res) => {
 
     res.json({
       wallet,
+      usage,
+      customerInquiryTokens: usage.customerInquiries.totalTokens,
+      platformTotalTokens: usage.platformTotal.totalTokens,
       thisMonth: monthAgg[0] || { totalTokens: 0, totalCostUsd: 0, calls: 0 },
       byFeature: byFeature.map((r) => ({
         feature: r._id,

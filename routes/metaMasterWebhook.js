@@ -166,22 +166,21 @@ router.post('/', verifySignature, async (req, res) => {
 // ─── Field handlers ───────────────────────────────────────────────────────────
 
 async function handleMessages(value) {
-  // Delegate to existing message processing infrastructure
-  const { handleWhatsAppMessage, saveInboundMessage } = require('../utils/commerce/dualBrainEngine');
+  const { handleWhatsAppMessage } = require('../utils/commerce/dualBrainEngine');
   if (!value?.messages?.length) return;
 
   const phoneNumberId = value?.metadata?.phone_number_id;
-  const client = await resolveClient(phoneNumberId, null);
-  if (!client) {
-    log.debug('handleMessages: no client for phone_number_id', { phoneNumberId });
-    return;
-  }
+  const contacts = value.contacts || [];
 
   for (const msg of value.messages) {
     try {
-      await saveInboundMessage(msg, value.metadata, value.contacts, client.clientId);
+      const from = msg.from;
+      if (!from) continue;
+      const contact = contacts.find((c) => c.wa_id === from);
+      const profileName = contact?.profile?.name || '';
+      await handleWhatsAppMessage(from, msg, phoneNumberId, profileName);
     } catch (err) {
-      log.error('Message save failed', { msgId: msg.id, error: err.message });
+      log.error('Message handling failed', { msgId: msg.id, error: err.message });
     }
   }
 }

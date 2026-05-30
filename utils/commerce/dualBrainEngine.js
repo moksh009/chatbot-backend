@@ -23,7 +23,7 @@ const {
   setCachedFlowGraph,
 } = require('../flow/flowGraphCache');
 const { createTimer } = require('../core/perfLogger');
-const { shouldAttemptAICall } = require('../core/aiGuards');
+const { shouldAttemptAICall, shouldAttemptAICallAsync } = require('../core/aiGuards');
 const {
   beginEngineRun,
   getEngineRunId,
@@ -369,7 +369,17 @@ function replaceVariables(text, client, lead, convo) {
   return injectVariablesLegacy(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
-async function handleWhatsAppMessage(from, message, phoneNumberId, profileName = '') {
+async function handleWhatsAppMessage(arg1, arg2, phoneNumberId, profileName = '') {
+  let from;
+  let message;
+  if (arg1 && typeof arg1 === 'object' && (arg1.type || arg1.id) && typeof arg2 === 'string') {
+    message = arg1;
+    from = arg2;
+  } else {
+    from = arg1;
+    message = arg2;
+  }
+
   let client;
   try {
     // 0. Find Client first to scope the session lock (root + nested whatsapp + WABA)
@@ -382,11 +392,12 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     // NOTE: Lock and Deduplication moved into runDualBrainEngine so ALL entry points are protected.
     // (Ecommerce, Salon, Turfs, etc. all call runDualBrainEngine directly)
 
-    const parsed = await parseWhatsAppPayload(message);
-    if (!parsed) {
+    // Single Meta message object (not the full webhook POST body)
+    const parsed = message;
+    if (!parsed?.from && !from) {
       return;
     }
-    log.info(`[DualBrain] Processing ${from}: "${(parsed.text?.body || parsed.interactive?.button_reply?.title || '').substring(0, 50)}" type=${parsed.type || message.type}`);
+    log.info(`[DualBrain] Processing ${from}: "${(parsed.text?.body || parsed.interactive?.button_reply?.title || buildInboundBody(parsed)).substring(0, 50)}" type=${parsed.type || 'unknown'}`);
 
     // --- PHASE 23: Track 5 - Meta Flow Response (nfm_reply) ---
     if (parsed.interactive?.type === 'nfm_reply') {
@@ -433,7 +444,7 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     }
 
     // Resolve Media IDs if present (Phase 28 Track 2)
-    const mediaObj = parsed.image || parsed.audio || parsed.video || parsed.document;
+    const mediaObj = parsed.image || parsed.audio || parsed.video || parsed.document || parsed.sticker;
     if (mediaObj && mediaObj.id) {
         parsed.mediaUrl = await resolveAndSaveMedia(mediaObj.id, client);
     }
@@ -455,10 +466,20 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
       audio: message.audio,
       video: message.video,
       document: message.document,
+      sticker: message.sticker,
+      reaction: message.reaction,
+      location: message.location,
+      contacts: message.contacts,
+      order: message.order,
+      caption:
+        message.image?.caption ||
+        message.video?.caption ||
+        message.document?.caption ||
+        '',
       channel: 'whatsapp',
       referral: message.referral,
       profileName,
-      mediaUrl: parsed.mediaUrl
+      mediaUrl: parsed.mediaUrl,
     };
 
 
@@ -597,7 +618,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     const txtLower = inboundText.toLowerCase().trim();
     const inboundGeminiKey = resolveClientGeminiKey(client);
-    const tenantAiEnabled = shouldAttemptAICall("tenant", client);
+    const tenantAiEnabled = await shouldAttemptAICallAsync('tenant', client);
 
     // --- Name guard + session upserts in parallel ---
     const parallelTasks = [
@@ -740,6 +761,23 @@ async function runDualBrainEngine(parsedMessage, client) {
           log.warn(
             `[DualBrain] Auto re-opt-in failed for ${client.clientId}:${phone}: ${reoptErr.message}`
           );
+        }
+      }
+    }
+
+    // Resolve media IDs for live chat preview (image/video/audio/document/sticker)
+    if (channel === 'whatsapp' && !parsedMessage.mediaUrl) {
+      const mediaObj =
+        parsedMessage.image ||
+        parsedMessage.audio ||
+        parsedMessage.video ||
+        parsedMessage.document ||
+        parsedMessage.sticker;
+      if (mediaObj?.id) {
+        try {
+          parsedMessage.mediaUrl = await resolveAndSaveMedia(mediaObj.id, client);
+        } catch (mediaErr) {
+          log.warn('[DualBrain] Media resolve failed:', { error: mediaErr.message });
         }
       }
     }
@@ -5323,7 +5361,6 @@ REPLY:
           clientId: client.clientId,
           feature: 'whatsapp_bot',
           prompt,
-          maxTokens: 150,
           temperature: 0.4,
           fast: true,
           model: aiResolved.model,
@@ -5791,18 +5828,96 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
  * @param {string} conversationId - Mongoose ObjectId of the Conversation document
  */
 function buildInboundBody(parsedMessage) {
-  return (
-    parsedMessage.text?.body ||
-    parsedMessage.interactive?.button_reply?.title ||
-    parsedMessage.interactive?.list_reply?.title ||
+  if (!parsedMessage || typeof parsedMessage !== 'object') return 'Message';
+
+  const type = String(parsedMessage.type || '').toLowerCase();
+
+  const textBody = parsedMessage.text?.body || parsedMessage.body || '';
+  if (textBody) return textBody;
+
+  const btnTitle = parsedMessage.interactive?.button_reply?.title;
+  if (btnTitle) return btnTitle;
+
+  const listTitle = parsedMessage.interactive?.list_reply?.title;
+  if (listTitle) return listTitle;
+
+  const nfm = parsedMessage.interactive?.nfm_reply;
+  if (nfm) {
+    if (nfm.body) return nfm.body;
+    try {
+      const payload = typeof nfm.response_json === 'string'
+        ? JSON.parse(nfm.response_json)
+        : nfm.response_json;
+      if (payload && typeof payload === 'object') {
+        const values = Object.values(payload).filter((v) => typeof v === 'string' && v.trim());
+        if (values.length) return values.join(' · ');
+      }
+    } catch (_) { /* ignore malformed flow JSON */ }
+    return nfm.name ? `Form response (${nfm.name})` : 'Form response';
+  }
+
+  const legacyBtn = parsedMessage.button?.text || parsedMessage.button?.payload;
+  if (legacyBtn) return legacyBtn;
+
+  const caption =
     parsedMessage.caption ||
-    (parsedMessage.type === 'image' ? '[Image]' : '') ||
-    (parsedMessage.type === 'audio' || parsedMessage.type === 'voice' ? '[Voice Note]' : '') ||
-    (parsedMessage.type === 'video' ? '[Video]' : '') ||
-    (parsedMessage.type === 'document' ? '[Document]' : '') ||
-    (parsedMessage.type === 'sticker' ? '[Sticker]' : '') ||
-    ''
-  );
+    parsedMessage.image?.caption ||
+    parsedMessage.video?.caption ||
+    parsedMessage.document?.caption;
+  if (caption) return caption;
+
+  if (parsedMessage.voiceTranscript) return parsedMessage.voiceTranscript;
+
+  const reaction = parsedMessage.reaction;
+  if (reaction?.emoji) {
+    return reaction.emoji;
+  }
+
+  const loc = parsedMessage.location;
+  if (loc) {
+    const label = loc.name || loc.address || '';
+    const coords =
+      loc.latitude != null && loc.longitude != null
+        ? `${loc.latitude}, ${loc.longitude}`
+        : '';
+    const parts = [label, coords].filter(Boolean);
+    return parts.length ? `Location: ${parts.join(' · ')}` : 'Shared location';
+  }
+
+  const contacts = parsedMessage.contacts;
+  if (Array.isArray(contacts) && contacts.length) {
+    const names = contacts
+      .map((c) => c.name?.formatted_name || c.name?.first_name)
+      .filter(Boolean);
+    return names.length ? `Contact: ${names.join(', ')}` : 'Shared contact';
+  }
+
+  const order = parsedMessage.order;
+  if (order) {
+    const count = order.product_items?.length || 0;
+    return count ? `Catalog order (${count} item${count === 1 ? '' : 's'})` : 'Catalog order';
+  }
+
+  if (type === 'document' && parsedMessage.document?.filename) {
+    return parsedMessage.document.filename;
+  }
+
+  const typeLabels = {
+    image: 'Photo',
+    audio: 'Voice message',
+    voice: 'Voice message',
+    video: 'Video',
+    document: 'Document',
+    sticker: 'Sticker',
+    unsupported: 'Unsupported message',
+    location: 'Shared location',
+    contacts: 'Shared contact',
+    reaction: 'Reaction',
+    order: 'Catalog order',
+  };
+  if (typeLabels[type]) return typeLabels[type];
+
+  return 'Unsupported message';
 }
 
 function emitLiveChatInboundEvents(io, clientId, conversationId, savedMessage, convoLean) {

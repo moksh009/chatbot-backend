@@ -21,13 +21,15 @@ if (redisConnection) {
 async function queueDocumentEmbedding(documentId, clientId) {
   if (!documentId) return;
 
-  if (!embeddingQueue) {
-    setImmediate(() => {
-      const { processDocumentEmbedding } = require('../utils/core/ragEngine');
-      processDocumentEmbedding(documentId).catch((e) =>
-        log.error(`Inline embedding failed for ${documentId}:`, e.message)
-      );
-    });
+  const runInline = !embeddingQueue || process.env.RUN_WORKERS !== 'true';
+
+  if (runInline) {
+    const { processDocumentEmbedding } = require('../utils/core/ragEngine');
+    try {
+      await processDocumentEmbedding(documentId);
+    } catch (e) {
+      log.error(`Inline embedding failed for ${documentId}:`, e.message);
+    }
     return;
   }
 

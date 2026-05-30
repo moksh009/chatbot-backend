@@ -47,6 +47,8 @@ async function createMessage(data) {
     translatedContent: data.translatedContent || '',
     detectedLanguage: data.detectedLanguage || 'en',
     originalText: data.originalText || '',
+    voiceTranscript: data.voiceTranscript || '',
+    originalType: data.originalType || undefined,
     trainingContext: data.trainingContext || undefined,
   };
 
