@@ -1272,7 +1272,13 @@ async function runDualBrainEngine(parsedMessage, client) {
             break;
           case 'add_tag':
             if (action.tag) {
-              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: action.tag } });
+              const { normalizeLeadTagForAdd, applyNeedHelpTag } = require('./needHelpTag');
+              const normalized = normalizeLeadTagForAdd(action.tag);
+              if (normalized === 'Need help') {
+                await applyNeedHelpTag(client.clientId, phone);
+              } else if (normalized) {
+                await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: normalized } });
+              }
               await emitLeadTags();
             }
             break;
@@ -1790,6 +1796,8 @@ async function runDualBrainEngine(parsedMessage, client) {
           { phoneNumber: phone, clientId: client.clientId },
           { $set: { pendingSupport: true } }
         );
+        const { applyNeedHelpTag } = require('./needHelpTag');
+        await applyNeedHelpTag(client.clientId, phone);
       } catch (err) {}
   }
 
@@ -1919,6 +1927,10 @@ async function runDualBrainEngine(parsedMessage, client) {
           captureResumeNodeId: null
         }
       });
+      try {
+        const { applyNeedHelpTag } = require('./needHelpTag');
+        await applyNeedHelpTag(client.clientId, phone);
+      } catch (_) { /* non-fatal */ }
       if (io) {
         io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'User requested human agent mid-flow', priority: 'high' });
         Conversation.findById(convo._id).then((fresh) => {
@@ -3536,8 +3548,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (node.type === 'tag_lead' || node.type === 'TagNode') {
     const { action, tag } = node.data || {}; // action: 'add' or 'remove'
     if (tag && lead) {
-       const update = action === 'remove' ? { $pull: { tags: tag } } : { $addToSet: { tags: tag } };
-       await AdLead.findByIdAndUpdate(lead._id, update);
+       const { normalizeLeadTagForAdd, applyNeedHelpTag, NEED_HELP_TAG } = require('./needHelpTag');
+       const normalized = normalizeLeadTagForAdd(tag) || tag;
+       if (action === 'remove') {
+         const pullTags = normalized === NEED_HELP_TAG
+           ? [NEED_HELP_TAG, 'Human', 'human', 'pending-human']
+           : [tag, normalized];
+         await AdLead.findByIdAndUpdate(lead._id, { $pull: { tags: { $in: pullTags } } });
+       } else if (normalized === NEED_HELP_TAG) {
+         await applyNeedHelpTag(client.clientId, phone);
+       } else {
+         await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: normalized } });
+       }
        log.info(`TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
     }
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
@@ -4258,6 +4280,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       attentionReason: '🙋 Human support requested via flow',
       lastInteraction: new Date()
     });
+    try {
+      const { applyNeedHelpTag } = require('./needHelpTag');
+      await applyNeedHelpTag(client.clientId, phone);
+    } catch (_) { /* non-fatal */ }
     // Emit real-time socket alert so agents see the handoff instantly
     if (io) {
       io.to(`client_${client.clientId}`).emit('admin_alert', {

@@ -228,16 +228,10 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     };
     const lead = conv.phone ? leadBySuffix.get(phoneSuffixKey(conv.phone)) : null;
     if (lead) {
-      let derivedIntent = 'Browsing';
-      if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
-      else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
-      else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
-      else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
       return {
         ...base,
         leadScore: lead.leadScore,
         scoreLabel: lead.scoreLabel,
-        derivedLeadState: derivedIntent,
         leadTags: lead.tags,
       };
     }

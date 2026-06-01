@@ -43,10 +43,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       
       try {
         const AdLead = require("../../models/AdLead");
+        const { applyNeedHelpTag } = require('../commerce/needHelpTag');
         await AdLead.findOneAndUpdate(
           { phoneNumber: phone, clientId: client.clientId },
           { $set: { pendingSupport: true } }
         );
+        await applyNeedHelpTag(client.clientId, phone);
       } catch (err) { console.error("[NodeActions] ESCALATE_HUMAN AdLead update error:", err.message); }
       
       if (io) {
