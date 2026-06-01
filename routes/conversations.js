@@ -1845,6 +1845,174 @@ router.post('/:id/summarize', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/conversations/:id/send-product
+// @desc    Send a WhatsApp interactive product card (cta_url) from cached Shopify data
+// @access  Private
+router.post('/:id/send-product', protect, async (req, res) => {
+  const { shopifyProductId, bodyText, skipImage, productSnapshot } = req.body || {};
+
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query)
+      .select('clientId phone')
+      .lean();
+    if (!conversation) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
+    const targetClientId =
+      req.user.role === 'SUPER_ADMIN'
+        ? req.body.clientId || conversation.clientId
+        : conversation.clientId;
+
+    if (!shopifyProductId) {
+      return res.status(400).json({ message: 'shopifyProductId is required' });
+    }
+
+    const trimmedBody = String(bodyText || '').trim();
+    if (!trimmedBody) {
+      return res.status(400).json({ message: 'Message body is required' });
+    }
+
+    const { resolveCachedShopifyProduct, resolveProductSnapshot } = require('../utils/commerce/resolveCachedShopifyProduct');
+    let product = await resolveCachedShopifyProduct(targetClientId, shopifyProductId);
+    if (!product && productSnapshot) {
+      product = resolveProductSnapshot(productSnapshot, shopifyProductId);
+    }
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found in your synced catalog' });
+    }
+
+    if (!product.title) {
+      return res.status(400).json({ message: 'Product is missing a title and cannot be sent' });
+    }
+
+    if (!product.productUrl) {
+      return res.status(400).json({
+        message: 'Product storefront URL is missing. Re-sync Shopify products and try again.',
+      });
+    }
+
+    const imageUrl = String(product.imageUrl || '').trim();
+    const omitImage = skipImage === true || skipImage === 'true';
+    if (!imageUrl && !omitImage) {
+      return res.status(400).json({
+        code: 'missing_image',
+        message: 'Product image URL is unavailable',
+      });
+    }
+
+    const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
+    const client = await getCachedClientForWhatsAppSend(conversation.clientId);
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
+    }
+
+    const interactive = {
+      type: 'cta_url',
+      action: {
+        name: 'cta_url',
+        parameters: {
+          display_text: 'View Product',
+          url: product.productUrl,
+        },
+      },
+    };
+
+    if (imageUrl && !omitImage) {
+      interactive.header = { type: 'image', image: { link: imageUrl } };
+    }
+
+    const { dispatchAgentEnvelope } = require('../utils/messaging/botEnvelopeDispatch');
+    const agentMessageId = `agent_product_${req.user._id}_${Date.now()}`;
+
+    let env;
+    try {
+      env = await dispatchAgentEnvelope({
+        client,
+        phone: conversation.phone,
+        payload: { interactive, text: trimmedBody.substring(0, 1024) },
+        userId: String(req.user._id),
+        conversationId: conversation._id,
+        messageId: agentMessageId,
+      });
+    } catch (sendErr) {
+      console.error('[send-product] WhatsApp dispatch error:', sendErr?.response?.data || sendErr.message);
+      return res.status(502).json({
+        message: 'Could not send product — check your WhatsApp connection and try again.',
+      });
+    }
+
+    if (env?.blocked && env.windowClosed) {
+      return res.status(400).json({
+        success: false,
+        code: 'window_closed',
+        message:
+          'This customer is outside the 24-hour WhatsApp service window. Send an approved Meta template to reach them.',
+        blockedBy: 'service_window',
+      });
+    }
+
+    if (env?.handled && !env.sent && !env.duplicate) {
+      return res.status(400).json({
+        message: env.reason || 'Could not send product — check your WhatsApp connection and try again.',
+      });
+    }
+
+    const { createMessage } = require('../utils/core/createMessage');
+    const wamid = env?.messageId || env?.result?.messageId || null;
+
+    const newMessage = await createMessage({
+      clientId: conversation.clientId,
+      conversationId: conversation._id,
+      phone: conversation.phone,
+      direction: 'outgoing',
+      type: 'interactive',
+      body: trimmedBody,
+      agentId: req.user._id,
+      messageId: wamid || agentMessageId,
+      metadata: {
+        interactive,
+        productCard: {
+          title: product.title,
+          imageUrl: omitImage ? '' : imageUrl,
+          url: product.productUrl,
+          ctaLabel: 'View Product',
+          shopifyProductId: product.shopifyProductId,
+        },
+      },
+    });
+
+    const now = new Date();
+    const convPatch = {
+      lastMessage: trimmedBody.substring(0, 100),
+      lastMessageAt: now,
+      requiresAttention: false,
+      attentionReason: '',
+    };
+    await Conversation.updateOne({ _id: conversation._id }, { $set: convPatch });
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', {
+        _id: conversation._id,
+        ...convPatch,
+      });
+    }
+
+    res.json(newMessage);
+  } catch (error) {
+    console.error('[send-product]', error?.response?.data || error.message);
+    res.status(500).json({
+      message: error.message || 'Could not send product — check your WhatsApp connection and try again.',
+    });
+  }
+});
+
 // @route   POST /api/conversations/:id/send-template
 // @desc    Send a Meta WhatsApp Template to a lead
 // @access  Private
