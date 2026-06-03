@@ -314,6 +314,41 @@ router.delete('/disconnect', protect, async (req, res) => {
   return res.json({ success: true, message: 'WhatsApp disconnected.' });
 });
 
+// ─── GET /config ─────────────────────────────────────────────────────────────
+// Runtime Embedded Signup flags for dashboard (avoids stale/missing Vite build env).
+
+router.get('/config', protect, (req, res) => {
+  const configId =
+    process.env.META_ES_CONFIG_ID ||
+    process.env.VITE_META_ES_CONFIG_ID ||
+    '';
+  const appId = process.env.META_APP_ID || '';
+  const enabled = String(process.env.META_EMBEDDED_SIGNUP_ENABLED || 'true').toLowerCase() !== 'false';
+  const frontendUrl = (process.env.FRONTEND_URL || 'https://dash.topedgeai.com').replace(/\/$/, '');
+  let dashboardHost = 'dash.topedgeai.com';
+  try {
+    dashboardHost = new URL(frontendUrl).hostname || dashboardHost;
+  } catch (_) {
+    /* keep default */
+  }
+
+  return res.json({
+    success: true,
+    enabled,
+    configId: configId || null,
+    appId: appId || null,
+    configured: enabled && !!configId && !!appId,
+    dashboardHost,
+    metaDeveloperUrls: appId
+      ? {
+          app: `https://developers.facebook.com/apps/${appId}/`,
+          fbLoginSettings: `https://developers.facebook.com/apps/${appId}/fb-login/settings/`,
+        }
+      : null,
+    jssdkSetupRequired: true,
+  });
+});
+
 // ─── GET /status ─────────────────────────────────────────────────────────────
 
 router.get('/status', protect, async (req, res) => {
