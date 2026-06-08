@@ -108,17 +108,17 @@ test('Task 1 — verifyRazorpaySignature validates HMAC', () => {
   assert.equal(verifyRazorpaySignature(req, 'bad_secret'), false);
 });
 
-test('Task 4 — system cart rules default to 45m / 8h / 36h with cart variable mappings', () => {
-  assert.equal(CART_FOLLOWUP_DEFAULT_MINUTES.followup_1, 45);
-  assert.equal(CART_FOLLOWUP_DEFAULT_MINUTES.followup_2, 8 * 60);
+test('Task 4 — system cart rules default to 25m / 4h / 36h (WS-3) with cart variable mappings', () => {
+  assert.equal(CART_FOLLOWUP_DEFAULT_MINUTES.followup_1, 25);
+  assert.equal(CART_FOLLOWUP_DEFAULT_MINUTES.followup_2, 4 * 60);
   assert.equal(CART_FOLLOWUP_DEFAULT_MINUTES.followup_3, 36 * 60);
 
   const presets = buildSystemAutomations();
   const f1 = presets.find((r) => r.id === 'sys_cart_followup_1');
   const f2 = presets.find((r) => r.id === 'sys_cart_followup_2');
   const f3 = presets.find((r) => r.id === 'sys_cart_followup_3');
-  assert.equal(f1.delayMinutes, 45);
-  assert.equal(f2.delayMinutes, 480);
+  assert.equal(f1.delayMinutes, 25);
+  assert.equal(f2.delayMinutes, 240);
   assert.equal(f3.delayMinutes, 2160);
   assert.deepEqual(f1.variableMappings.body, { 1: 'first_name', 2: 'product_name', 3: 'cart_total' });
   assert.deepEqual(f2.variableMappings.body, { 1: 'first_name', 2: 'product_name' });
@@ -131,7 +131,7 @@ test('Task 2 Step 5 — mergeSystemAutomations backfills empty cart mappings', (
       id: 'sys_cart_followup_1',
       templateName: 'cart_recovery_1',
       variableMappings: { body: {} },
-      delayMinutes: 45,
+      delayMinutes: 25,
     },
   ]);
   const rule = merged.find((r) => r.id === 'sys_cart_followup_1');

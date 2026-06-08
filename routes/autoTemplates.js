@@ -801,6 +801,133 @@ router.get('/readiness', protect, async (req, res) => {
   }
 });
 
+// ─── POST /api/auto-templates/library/starter-pack ────────────────────────
+// One-call Shopify starter pack: 3 cart_recovery + 5 eco_ standard templates.
+// Optional `headerHandle` (resumable upload handle) is reused across all eco_*
+// IMAGE-header templates so the merchant only uploads one banner.
+router.post('/library/starter-pack', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const { headerHandle = null } = req.body || {};
+
+    const { createCartRecoveryTemplateDrafts } = require('../utils/onboarding/createCartRecoveryTemplateDrafts');
+    const { CART_RECOVERY_META_NAMES } = require('../constants/cartRecoveryTemplates');
+    const { submitWorkspaceTemplateToMeta } = require('../utils/meta/submitWorkspaceTemplateToMeta');
+    const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
+    const { pushStandardTemplateToMeta } = require('../services/templateAdminOps');
+
+    const client = await Client.findOne({ clientId })
+      .select('clientId businessName wabaId whatsapp whatsappToken syncedMetaTemplates templateBrandOverrides')
+      .lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+    const submitted = [];
+    const skipped = [];
+    const errors = [];
+
+    // ── Cart recovery (3 templates) ─────────────────────────────────────────
+    const draftResult = await createCartRecoveryTemplateDrafts(clientId);
+    for (const templateName of CART_RECOVERY_META_NAMES) {
+      const approved = synced.find(
+        (t) => t.name === templateName && String(t.status || '').toUpperCase() === 'APPROVED'
+      );
+      if (approved) {
+        skipped.push({ templateName, reason: 'already_approved' });
+        continue;
+      }
+
+      const pending = await MetaTemplate.findOne({
+        clientId,
+        name: templateName,
+        submissionStatus: { $in: ['pending_meta_review', 'queued', 'submitting'] },
+      }).lean();
+      if (pending) {
+        skipped.push({ templateName, reason: 'pending_review' });
+        continue;
+      }
+
+      const out = await submitWorkspaceTemplateToMeta({
+        clientId,
+        templateName,
+        userId: req.user?.id || req.user?._id,
+      });
+
+      if (out.success) submitted.push(templateName);
+      else if (out.duplicate) skipped.push({ templateName, reason: 'duplicate_on_meta' });
+      else errors.push({ templateName, reason: out.message });
+    }
+
+    // ── Standard eco_* (5 templates, IMAGE header) ──────────────────────────
+    for (const baseTpl of STANDARD_TEMPLATES) {
+      const templateName = baseTpl.name;
+      const approved = synced.find(
+        (t) => t.name === templateName && String(t.status || '').toUpperCase() === 'APPROVED'
+      );
+      if (approved) {
+        skipped.push({ templateName, reason: 'already_approved' });
+        continue;
+      }
+      const pending = synced.find(
+        (t) =>
+          t.name === templateName &&
+          ['PENDING', 'IN_REVIEW', 'PENDING_META_REVIEW'].includes(String(t.status || '').toUpperCase())
+      );
+      if (pending) {
+        skipped.push({ templateName, reason: 'pending_review' });
+        continue;
+      }
+
+      // Clone + apply caller's headerHandle (one banner reused for all eco IMAGE headers)
+      const tpl = JSON.parse(JSON.stringify(baseTpl));
+      if (headerHandle) {
+        const headerComp = (tpl.components || []).find(
+          (c) => c.type === 'HEADER' && c.format === 'IMAGE'
+        );
+        if (headerComp) {
+          headerComp.example = { header_handle: [headerHandle] };
+        }
+      }
+
+      const result = await pushStandardTemplateToMeta(client, tpl, tpl.id);
+      if (result.ok) {
+        submitted.push(templateName);
+      } else if (result.reason === 'slot_disabled') {
+        skipped.push({ templateName, reason: 'slot_disabled' });
+      } else {
+        const detail = result.details?.error?.message || result.reason || 'meta_error';
+        errors.push({ templateName, reason: detail });
+      }
+    }
+
+    const message =
+      submitted.length > 0
+        ? `Submitted ${submitted.length} template(s) to Meta for review.`
+        : errors.length
+          ? 'Some templates could not be submitted — see errors below.'
+          : 'Starter pack already submitted or approved.';
+
+    res.json({
+      success: true,
+      message,
+      draftResult,
+      submitted,
+      skipped,
+      errors,
+      counts: {
+        submitted: submitted.length,
+        skipped: skipped.length,
+        errors: errors.length,
+        total: CART_RECOVERY_META_NAMES.length + STANDARD_TEMPLATES.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── POST /api/auto-templates/library/cart-recovery-batch ─────────────────
 router.post('/library/cart-recovery-batch', protect, async (req, res) => {
   try {

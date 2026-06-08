@@ -7,7 +7,7 @@ const { isTrialWindowActive, hasPaidEntitlements } = require('../core/accessFlag
 const GOAL_WIZARD_KEYS = {
   abandoned_cart: {
     enableAbandonedCart: true,
-    cartNudgeMinutes1: 45,
+    cartNudgeMinutes1: 25,
     cartNudgeHours2: 8,
     cartNudgeHours3: 36,
   },

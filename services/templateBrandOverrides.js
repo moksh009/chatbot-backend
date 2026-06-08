@@ -197,11 +197,56 @@ function mergeSendOverrides({ templatePayload, slotId, client }) {
   return merged;
 }
 
-function resolveHeaderImageUrl(context, template, client, slotId) {
+/** Resolve a header IMAGE URL for templates that declare a HEADER:IMAGE.
+ *  WS-2 C3: previously the production sender only checked
+ *  `first_product_image`/`brand_logo_url` on the context, neither of which
+ *  is populated by `orderStatusAutomationHandler.buildContextOrder`. That
+ *  made every eco_* template (which all require an image header) fail at
+ *  Meta with a missing-header error while the test-send button worked.
+ *
+ *  Fallback chain (first non-empty wins):
+ *    1. Per-slot brand override
+ *    2. Template payload override
+ *    3. context.first_product_image  → context.brand_logo_url
+ *    4. first item image from context/payload
+ *    5. client.brand.logoUrl / businessLogo
+ *    6. nicheData.brandLogoUrl / brandLogo / businessLogo
+ *    7. nicheData.bannerImageUrl
+ *    8. null — caller's `buildMetaTemplateComponents` will omit the
+ *       header, which Meta will then reject if it is required — surfaced
+ *       to merchant as `template_send_failed` (preferable to silent gaps).
+ */
+function resolveHeaderImageUrl(context = {}, template, client, slotId) {
   const ov = getOverrideForSlot(client, slotId);
   if (ov?.headerImageUrl) return ov.headerImageUrl;
   if (template?._headerImageOverride) return template._headerImageOverride;
-  return context.first_product_image || context.brand_logo_url || null;
+
+  if (context.first_product_image) return context.first_product_image;
+  if (context.brand_logo_url) return context.brand_logo_url;
+
+  const items =
+    context?.order?.line_items ||
+    context?.lead?.cartSnapshot?.items ||
+    context?.cartItems ||
+    [];
+  const itemImage = Array.isArray(items) && items[0]
+    ? items[0].image || items[0].image_url || items[0].imageUrl || null
+    : null;
+  if (itemImage && /^https?:\/\//i.test(itemImage)) return itemImage;
+
+  const brandLogo =
+    client?.brand?.logoUrl ||
+    client?.brand?.businessLogo ||
+    client?.businessLogo ||
+    client?.brandLogo ||
+    client?.nicheData?.brandLogoUrl ||
+    client?.nicheData?.brandLogo ||
+    client?.nicheData?.businessLogo ||
+    client?.nicheData?.bannerImageUrl ||
+    null;
+  if (brandLogo && /^https?:\/\//i.test(brandLogo)) return brandLogo;
+
+  return null;
 }
 
 module.exports = {

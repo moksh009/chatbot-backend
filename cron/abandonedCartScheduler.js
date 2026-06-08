@@ -56,9 +56,13 @@ function cartAbandonTimeFilter(now, delayMinutes, maxAgeHours = 168) {
   };
 }
 
+/** WS-3 defaults (June 2026): msg #1 within 30 minutes of abandon (V1 plan
+ *  golden test). 25 min + up to 5 min cron jitter = max ~30 min on-phone.
+ *  Min allowed is still 15 min (`CART_FOLLOWUP_MIN_MINUTES.followup_1`).
+ *  Msg #2 at 4h, msg #3 at 36h gives the classic Indian D2C cadence. */
 const CART_NUDGE_DEFAULTS = {
-  minutes1: 45,
-  hours2: 8,
+  minutes1: 25,
+  hours2: 4,
   hours3: 36,
 };
 
@@ -114,7 +118,15 @@ async function shouldSkipLead(lead) {
     return false;
 }
 
-// Universal Rich Nudge Helper
+/** Universal Rich Nudge Helper.
+ *  WS-3 hardening: returns a structured outcome so the caller can decide
+ *  whether to advance `recoveryStep` + Redis dedup.
+ *  Returns one of:
+ *    - { sent: true, channel: 'whatsapp'|'email'|'free-form' }
+ *    - { sent: false, reason: 'rate_limit'|'consent'|'no_channel'|'failed', detail }
+ *  The previous return-undefined behaviour caused the cron to advance steps
+ *  on every call (even rate-limited or skipped sends), so chained step 2/3
+ *  never retried on failure. */
 async function sendRichNudge(client, lead, text, options = {}) {
     try {
         const { includeImage, buttons = [], templateName, stepNum = 1 } = options;
@@ -145,6 +157,8 @@ async function sendRichNudge(client, lead, text, options = {}) {
           );
 
         let successfullySent = false;
+        let lastSkipReason = 'no_channel';
+        let lastSkipDetail = null;
 
         // Email-only checkout (B9): no real phone but has email
         if (!hasRealPhone(phone) && lead.email) {
@@ -165,6 +179,9 @@ async function sendRichNudge(client, lead, text, options = {}) {
             if (!emailOut.useLegacy && emailOut.action === 'sent') {
                 await recordNudge(lead, `[Email: abandoned cart recovery]`, 'email');
                 successfullySent = true;
+            } else {
+                lastSkipReason = emailOut.action || 'failed';
+                lastSkipDetail = emailOut.reason || emailOut.errorCode || null;
             }
         }
 
@@ -195,7 +212,12 @@ async function sendRichNudge(client, lead, text, options = {}) {
                 if (outcome === 'sent' || outcome === 'duplicate') {
                     await recordNudge(lead, `[Template: ${templateName}]`, 'template');
                     successfullySent = outcome === 'sent';
+                } else {
+                    lastSkipReason = templateOut.action || outcome || 'failed';
+                    lastSkipDetail = templateOut.reason || templateOut.errorCode || null;
                 }
+            } else {
+                lastSkipReason = 'envelope_unavailable';
             }
         }
         if (!successfullySent && hasRealPhone(phone)) {
@@ -233,9 +255,12 @@ async function sendRichNudge(client, lead, text, options = {}) {
             if (!freeOut.useLegacy && (freeOut.action === 'sent' || freeOut.action === 'duplicate')) {
                 await recordNudge(lead, text, activeButtons.length ? 'interactive' : 'text');
                 successfullySent = freeOut.action === 'sent';
+            } else {
+                lastSkipReason = freeOut.action || 'failed';
+                lastSkipDetail = freeOut.reason || freeOut.errorCode || null;
             }
         }
-        
+
         if (successfullySent && hasRealPhone(phone)) {
             try {
                 const { recordWhatsappTemplateSent } = require('../utils/commerce/cartRecoveryAttemptService');
@@ -249,9 +274,15 @@ async function sendRichNudge(client, lead, text, options = {}) {
                 log.warn(`[CartRecovery] Failed to record WA send for ${phone}: ${craErr.message}`);
             }
         }
+
+        if (successfullySent) {
+            return { sent: true, channel: hasRealPhone(phone) ? 'whatsapp' : 'email' };
+        }
+        return { sent: false, reason: lastSkipReason, detail: lastSkipDetail };
     } catch (err) {
         const errorMsg = err.friendlyMessage || err.message;
         log.error(`Nudge failed for ${lead.phoneNumber}: ${errorMsg}`);
+        return { sent: false, reason: 'exception', detail: errorMsg };
     }
 }
 
@@ -342,21 +373,30 @@ async function runAbandonedCartTick() {
                 if (!cartRuleActive('followup_1')) {
                     log.debug(`[AbandonedCart] ${client.clientId} followup_1 paused — skip step 1`);
                 } else {
+                /** WS-3 fix: two top-level `$or` keys silently collided —
+                 *  the second overwrote the first, dropping the
+                 *  phone/email contact filter. Merge under `$and`. */
                 const batch1 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
                     cartStatus: 'abandoned',
-                    $or: [
-                      { phoneNumber: { $exists: true, $not: /^unknown_/ } },
-                      { email: { $exists: true, $nin: [null, ''] }, phoneNumber: /^unknown_/ },
-                    ],
                     recoveryStep: { $in: [null, 0] },
-                    $or: [
-                      { cartAbandonedAt: cartAbandonTimeFilter(now, delay1Min) },
+                    $and: [
                       {
-                        cartAbandonedAt: { $exists: false },
-                        lastCartEventAt: cartAbandonTimeFilter(now, delay1Min),
+                        $or: [
+                          { phoneNumber: { $exists: true, $not: /^unknown_/ } },
+                          { email: { $exists: true, $nin: [null, ''] }, phoneNumber: /^unknown_/ },
+                        ],
+                      },
+                      {
+                        $or: [
+                          { cartAbandonedAt: cartAbandonTimeFilter(now, delay1Min) },
+                          {
+                            cartAbandonedAt: { $exists: false },
+                            lastCartEventAt: cartAbandonTimeFilter(now, delay1Min),
+                          },
+                        ],
                       },
                     ],
                 }).limit(50);
@@ -367,17 +407,25 @@ async function runAbandonedCartTick() {
                     if (!hasRealPhone(lead.phoneNumber) && !lead.email) continue;
                     if (await wasCartRecoverySentRecently(client.clientId, dedupePhone, 1)) continue;
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
-                    
-                    await sendRichNudge(client, lead, msg, {
+
+                    /** WS-3 hardening: only advance `recoveryStep` when the send
+                     *  actually succeeded. Failed/skipped/rate-limited sends stay
+                     *  on step 0 so the next 5-min tick retries cleanly. */
+                    const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 1,
                         templateName: tplForSlot('followup_1', niche.abandonedTpl15m),
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
 
+                    if (!outcome?.sent) {
+                        log.warn(`[CartRecovery] step 1 skipped for ${client.clientId}/${String(dedupePhone).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        continue;
+                    }
+
                     await markCartRecoverySent(client.clientId, dedupePhone, 1);
-                    await AdLead.findByIdAndUpdate(lead._id, { 
-                        recoveryStep: 1, 
+                    await AdLead.findByIdAndUpdate(lead._id, {
+                        recoveryStep: 1,
                         recoveryStartedAt: new Date(),
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_1', timestamp: new Date() } }
                     });
@@ -385,7 +433,9 @@ async function runAbandonedCartTick() {
                 }
                 }
 
-                // --- Step 2: Second Nudge (from cart abandon time, not chained) ---
+                /** WS-3: step 2 must be CHAINED after step 1 — a merchant who
+                 *  only enabled rule #2 should not start sending mid-ladder.
+                 *  Require `recoveryStep === 1` so the cadence stays 1 → 2 → 3. */
                 if (!cartRuleActive('followup_2')) {
                     log.debug(`[AbandonedCart] ${client.clientId} followup_2 paused — skip step 2`);
                 } else {
@@ -394,7 +444,7 @@ async function runAbandonedCartTick() {
                     ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
                     cartStatus: 'abandoned',
-                    recoveryStep: { $in: [null, 0, 1] },
+                    recoveryStep: 1,
                     $or: [
                       { cartAbandonedAt: cartAbandonTimeFilter(now, delay2Min) },
                       {
@@ -408,17 +458,22 @@ async function runAbandonedCartTick() {
                     if (skipSet.has(lead.phoneNumber)) continue;
                     if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 2)) continue;
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
-                    
-                    await sendRichNudge(client, lead, msg, {
+
+                    const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 2,
                         templateName: tplForSlot('followup_2', niche.abandonedTpl2h),
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
+                    if (!outcome?.sent) {
+                        log.warn(`[CartRecovery] step 2 skipped for ${client.clientId}/${String(lead.phoneNumber).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        continue;
+                    }
+
                     await markCartRecoverySent(client.clientId, lead.phoneNumber, 2);
-                    await AdLead.findByIdAndUpdate(lead._id, { 
-                        recoveryStep: Math.max(lead.recoveryStep || 0, 2), 
+                    await AdLead.findByIdAndUpdate(lead._id, {
+                        recoveryStep: Math.max(lead.recoveryStep || 0, 2),
                         recoveryStartedAt: lead.recoveryStartedAt || new Date(),
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_2', timestamp: new Date() } }
                     });
@@ -426,7 +481,7 @@ async function runAbandonedCartTick() {
                 }
                 }
 
-                // --- Step 3: Final Nudge (from cart abandon time) ---
+                /** WS-3: step 3 must be CHAINED after step 2 (recoveryStep === 2). */
                 if (!cartRuleActive('followup_3')) {
                     log.debug(`[AbandonedCart] ${client.clientId} followup_3 paused — skip step 3`);
                 } else {
@@ -435,7 +490,7 @@ async function runAbandonedCartTick() {
                     ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
                     cartStatus: 'abandoned',
-                    recoveryStep: { $in: [null, 0, 1, 2] },
+                    recoveryStep: 2,
                     $or: [
                       { cartAbandonedAt: cartAbandonTimeFilter(now, delay3Min) },
                       {
@@ -474,17 +529,22 @@ async function runAbandonedCartTick() {
                         templateName = flowConfig.noDiscountTemplate || templateName;
                     }
 
-                    await sendRichNudge(client, lead, msg, {
+                    const outcome3 = await sendRichNudge(client, lead, msg, {
                         stepNum: 3,
                         templateName: templateName,
                         includeImage: niche.abandonedIncludeImage3 || !!templateName,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 
+                    if (!outcome3?.sent) {
+                        log.warn(`[CartRecovery] step 3 skipped for ${client.clientId}/${String(lead.phoneNumber).slice(-4)} — ${outcome3?.reason || 'unknown'} ${outcome3?.detail || ''}`);
+                        continue;
+                    }
+
                     await markCartRecoverySent(client.clientId, lead.phoneNumber, 3);
-                    await AdLead.findByIdAndUpdate(lead._id, { 
+                    await AdLead.findByIdAndUpdate(lead._id, {
                         recoveryStep: 3,
-                        activeDiscountCode: discountCode, // Store for AI to reference in Smart Recovery
+                        activeDiscountCode: discountCode,
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_3_discount', timestamp: new Date() } }
                     });
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });

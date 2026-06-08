@@ -23,8 +23,6 @@ const {
   mergeSendOverrides,
   resolveHeaderImageUrl,
 } = require("./templateBrandOverrides");
-const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
-
 const CART_RECOVERY_SLOT_IDS = new Set([
   "eco_abandoned_cart",
   "wizard_cart_1",
@@ -636,42 +634,14 @@ async function sendForAutomation({
   trigger = null,
   variableMappings = null,
 }) {
-  if (phone) {
-    const envelopeResult = await sendEnvelope({
-      clientId,
-      channel: 'whatsapp',
-      intent: contextType === 'abandoned_cart' ? 'marketing' : 'utility',
-      contact: { phone },
-      payload: {
-        templateName: metaName || slotId || '',
-        templateLanguage: 'en',
-        components: contextData?._metaComponents || [],
-      },
-      context: {
-        source: 'services/templateSender.sendForAutomation',
-        flowId: contextData?.flowId,
-        sequenceId: contextData?.sequenceId,
-        campaignId: contextData?.campaignId,
-      },
-      options: {
-        force: contextData?.force === true,
-      },
-    });
-    if (envelopeResult.status === 'sent') {
-      return {
-        whatsapp: { sent: true, messageId: envelopeResult.messageId, mode: 'envelope' },
-        slotId,
-        metaName,
-        failureCode: SEND_FAILURE_CODES.SENT,
-      };
-    }
-    return {
-      whatsapp: { sent: false, reason: envelopeResult.reason || envelopeResult.blockedBy || envelopeResult.status },
-      slotId,
-      metaName,
-      failureCode: SEND_FAILURE_CODES.SKIPPED,
-    };
-  }
+  // NOTE (WS-2 fix, June 2026): the previous `sendEnvelope` short-circuit was
+  // passing empty `components: []` to Meta, which silently rejected every
+  // template that had body variables (i.e. all order + cart templates).
+  // We now always run the full resolution path below — it builds components
+  // from `variableMappings + flatContext` via `buildMetaTemplateComponents`
+  // and calls `WhatsApp.sendTemplate` directly. Consent / idempotency /
+  // rate-limit checks should be re-introduced as a pre-step (not a short
+  // circuit) once they can accept the resolved components payload.
 
   const isCartRecovery = isCartRecoveryAutomation({ slotId, contextType, trigger });
   const resolvedEmail = resolveAutomationEmail(email, contextData);

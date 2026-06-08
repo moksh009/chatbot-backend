@@ -15,9 +15,12 @@ const {
   recoveryStatusFromAttempt,
 } = require('./cartRecoveryAttemptService');
 
+/** WS-3 defaults — keep aligned with
+ *  `cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS` so the merchant-facing
+ *  cart workspace shows the same cadence the scheduler actually uses. */
 const CART_NUDGE_DEFAULTS = {
-  minutes1: 45,
-  hours2: 8,
+  minutes1: 25,
+  hours2: 4,
   hours3: 36,
 };
 

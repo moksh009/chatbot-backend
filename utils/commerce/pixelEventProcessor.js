@@ -51,24 +51,34 @@ async function upsertLeadFromCommerce(client, clientId, {
   if (!query) return null;
 
   const now = new Date();
+
+  /** WS-3 C3: skip pixel-driven abandon updates for already-purchased
+   *  leads (mirrors the webhook upsert guard in upsertAbandonedCartLead). */
+  const existing = await AdLead.findOne(query)
+    .select('cartStatus isOrderPlaced')
+    .lean();
+  const alreadyPurchased =
+    existing && (existing.cartStatus === 'purchased' || existing.isOrderPlaced === true);
+  if (alreadyPurchased && cartStatus !== 'purchased') {
+    log.info(`[Pixel] Skip abandon upsert for purchased lead ${clientId}/${phone || email}`);
+    return existing;
+  }
+
   const $set = {
-    isOrderPlaced: false,
     lastInteraction: now,
     lastCartEventAt: now,
     ...extraSet,
   };
 
+  /** WS-3 C3: never reset `isOrderPlaced` to false on update — only set
+   *  on new docs via `$setOnInsert`. Otherwise late pixel events
+   *  re-open purchased carts for recovery. */
   if (cartStatus) $set.cartStatus = cartStatus;
   if (checkoutToken) $set.checkoutToken = checkoutToken;
   if (checkoutUrl) $set.checkoutUrl = checkoutUrl;
   if (email) $set.email = String(email).toLowerCase();
   if (phone) $set.phoneNumber = phone;
   if (cartTotal != null && cartTotal !== "") $set.cartValue = Number(cartTotal) || 0;
-
-  if (setAbandonTimestamps) {
-    $set.cartAbandonedAt = now;
-    $set.checkoutInitiatedAt = now;
-  }
 
   if (cartItems?.length) {
     const total = Number(cartTotal) || 0;
@@ -86,9 +96,18 @@ async function upsertLeadFromCommerce(client, clientId, {
     clientId,
     source: extraSet.source || "DeepPixel",
     createdAt: now,
+    isOrderPlaced: false,
   };
   if (phone) $setOnInsert.phoneNumber = phone;
   else if (email) $setOnInsert.phoneNumber = `unknown_email_${Date.now()}`;
+
+  /** WS-3 C3: `cartAbandonedAt` is the cron's timer anchor. Set it ONCE
+   *  on insert — repeated pixel events must not slide the timer forward
+   *  or msg #1 never lands within the 25-min default. */
+  if (setAbandonTimestamps) {
+    $setOnInsert.cartAbandonedAt = now;
+    $setOnInsert.checkoutInitiatedAt = now;
+  }
 
   const { checkoutInitiatedCount: _ci, ...restExtra } = extraSet;
   Object.assign($set, restExtra);
@@ -186,6 +205,40 @@ async function processPixelEvent(clientId, eventData) {
       userAgent,
       ip,
     });
+
+    /** WS-3: pixel-only flows (merchant has pixel extension but Shopify
+     *  webhook hasn't fired yet) must also create a `CartRecoveryAttempt`
+     *  so the dashboard funnel + attribution work and the row shows up in
+     *  `GET /abandoned-carts/workspace`. Mirrors `upsertAbandonedCartLead`. */
+    if (phone && lead?._id) {
+      try {
+        const CartRecoveryAttempt = require("../../models/CartRecoveryAttempt");
+        const existing = await CartRecoveryAttempt.findOne({
+          clientId,
+          leadId: lead._id,
+          status: "pending",
+        })
+          .select("_id")
+          .lean();
+        if (!existing) {
+          await CartRecoveryAttempt.create({
+            clientId,
+            leadId: lead._id,
+            contactPhone: String(phone).replace(/[^0-9]/g, ""),
+            attemptTimestamp: new Date(timestamp || Date.now()),
+            messaged: false,
+            recovered: false,
+            status: "pending",
+          });
+        }
+      } catch (craErr) {
+        // Non-fatal: scheduler still fires on AdLead alone.
+        if (craErr.code !== 11000) {
+          // eslint-disable-next-line no-console
+          console.warn(`[Pixel] CartRecoveryAttempt create failed: ${craErr.message}`);
+        }
+      }
+    }
 
     if (global.io && lead) {
       global.io.to(`client_${clientId}`).emit("lead_cart_update", {

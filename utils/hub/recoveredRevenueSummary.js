@@ -3,7 +3,7 @@
 const moment = require('moment');
 const Client = require('../../models/Client');
 const DailyStat = require('../../models/DailyStat');
-const CART_NUDGE_DEFAULTS = { minutes1: 15, hours2: 2, hours3: 24 };
+const CART_NUDGE_DEFAULTS = { minutes1: 25, hours2: 4, hours3: 36 };
 
 function resolveCartNudgeDelay(value, fallback) {
   if (value === null || value === undefined) return fallback;

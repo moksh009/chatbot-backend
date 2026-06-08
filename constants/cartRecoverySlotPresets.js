@@ -11,11 +11,14 @@ const CART_RECOVERY_BODY_SLOT_PRESETS = {
   3: ['first_name', 'product_name', 'cart_total', 'discount_code'],
 };
 
-/** Meta body variable index per semantic field (step 3 skips index 4 — button URL). */
+/** Meta body variable index per semantic field.
+ *  WS-1 fix (June 2026): index 5 left a `{{4}}` gap which Meta rejects
+ *  (variables must be consecutive starting at 1). Renumber discount_code
+ *  → 4 to keep the body template valid for submission. */
 const CART_RECOVERY_BODY_META_INDEX = {
   1: { first_name: 1, product_name: 2, cart_total: 3 },
   2: { first_name: 1, product_name: 2 },
-  3: { first_name: 1, product_name: 2, cart_total: 3, discount_code: 5 },
+  3: { first_name: 1, product_name: 2, cart_total: 3, discount_code: 4 },
 };
 
 const CART_RECOVERY_FIELD_TO_CONTEXT = {

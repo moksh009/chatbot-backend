@@ -280,10 +280,11 @@ async function enableAbandonedCartRecovery(clientId) {
   const readiness = await buildAbandonedCartReadiness(clientId);
   if (!readiness) throw new Error('Client not found');
 
+  /** WS-3 defaults — keep aligned with cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS. */
   const setFields = {
     'wizardFeatures.enableAbandonedCart': true,
-    'wizardFeatures.cartNudgeMinutes1': 45,
-    'wizardFeatures.cartNudgeHours2': 8,
+    'wizardFeatures.cartNudgeMinutes1': 25,
+    'wizardFeatures.cartNudgeHours2': 4,
     'wizardFeatures.cartNudgeHours3': 36,
   };
 

@@ -85,9 +85,10 @@ const CART_FOLLOWUP_MIN_MINUTES = {
   followup_3: 24 * 60,
 };
 
+/** WS-3 defaults — keep aligned with cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS. */
 const CART_FOLLOWUP_DEFAULT_MINUTES = {
-  followup_1: 45,
-  followup_2: 8 * 60,
+  followup_1: 25,
+  followup_2: 4 * 60,
   followup_3: 36 * 60,
 };
 

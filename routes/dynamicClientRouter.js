@@ -317,8 +317,16 @@ router.patch('/order-messages/rules/:ruleId/toggle', ...secure, async (req, res)
     await clearClientCache(clientId);
     return res.json({ success: true, automation });
   } catch (err) {
-    const status = /not found/i.test(err.message) ? 404 : 400;
-    return res.status(status).json({ success: false, error: err.message });
+    /** WS-2 H5 — expose `err.code` so the frontend can render actionable
+     *  copy (e.g. "Template not approved — open Meta Manager"). */
+    const status =
+      err.status ||
+      (/not found/i.test(err.message) ? 404 : 400);
+    return res.status(status).json({
+      success: false,
+      error: err.message,
+      code: err.code || null,
+    });
   }
 });
 
@@ -338,7 +346,13 @@ router.put('/commerce-automations/:automationId', ...secure, async (req, res) =>
     await clearClientCache(clientId);
     return res.json({ success: true, automation });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    /** WS-2 H5 — expose `err.code` (TEMPLATE_NOT_APPROVED, TEMPLATE_REQUIRED) */
+    const status = err.status || 500;
+    return res.status(status).json({
+      success: false,
+      error: err.message,
+      code: err.code || null,
+    });
   }
 });
 

@@ -86,6 +86,37 @@ function normalizeAutomationMappings(raw) {
   return { body: out };
 }
 
+/**
+ * Default body mappings for the 3 official eco order-status templates plus
+ * the abandoned cart winback. Mirrors `utils/commerce/orderStatusTemplatePolicy`
+ * and frontend `config/automationSlotCatalog`. Used to auto-seed mappings on
+ * rule save so merchants never have to wire `{{1}}…{{n}}` by hand when they
+ * pick the recommended Shopify pack template.
+ */
+const ECO_TEMPLATE_BODY_MAPPINGS = {
+  eco_order_confirmed: { 1: 'first_name', 2: 'order_id', 3: 'order_total', 4: 'payment_method' },
+  eco_shipping_update: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
+  eco_delivered: { 1: 'first_name', 2: 'order_id' },
+  eco_abandoned_cart: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 4: 'checkout_url' },
+};
+
+function seedEcoBodyMappings(templateName, mappings) {
+  const tplName = String(templateName || '');
+  const eco = ECO_TEMPLATE_BODY_MAPPINGS[tplName];
+  if (!eco) return mappings;
+  const current = mappings?.body && typeof mappings.body === 'object' ? mappings.body : {};
+  const merged = { ...current };
+  let touched = false;
+  for (const [pos, field] of Object.entries(eco)) {
+    if (!merged[pos] || merged[pos] === '') {
+      merged[pos] = field;
+      touched = true;
+    }
+  }
+  if (!touched) return mappings;
+  return { ...(mappings || {}), body: merged };
+}
+
 function mergeTemplateMappings(templateMappings = {}, automationMappings = {}) {
   const tplBody = templateMappings?.body || templateMappings || {};
   const autoBody = automationMappings?.body || automationMappings || {};
@@ -594,6 +625,41 @@ async function upsertAutomation(clientId, automation = {}) {
     if (delayErr) throw new Error(delayErr);
   }
 
+  /** WS-2 C5 — APPROVED gate on PUT activation.
+   *  Previously only `toggleAutomation` enforced template approval. A
+   *  merchant saving with `{ isActive: true, templateName: 'draft' }`
+   *  would mark the rule live, then every webhook would silently log
+   *  `not_approved` and no message reached the customer. We replicate
+   *  the toggle's check here for any transition into active state. */
+  const activatingNow =
+    automation.isActive === true &&
+    (existing?.isActive !== true) &&
+    automation.actionType !== 'enroll_sequence' &&
+    (existing?.actionType !== 'enroll_sequence' || automation.actionType === 'send_template');
+  if (activatingNow) {
+    const tpl = automation.templateName || existing?.templateName || '';
+    if (!tpl) {
+      const err = new Error('Choose a WhatsApp template before activating this rule.');
+      err.code = 'TEMPLATE_REQUIRED';
+      err.status = 400;
+      throw err;
+    }
+    const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+    const hit = synced.find((t) => String(t?.name) === String(tpl));
+    const status = String(hit?.status || '').toUpperCase();
+    if (status !== 'APPROVED' && status !== 'ACTIVE') {
+      const reason = !hit
+        ? `Template "${tpl}" is not synced from Meta yet.`
+        : status === 'REJECTED'
+          ? `Template "${tpl}" was rejected by Meta. Edit and resubmit before activating.`
+          : `Template "${tpl}" is ${status.toLowerCase() || 'not approved'} on Meta. Wait for approval before activating.`;
+      const err = new Error(reason);
+      err.code = 'TEMPLATE_NOT_APPROVED';
+      err.status = 400;
+      throw err;
+    }
+  }
+
   const incomingTargetIds = Array.isArray(automation.targetProductIds)
     ? automation.targetProductIds.map(normalizeProductId).filter(Boolean)
     : [];
@@ -635,7 +701,10 @@ async function upsertAutomation(clientId, automation = {}) {
       automation.isActive === undefined
         ? (existing?.isActive ?? !system)
         : automation.isActive === true,
-    variableMappings: normalizeAutomationMappings(automation.variableMappings),
+    variableMappings: seedEcoBodyMappings(
+      automation.templateName,
+      normalizeAutomationMappings(automation.variableMappings)
+    ),
     customVariableValues: automation.customVariableValues || {},
     meta: automation.meta || {},
   };
@@ -681,14 +750,23 @@ async function upsertAutomation(clientId, automation = {}) {
       Object.entries(cartPatch.nicheData).map(([k, v]) => [`nicheData.${k}`, v])
     ));
   }
-  if ((existing?.meta?.category || normalized?.meta?.category) === 'order_notification') {
+  /** WS-2 H4 — only sync the legacy 5-status nicheData map when the rule
+   *  is one of the original CORE statuses. The new `sys_financial_*` and
+   *  `sys_fulfillment_*` rules normalize through `normalizeEvent`
+   *  (`refunded → cancelled`, `fulfilled → shipped`), which silently
+   *  overwrote the merchant's `cancelled` / `shipped` legacy template
+   *  when they saved a refund or partial fulfillment rule. */
+  const metaCategory = existing?.meta?.category || normalized?.meta?.category;
+  const metaGroup = existing?.meta?.group || normalized?.meta?.group;
+  const isLegacyOrderRule =
+    metaCategory === 'order_notification' &&
+    metaGroup !== 'payment_status' &&
+    metaGroup !== 'fulfillment_status';
+  if (isLegacyOrderRule) {
     const status = normalizeEvent(existing?.event || normalized?.event);
     if (status && ORDER_STATUS_EVENTS.includes(status)) {
-      if (normalized.templateName) {
-        clientUpdate[`nicheData.orderStatusTemplates.${status}`] = normalized.templateName;
-      } else {
-        clientUpdate[`nicheData.orderStatusTemplates.${status}`] = '';
-      }
+      clientUpdate[`nicheData.orderStatusTemplates.${status}`] =
+        normalized.templateName || '';
     }
   }
 
@@ -703,8 +781,27 @@ async function toggleAutomation(clientId, automationId, { active } = {}) {
   const current = await ensureSystemAutomationsPersisted(client);
   const existing = current.find((a) => a.id === automationId);
   if (!existing) throw new Error('Rule not found');
-  if (active === true && existing.actionType !== 'enroll_sequence' && !existing.templateName) {
-    throw new Error('Choose a WhatsApp template before activating this rule.');
+  if (active === true && existing.actionType !== 'enroll_sequence') {
+    if (!existing.templateName) {
+      throw new Error('Choose a WhatsApp template before activating this rule.');
+    }
+    /** WS-2 guard: refuse to activate a rule whose template is not APPROVED
+     *  on Meta. Without this, the webhook silently logs `not_approved` and
+     *  no message reaches the customer. */
+    const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+    const hit = synced.find((t) => String(t?.name) === String(existing.templateName));
+    const status = String(hit?.status || '').toUpperCase();
+    if (status !== 'APPROVED' && status !== 'ACTIVE') {
+      const reason = !hit
+        ? `Template "${existing.templateName}" is not synced from Meta yet.`
+        : status === 'REJECTED'
+          ? `Template "${existing.templateName}" was rejected by Meta. Edit and resubmit before activating.`
+          : `Template "${existing.templateName}" is ${status.toLowerCase() || 'not approved'} on Meta. Wait for approval before activating.`;
+      const err = new Error(reason);
+      err.code = 'TEMPLATE_NOT_APPROVED';
+      err.status = 400;
+      throw err;
+    }
   }
   return upsertAutomation(clientId, { ...existing, isActive: active === true });
 }

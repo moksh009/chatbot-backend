@@ -11,11 +11,32 @@
  */
 
 const Order = require('../../models/Order');
+const OrderStatusSent = require('../../models/OrderStatusSent');
 const commerceAutomationService = require('./commerceAutomationService');
 const { sendWhatsAppText } = require('../meta/whatsappHelpers');
 
 function dispatchSignature(newStatus, trackingUrl, trackingNumber) {
   return `${String(newStatus || '').toLowerCase()}|${String(trackingUrl || '').trim()}|${String(trackingNumber || '').trim()}`;
+}
+
+/**
+ * Map legacy `newStatus` strings (paid / shipped / fulfilled / delivered / cancelled)
+ * to the new pipeline's `OrderStatusSent.statusKey` so the two pipelines share
+ * one dedup ledger. Returns `null` when there is no equivalent (legacy-only).
+ */
+function legacyStatusToSharedKey(newStatus) {
+  const s = String(newStatus || '').toLowerCase();
+  if (s === 'paid' || s === 'partially_paid') return `financial_status_${s}`;
+  if (s === 'pending' || s === 'authorized' || s === 'refunded' || s === 'voided' || s === 'partially_refunded') {
+    return `financial_status_${s}`;
+  }
+  if (s === 'shipped' || s === 'fulfilled') return 'fulfillment_status_fulfilled';
+  /** WS-2 fix: `delivered` is a DISTINCT customer event from `shipped`/
+   *  `fulfilled`. Sharing the same dedup key suppressed the delivered
+   *  message whenever the order had already been marked fulfilled. */
+  if (s === 'delivered') return 'fulfillment_status_delivered';
+  if (s === 'partial') return 'fulfillment_status_partial';
+  return null;
 }
 
 /**
@@ -57,6 +78,29 @@ async function dispatchOrderStatusAutomation({
 
   if (!force && isWebhook && order.lastDispatchSignature === sig) {
     return { skipped: true, reason: 'duplicate_webhook_signature' };
+  }
+
+  /** WS-2 cross-pipeline dedup: the new `processOrderStatusAutomations`
+   *  pipeline writes `OrderStatusSent({clientId, orderId, statusKey})` on
+   *  every successful send. If we already sent for this status, don't
+   *  double-fire from the legacy path. */
+  if (!force && clientConfig?.clientId) {
+    const sharedKey = legacyStatusToSharedKey(next);
+    const shopifyOrderId = order.shopifyOrderId || order.orderId || order.id || order._id;
+    if (sharedKey && shopifyOrderId) {
+      try {
+        const already = await OrderStatusSent.findOne({
+          clientId: clientConfig.clientId,
+          orderId: String(shopifyOrderId),
+          statusKey: sharedKey,
+        }).select('_id').lean();
+        if (already) {
+          return { skipped: true, reason: 'duplicate_new_pipeline_already_sent' };
+        }
+      } catch (_) {
+        /** dedup table unavailable — fall through to legacy send. */
+      }
+    }
   }
 
   const wf =
@@ -192,6 +236,27 @@ async function dispatchOrderStatusAutomation({
 
   if (oid && isWebhook) {
     await Order.updateOne({ _id: oid }, { $set: { lastDispatchSignature: sig } }).catch(() => {});
+  }
+
+  /** Record successful legacy sends in the shared dedup ledger so the new
+   *  pipeline (if it fires after) also no-ops. */
+  if (clientConfig?.clientId && (wa.ok || textFallbackSent)) {
+    const sharedKey = legacyStatusToSharedKey(next);
+    const shopifyOrderId = order.shopifyOrderId || order.orderId || order.id || order._id;
+    if (sharedKey && shopifyOrderId) {
+      OrderStatusSent.create({
+        clientId: clientConfig.clientId,
+        orderId: String(shopifyOrderId),
+        statusKey: sharedKey,
+        ruleId: 'legacy_dispatch',
+        phone: String(order.customerPhone || order.phone || ''),
+        sentAt: new Date(),
+      }).catch((err) => {
+        if (err?.code !== 11000) {
+          console.warn('[OrderEventDispatcher] dedup ledger write failed:', err.message);
+        }
+      });
+    }
   }
 
   return {

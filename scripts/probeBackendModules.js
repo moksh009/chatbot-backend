@@ -72,7 +72,6 @@ const modules = [
   './routes/botQuality',
   './routes/intelligenceDna',
   './routes/keywords',
-  './routes/instagramAutomation',
   './routes/igAutomationRoutes',
   './routes/inboxRoutes',
   './routes/masterWebhook',

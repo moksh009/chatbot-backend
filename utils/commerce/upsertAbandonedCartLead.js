@@ -118,14 +118,43 @@ async function upsertAbandonedCartLead(client, data = {}) {
     ? { clientId, phoneNumber: { $in: phoneLookup } }
     : { clientId, email };
 
+  /** WS-3: completed checkouts must NOT enter recovery. Shopify sets
+   *  `completed_at` on the checkout payload once the order is placed. */
+  const completedAt = data.completedAt || data.completed_at || null;
+  const finalCartStatus =
+    completedAt || cartStatus === 'purchased' ? 'purchased' : cartStatus;
+  const isPurchased = finalCartStatus === 'purchased';
+
+  /** WS-3 C2: never downgrade a lead that's already `purchased` /
+   *  `isOrderPlaced=true`. Shopify can send a late `checkouts/update`
+   *  without `completed_at` after the order webhook already fired —
+   *  re-opening the lead for recovery would message a customer who
+   *  already paid. Refresh snapshot fields only. */
+  const existing = await AdLead.findOne(leadQuery)
+    .select('cartStatus isOrderPlaced recoveryStep _id')
+    .lean();
+  const alreadyPurchased =
+    existing && (existing.cartStatus === 'purchased' || existing.isOrderPlaced === true);
+  if (alreadyPurchased && !isPurchased) {
+    log.info(
+      `[UpsertCart] Skipping abandon downgrade for purchased lead ${clientId}/${phoneE164 || email}`
+    );
+    return {
+      success: true,
+      skipped: true,
+      reason: 'already_purchased',
+      lead: existing,
+      phone: phoneE164,
+      phoneDigits,
+    };
+  }
+
   const $set = {
-    cartStatus,
-    cartAbandonedAt: now,
-    checkoutInitiatedAt: now,
+    cartStatus: finalCartStatus,
     lastSeen: now,
     lastCartEventAt: now,
     checkoutUrl,
-    isOrderPlaced: false,
+    isOrderPlaced: isPurchased,
     cartSnapshot: {
       items: enrichedItems,
       updatedAt: now,
@@ -153,6 +182,21 @@ async function upsertAbandonedCartLead(client, data = {}) {
     }
   }
 
+  /** WS-3: `cartAbandonedAt` is the cron's timer anchor — set it ONCE on
+   *  first abandon. Re-stamping on every `checkouts/update` (Shopify fires
+   *  many) would push the recovery timer forward forever and msg #1 would
+   *  never reach 25 min elapsed. */
+  const $setOnInsert = {
+    clientId,
+    phoneNumber: phoneE164 || `unknown_checkout_${checkoutToken || Date.now()}`,
+    source,
+    createdAt: now,
+  };
+  if (!isPurchased) {
+    $setOnInsert.cartAbandonedAt = now;
+    $setOnInsert.checkoutInitiatedAt = now;
+  }
+
   const lead = await AdLead.findOneAndUpdate(
     leadQuery,
     {
@@ -161,15 +205,22 @@ async function upsertAbandonedCartLead(client, data = {}) {
         addToCartCount: enrichedItems.length || 1,
         checkoutInitiatedCount: 1,
       },
-      $setOnInsert: {
-        clientId,
-        phoneNumber: phoneE164 || `unknown_checkout_${checkoutToken || Date.now()}`,
-        source,
-        createdAt: now,
-      },
+      $setOnInsert,
     },
     { upsert: true, new: true }
   );
+
+  /** Mark recovered + halt scheduler immediately if checkout completed. */
+  if (isPurchased) {
+    await AdLead.updateOne(leadQuery, {
+      $set: {
+        isOrderPlaced: true,
+        cartStatus: 'purchased',
+        recoveryStep: 99,
+        cartRecoveredAt: now,
+      },
+    }).catch(() => {});
+  }
 
   if (checkoutToken) {
     await stitchCheckoutTokenToLead(clientId, checkoutToken, phoneE164, email, client).catch((e) =>

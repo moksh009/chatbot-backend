@@ -257,8 +257,12 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
-                /** New fulfillment + payment status rules — runs alongside legacy order_status pipeline. */
-                processOrderStatusAutomations({
+                /** WS-2 fix: AWAIT the new pipeline so its `OrderStatusSent`
+                 *  ledger writes BEFORE the legacy dispatcher reads it.
+                 *  Previously both ran concurrently → both passed the
+                 *  dedup pre-check → customer received two messages for
+                 *  the same paid event. */
+                await processOrderStatusAutomations({
                   client,
                   payload: data,
                   source: 'shopify_webhook:orders/create',
@@ -307,7 +311,7 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await fireEventFlow(client, 'order_status_changed', data, data.financial_status === 'refunded' ? 'returned' : 'cancelled').catch(e =>
                   log.warn(`[FlowTrigger] order_status_changed flow fire failed: ${e.message}`)
                 );
-                processOrderStatusAutomations({
+                await processOrderStatusAutomations({
                   client,
                   payload: data,
                   source: `shopify_webhook:${topic}`,
@@ -325,17 +329,45 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
                 break;
             case 'orders/updated':
-                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
-                processOrderStatusAutomations({
+                /** WS-2 fix: AWAIT before any legacy paths inside reconcile fire,
+                 *  to keep the `OrderStatusSent` ledger authoritative. */
+                await processOrderStatusAutomations({
                   client,
                   payload: data,
                   source: 'shopify_webhook:orders/updated',
                 }).catch((e) => log.error(`OrderStatus automation orders/updated failed: ${e.message}`));
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
                 break;
             case 'fulfillments/create':
-            case 'fulfillments/update':
+            case 'fulfillments/update': {
                 await handleFulfillmentWebhookForAdmin(client, data, topic, io);
+                /** WS-2: fulfillment webhooks must also drive the new
+                 *  `sys_fulfillment_*` rules. The fulfillment payload lacks
+                 *  customer + financial_status, so refetch the full order
+                 *  from Shopify (same pattern as refunds/create). */
+                const fulfillmentOrderId = data?.order_id;
+                if (fulfillmentOrderId && client.shopDomain && client.shopifyAccessToken) {
+                    try {
+                        const orderRes = await axios.get(
+                            `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/orders/${fulfillmentOrderId}.json`,
+                            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+                        );
+                        const fullOrder = orderRes.data?.order;
+                        if (fullOrder) {
+                            await processOrderStatusAutomations({
+                                client,
+                                payload: fullOrder,
+                                source: `shopify_webhook:${topic}`,
+                            }).catch((e) =>
+                                log.error(`OrderStatus automation ${topic} failed: ${e.message}`)
+                            );
+                        }
+                    } catch (fulErr) {
+                        log.warn(`[${topic}] order fetch for status automation failed: ${fulErr.message}`);
+                    }
+                }
                 break;
+            }
             case 'refunds/create': {
                 /** refund payloads are partial — refetch the order so we have an authoritative
                  *  financial_status (paid → partially_refunded vs paid → refunded). */
@@ -362,7 +394,7 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                         }).catch((e) =>
                             log.error(`Warranty void refunds/create failed: ${e.message}`)
                         );
-                        processOrderStatusAutomations({
+                        await processOrderStatusAutomations({
                             client,
                             payload: fullOrder,
                             source: 'shopify_webhook:refunds/create',
@@ -374,6 +406,16 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 break;
             }
             case 'orders/fulfilled': {
+                /** WS-2: drive new `sys_fulfillment_fulfilled` rule first
+                 *  (await so the ledger is written before any downstream
+                 *  reconciler-triggered legacy paths can race). */
+                await processOrderStatusAutomations({
+                    client,
+                    payload: data,
+                    source: 'shopify_webhook:orders/fulfilled',
+                }).catch((e) =>
+                    log.error(`OrderStatus automation orders/fulfilled failed: ${e.message}`)
+                );
                 await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
                 const { schedulePostPurchaseEnrollment } = require('../services/postPurchaseJourneys/enroll');
                 schedulePostPurchaseEnrollment({
@@ -679,7 +721,8 @@ async function handleCheckout(client, data) {
       cartToken,
       source: 'shopify_native',
       currency: data.currency || 'INR',
-      cartStatus: 'abandoned',
+      cartStatus: data.completed_at ? 'purchased' : 'abandoned',
+      completedAt: data.completed_at || null,
       logActivity: false,
     });
 

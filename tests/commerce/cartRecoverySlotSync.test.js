@@ -27,8 +27,10 @@ test('cartRecoveryVariableMappings align with frontend slot presets', () => {
     2: 'product_name',
     3: 'cart_total',
   });
-  assert.equal(cartRecoveryVariableMappings(3).body[5], 'discount_code');
-  assert.equal(cartRecoveryVariableMappings(3).body[4], undefined);
+  /** WS-1 fix: discount_code is now index 4 (consecutive) — Meta rejects
+   *  body templates with variable gaps. */
+  assert.equal(cartRecoveryVariableMappings(3).body[4], 'discount_code');
+  assert.equal(cartRecoveryVariableMappings(3).body[5], undefined);
 });
 
 test('buildCartRecoveryComponents body params follow slot preset order', () => {

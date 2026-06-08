@@ -114,9 +114,12 @@ const WizardFeaturesSchema = new mongoose.Schema({
   enableAbandonedCart:     { type: Boolean, default: true  }, // 3-step cart recovery drip
   enableCatalogCheckoutRecovery: { type: Boolean, default: true }, // Follow up after catalog open with checkout reminder
   catalogCheckoutDelayMin: { type: Number,  default: 20    }, // Minutes before first checkout reminder
-  cartNudgeMinutes1:       { type: Number,  default: 15    },
-  cartNudgeHours2:         { type: Number,  default: 2     },
-  cartNudgeHours3:         { type: Number,  default: 24    },
+  /** WS-3 defaults (June 2026): keep aligned with
+   *  cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS so existing tenants
+   *  who haven't clicked Enable still get msg #1 within 25–30 min. */
+  cartNudgeMinutes1:       { type: Number,  default: 25    },
+  cartNudgeHours2:         { type: Number,  default: 4     },
+  cartNudgeHours3:         { type: Number,  default: 36    },
   cartNudgeTemplate1:      { type: String,  default: ""    },
   cartNudgeTemplate2:      { type: String,  default: ""    },
   cartNudgeTemplate3:      { type: String,  default: ""    },

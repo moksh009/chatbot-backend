@@ -88,9 +88,9 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     headerType: "IMAGE",
     headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}, last chance to get {{2}} (₹{{3}})! Here's a special offer — use code {{5}} for 10% off.\n\nTap below to complete your order 👇",
+      "Hi {{1}}, last chance to get {{2}} (₹{{3}})! Here's a special offer — use code {{4}} for 10% off.\n\nTap below to complete your order 👇",
     variableMappings: {
-      body: { 1: "first_name", 2: "product_name", 3: "cart_total", 5: "discount_code" },
+      body: { 1: "first_name", 2: "product_name", 3: "cart_total", 4: "discount_code" },
       buttons: { 0: "checkout_url" },
     },
     buttons: [{ type: "URL", text: "Use Offer Now", urlVariable: "checkout_url" }],
