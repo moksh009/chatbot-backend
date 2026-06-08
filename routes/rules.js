@@ -4,6 +4,18 @@ const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { findMatchingRule } = require('../utils/core/rulesEngine');
+const { isSmartRulesEngineEnabled } = require('../utils/core/featureFlags');
+
+function requireSmartRulesEnabled(req, res, next) {
+    if (isSmartRulesEngineEnabled()) return next();
+    return res.status(503).json({
+        success: false,
+        code: 'SMART_RULES_DISABLED',
+        message: 'Smart message rules are temporarily disabled. See docs/internal/SMART-RULES-ENGINE-PAUSED.md',
+    });
+}
+
+router.use(requireSmartRulesEnabled);
 
 async function runRuleTest(req, res, clientId) {
     const message = String(req.body.message || '').trim();

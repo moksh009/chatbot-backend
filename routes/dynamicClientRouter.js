@@ -226,14 +226,35 @@ router.get('/commerce-automations', ...secure, async (req, res) => {
       (req.user.linkedClients && req.user.linkedClients.includes(clientId));
     if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
 
-    const automations = await commerceAutomationService.ensureSystemAutomationsPersisted(req.clientConfig);
+    let automations;
+    try {
+      automations = await commerceAutomationService.ensureSystemAutomationsPersisted(req.clientConfig);
+    } catch (persistErr) {
+      console.warn(`[commerce-automations] persist path failed for ${req.params.clientId}:`, persistErr.message);
+      automations = commerceAutomationService.buildAutomationsFromConfig(req.clientConfig);
+    }
     return res.json({
       success: true,
       automations,
       version: req.clientConfig.commerceAutomationVersion || commerceAutomationService.COMMERCE_AUTOMATION_VERSION || 2,
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    try {
+      const automations = commerceAutomationService.buildAutomationsFromConfig(req.clientConfig || {});
+      return res.json({
+        success: true,
+        automations,
+        version: commerceAutomationService.COMMERCE_AUTOMATION_VERSION || 2,
+        warning: 'Loaded from cache — sync will retry automatically.',
+      });
+    } catch (fallbackErr) {
+      console.error(`[commerce-automations] GET ${req.params.clientId}:`, err.message, fallbackErr.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to load commerce automations.',
+        automations: [],
+      });
+    }
   }
 });
 
@@ -252,7 +273,16 @@ router.get('/shopify-products-picker', ...secure, async (req, res) => {
     });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message, products: [] });
+    const { isMongoTransientError } = require('../utils/core/mongoRetry');
+    const { SHOPIFY_RECONNECT_MESSAGE } = require('../utils/shopify/shopifyOAuthTokenExchange');
+    let message = err.message || 'Failed to load Shopify products';
+    if (isMongoTransientError(err)) {
+      message = 'Database connection blip — please retry in a moment.';
+    } else if (err.isShopifyAuthError || String(message).includes(SHOPIFY_RECONNECT_MESSAGE)) {
+      message = 'Shopify session expired — open Settings → Connections and reconnect your store.';
+    }
+    console.error(`[shopify-products-picker] GET ${req.params.clientId}:`, err.message);
+    return res.status(500).json({ success: false, error: message, message, products: [] });
   }
 });
 

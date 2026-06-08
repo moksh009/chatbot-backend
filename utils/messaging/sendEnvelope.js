@@ -5,7 +5,6 @@ const { resolveChannelRateLimits, applyRateLimitThrottle, isRateLimitError } = r
 const MessageEnvelope = require('../../models/MessageEnvelope');
 const { emitToClient } = require('../core/socket');
 const { getAppRedis } = require('../core/redisFactory');
-const log = require('../core/logger')('SendEnvelope');
 const { incrementUsage } = require('../core/planLimits');
 const { generateIdempotencyKey, resolveWindowBucket } = require('./idempotency');
 const { consumeTokenBucket } = require('./rateLimits');
@@ -19,6 +18,10 @@ const { checkSuppression } = require('./checks/checkSuppression');
 const { checkServiceWindow } = require('./checks/checkServiceWindow');
 const { checkTemplateApproval } = require('./checks/checkTemplateApproval');
 const { checkPlanLimit } = require('./checks/checkPlanLimit');
+const {
+  WHATSAPP_CREDENTIAL_SELECT,
+  isWhatsAppOutboundReady,
+} = require('../meta/clientWhatsAppCreds');
 
 function buildResult(status, extra = {}) {
   return { status, ...extra };
@@ -28,33 +31,30 @@ async function persistEnvelope(doc) {
   try {
     await MessageEnvelope.create(doc);
   } catch (err) {
-    log.warn(`MessageEnvelope persist failed: ${err.message}`);
+    // non-fatal
   }
 }
 
 async function sendEnvelope(input = {}) {
-  const startedAt = Date.now();
-  const timings = {};
-  const mark = (name, t0) => {
-    timings[name] = Date.now() - t0;
-  };
-
   const redis = getAppRedis();
-  const validateT = Date.now();
   const valid = validateInput(input);
-  mark('validateInput', validateT);
   if (!valid.pass) return buildResult('blocked', valid);
 
   const client = await Client.findOne({ clientId: input.clientId })
-    .select(
-      'clientId complianceConfig flags syncedMetaTemplates phoneNumberId whatsappToken instagramAccessToken igAccessToken social.instagram.accessToken name email'
-    )
+    .select(WHATSAPP_CREDENTIAL_SELECT)
     .lean();
   if (!client) return buildResult('blocked', { blockedBy: 'invalid_contact', reason: 'client_not_found' });
 
-  const resolveT = Date.now();
+  if (input.channel === 'whatsapp' && !isWhatsAppOutboundReady(client)) {
+    return buildResult('blocked', {
+      blockedBy: 'whatsapp_credentials',
+      reason: 'whatsapp_not_configured',
+      message:
+        'WhatsApp credentials are missing or incomplete. Reconnect in Settings → Connections (Meta embedded signup or manual credentials).',
+    });
+  }
+
   const contactRes = await resolveContact(input);
-  mark('resolveContact', resolveT);
   if (!contactRes.pass) return buildResult('blocked', contactRes);
   const contact = contactRes.contact;
 
@@ -69,9 +69,7 @@ async function sendEnvelope(input = {}) {
       payload: input.payload,
       step: input?.context?.step || '',
     });
-  const idemT = Date.now();
   const idem = await checkIdempotency({ redis, key: idemKey, ttlSec: input?.idempotency?.ttlSec || ttlSec });
-  mark('checkIdempotency', idemT);
   if (!idem.pass) {
     await persistEnvelope({
       clientId: input.clientId,
@@ -88,12 +86,9 @@ async function sendEnvelope(input = {}) {
     return buildResult('duplicate', { blockedBy: 'idempotency', reason: idem.reason });
   }
 
-  const channelT = Date.now();
   const channelEnabled = checkChannelEnabled({ client, channel: input.channel });
-  mark('checkChannelEnabled', channelT);
   if (!channelEnabled.pass) return buildResult('blocked', channelEnabled);
 
-  const consentT = Date.now();
   const consent = checkConsent({
     contact,
     channel: input.channel,
@@ -101,7 +96,6 @@ async function sendEnvelope(input = {}) {
     strictMode: client?.complianceConfig?.strictMode !== false,
     complianceExempt: input?.options?.complianceExempt === true,
   });
-  mark('checkConsent', consentT);
   if (!consent.pass && !input?.options?.force) {
     await persistEnvelope({
       clientId: input.clientId,
@@ -147,44 +141,34 @@ async function sendEnvelope(input = {}) {
     }).catch(() => {});
   }
 
-  const suppressionT = Date.now();
   const suppression = await checkSuppression({
     redis,
     clientId: input.clientId,
     channel: input.channel,
     contact,
   });
-  mark('checkSuppression', suppressionT);
   if (!suppression.pass) return buildResult('blocked', suppression);
 
-  const windowT = Date.now();
   const serviceWindow = checkServiceWindow({ channel: input.channel, intent: input.intent, payload: input.payload, contact });
-  mark('checkServiceWindow', windowT);
   if (!serviceWindow.pass) return buildResult('blocked', serviceWindow);
 
-  const templateT = Date.now();
   const templateCheck = await checkTemplateApproval({
     redis,
     clientId: input.clientId,
     payload: input.payload,
     intent: input.intent,
   });
-  mark('checkTemplateApproval', templateT);
   if (!templateCheck.pass) return buildResult('blocked', templateCheck);
 
-  const planT = Date.now();
   const plan = await checkPlanLimit({ clientId: input.clientId });
-  mark('checkPlanLimit', planT);
   if (!plan.pass) return buildResult('blocked', plan);
 
-  const tenantRateT = Date.now();
   const { sustainedPerSec, burst } = await resolveChannelRateLimits(client, input.channel);
   const tenantRate = await consumeTokenBucket(redis, {
     key: `${input.clientId}:${input.channel}`,
     capacity: burst,
     refillPerSec: sustainedPerSec,
   });
-  mark('checkTenantRateBudget', tenantRateT);
   if (!tenantRate.pass) {
     return buildResult('blocked', {
       blockedBy: 'rate_limit',
@@ -198,7 +182,6 @@ async function sendEnvelope(input = {}) {
   }
 
   try {
-    const dispatchT = Date.now();
     let dispatchResult = null;
     if (input.channel === 'email') {
       dispatchResult = await sendEmailMessage({
@@ -218,7 +201,6 @@ async function sendEnvelope(input = {}) {
         payload: input.payload,
       });
     }
-    mark('dispatch', dispatchT);
 
     await incrementUsage(input.clientId, 'messages', 1).catch(() => {});
     await persistEnvelope({
@@ -242,15 +224,10 @@ async function sendEnvelope(input = {}) {
       messageId: dispatchResult?.messageId || null,
     });
 
-    const total = Date.now() - startedAt;
-    if (total > 50) {
-      log.warn('Slow envelope execution', { ms: total, timings, clientId: input.clientId, channel: input.channel });
-    }
     return buildResult('sent', {
       messageId: dispatchResult?.messageId || null,
       consentSnapshot: consent.consentSnapshot || null,
       idempotencyKey: idemKey,
-      timings,
       windowBucket: bucket,
     });
   } catch (err) {

@@ -13,6 +13,7 @@ const {
   notifyRagFailure,
   isRagUnavailableError,
 } = require('../utils/core/ragEngine');
+const { sendAiError, isAiProviderError } = require('../utils/core/aiProviderErrors');
 
 router.get('/stats', protect, async (req, res) => {
   try {
@@ -282,8 +283,8 @@ router.post('/test', protect, async (req, res) => {
         ragBlocked: true,
       });
     }
-    if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
-      return res.status(400).json({ error: 'Add a Gemini or OpenAI key in AI Setup to generate answers.' });
+    if (isAiProviderError(err)) {
+      return sendAiError(res, err);
     }
     res.status(500).json({ error: err.message });
   }

@@ -1109,6 +1109,10 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         }
         res.json({ success: true, copies });
     } catch (error) {
+        const { sendAiError, isAiProviderError } = require('../utils/core/aiProviderErrors');
+        if (isAiProviderError(error)) {
+            return sendAiError(res, error, { success: false, message: error.userMessage });
+        }
         res.status(500).json({ success: false, message: error.message });
     }
 });

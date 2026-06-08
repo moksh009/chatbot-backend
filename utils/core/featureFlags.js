@@ -9,6 +9,28 @@ const FEATURE_KEYS = {
   codToPrepaid: 'enableCodToPrepaid',
 };
 
+/**
+ * Product rollout env toggles (global — not per-tenant wizard flags).
+ * @see docs/internal/SMART-RULES-ENGINE-PAUSED.md
+ * @see docs/internal/WEBSITE-CHAT-WIDGET-PAUSED.md
+ */
+function envFlag(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+  return !['false', '0', 'no', 'off'].includes(String(raw).trim().toLowerCase());
+}
+
+const SMART_RULES_ENGINE_ENABLED = envFlag('SMART_RULES_ENGINE_ENABLED', false);
+const WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED = envFlag('WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED', false);
+
+function isSmartRulesEngineEnabled() {
+  return SMART_RULES_ENGINE_ENABLED;
+}
+
+function isWebsiteChatWidgetSettingsEnabled() {
+  return WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED;
+}
+
 function wizardFeatures(client) {
   if (!client) return {};
   const wf = client.wizardFeatures;
@@ -116,6 +138,8 @@ function isAbandonedCartEnabled(client) {
 
 module.exports = {
   FEATURE_KEYS,
+  SMART_RULES_ENGINE_ENABLED,
+  WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED,
   wizardFeatures,
   readFeatureFromClient,
   isFeatureEnabled,
@@ -123,4 +147,6 @@ module.exports = {
   requireFeature,
   isWarrantyEnabled,
   isAbandonedCartEnabled,
+  isSmartRulesEngineEnabled,
+  isWebsiteChatWidgetSettingsEnabled,
 };

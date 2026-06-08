@@ -39,10 +39,13 @@ const { logAction } = require('../middleware/audit');
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
 /** Same access scope as GET /api/conversations/:id (avoids sidebar/full-context 404s). */
-function conversationAccessQuery(conversationId, user) {
+function conversationAccessQuery(conversationId, user, tenantClientIdOverride = null) {
   const query = { _id: conversationId };
-  if (user.role !== 'SUPER_ADMIN') {
-    query.clientId = user.clientId;
+  const scopedClientId =
+    tenantClientIdOverride ||
+    (user?.role !== 'SUPER_ADMIN' ? user?.clientId : null);
+  if (scopedClientId) {
+    query.clientId = scopedClientId;
   }
   return query;
 }
@@ -468,11 +471,11 @@ async function findLeadForConversationPhone(tenantId, phone, selectFields) {
 }
 
 /** Fast path: messages + lead only (Live Chat first paint). */
-async function loadConversationLiteContext({ id, user, timer }) {
+async function loadConversationLiteContext({ id, user, timer, tenantId: scopedClientId }) {
   const conversation = await timer.time('Conversation.findOne', () =>
-    Conversation.findOne(conversationAccessQuery(id, user))
+    Conversation.findOne(conversationAccessQuery(id, user, scopedClientId))
       .select(
-        'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
+        'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId escalationRequestedAt ' +
           'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
       )
       .lean()
@@ -485,7 +488,7 @@ async function loadConversationLiteContext({ id, user, timer }) {
   }
 
   const phone = conversation.phone;
-  const tenantId = conversation.clientId || user.clientId;
+  const tenantId = conversation.clientId || scopedClientId || user.clientId;
   const {
     resolveScoreStageNameForClient,
     calculateCustomerLTV,
@@ -711,14 +714,15 @@ router.get('/:id/sidebar-context', protect, logPersonalDataAccess, async (req, r
 router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
   const { createTimer, timeParallel } = require('../utils/core/perfLogger');
   const { dedupeAsync } = require('../utils/core/requestDedupe');
-  const timer = createTimer('GET /api/conversations/:id/full-context', req.user?.clientId || '');
+  const tenantId = tenantClientId(req);
+  const timer = createTimer('GET /api/conversations/:id/full-context', tenantId || req.user?.clientId || '');
   const { id } = req.params;
-  const dedupeKey = `full-ctx:${req.user?.clientId || ''}:${id}`;
+  const dedupeKey = `full-ctx:${tenantId || ''}:${id}`;
 
   try {
     if (req.query.lite === '1' || req.query.lite === 'true') {
-      const litePayload = await dedupeAsync(`lite-ctx:${req.user?.clientId || ''}:${id}`, () =>
-        loadConversationLiteContext({ id, user: req.user, timer })
+      const litePayload = await dedupeAsync(`lite-ctx:${tenantId || ''}:${id}`, () =>
+        loadConversationLiteContext({ id, user: req.user, timer, tenantId })
       );
       res.json(litePayload);
       timer.finish('200 ok lite');
@@ -726,37 +730,25 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     }
 
     const payload = await dedupeAsync(dedupeKey, async () => {
-    const clientId = req.user.clientId;
-    const scopedClientId = clientId;
+    const scopedClientId = tenantId || req.user.clientId;
 
     let conversation = await timer.time('Conversation.findOne', () =>
-      Conversation.findOne({ _id: id, clientId: scopedClientId })
+      Conversation.findOne(conversationAccessQuery(id, req.user, scopedClientId))
         .select(
-          'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
+          'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId escalationRequestedAt ' +
             'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
         )
         .lean()
     );
 
     if (!conversation) {
-      if (req.user.role === 'SUPER_ADMIN') {
-        conversation = await timer.time('Conversation.findOne_superadmin', () =>
-          Conversation.findOne({ _id: id }).lean()
-        );
-        if (!conversation) {
-          const err = new Error('Conversation not found');
-          err.statusCode = 404;
-          throw err;
-        }
-      } else {
-        const err = new Error('Conversation not found');
-        err.statusCode = 404;
-        throw err;
-      }
+      const err = new Error('Conversation not found');
+      err.statusCode = 404;
+      throw err;
     }
 
     const phone = conversation.phone;
-    const tenantId = conversation.clientId || clientId;
+    const tenantId = conversation.clientId || scopedClientId;
     const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
 
@@ -1951,8 +1943,18 @@ router.post('/:id/send-product', protect, async (req, res) => {
     }
 
     if (env?.handled && !env.sent && !env.duplicate) {
+      const reason = String(env.reason || env.result?.reason || '').trim();
+      const isWaConfig =
+        reason === 'whatsapp_not_configured' ||
+        env.result?.blockedBy === 'whatsapp_credentials' ||
+        /Missing credentials/i.test(reason);
       return res.status(400).json({
-        message: env.reason || 'Could not send product — check your WhatsApp connection and try again.',
+        success: false,
+        code: isWaConfig ? 'whatsapp_not_configured' : 'send_blocked',
+        message: isWaConfig
+          ? 'WhatsApp is not fully connected for this workspace. Open Settings → Connections and complete Meta embedded signup or paste your Cloud API credentials.'
+          : reason || 'Could not send product — check your WhatsApp connection and try again.',
+        blockedBy: env.result?.blockedBy || null,
       });
     }
 
@@ -2022,11 +2024,15 @@ router.post('/:id/send-template', protect, async (req, res) => {
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
     const client = await Client.findOne({ clientId: conversation.clientId });
-    const phoneNumberId = client?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
-    const token = client?.whatsappToken || process.env.WHATSAPP_TOKEN;
+    const { isWhatsAppOutboundReady } = require('../utils/meta/clientWhatsAppCreds');
 
-    if (!phoneNumberId || !token) {
-      return res.status(500).json({ message: 'WhatsApp credentials not configured' });
+    if (!isWhatsAppOutboundReady(client)) {
+      return res.status(400).json({
+        success: false,
+        code: 'whatsapp_not_configured',
+        message:
+          'WhatsApp is not fully connected for this workspace. Open Settings → Connections and complete Meta embedded signup or paste your Cloud API credentials.',
+      });
     }
 
     const { sendEnvelope } = require('../utils/messaging/sendEnvelope');

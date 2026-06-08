@@ -7,6 +7,7 @@ const {
   mergeModelLists,
   filterOpenAiModelsFromApi,
 } = require('../../constants/aiModels');
+const { AiProviderError, classifyAiError } = require('./aiProviderErrors');
 
 function isOpenAiKey(apiKey) {
   const k = String(apiKey || '').trim();
@@ -35,18 +36,28 @@ async function validateOpenAiKey(apiKey) {
 
 async function embedTextOpenAI(text, apiKey, options = {}) {
   const key = String(apiKey || '').trim();
-  if (!isOpenAiKey(key)) return null;
+  if (!isOpenAiKey(key)) {
+    throw new AiProviderError('AI_INVALID_KEY', { provider: 'openai', operation: 'embed' });
+  }
   const input = String(text || '').trim().slice(0, 8000);
-  if (!input) return null;
+  if (!input) {
+    throw new AiProviderError('AI_PROVIDER_ERROR', {
+      provider: 'openai',
+      operation: 'embed',
+      userMessage: 'Nothing to embed for knowledge search.',
+    });
+  }
   const model = options.model || OPENAI_EMBEDDING_MODELS[0];
   try {
     const client = new OpenAI({ apiKey: key, timeout: options.timeout || 20000 });
     const resp = await client.embeddings.create({ model, input });
     const values = resp.data?.[0]?.embedding;
-    if (!Array.isArray(values) || !values.length) return null;
+    if (!Array.isArray(values) || !values.length) {
+      throw new AiProviderError('AI_EMPTY_RESPONSE', { provider: 'openai', operation: 'embed' });
+    }
     return { embedding: values, dimensions: values.length };
   } catch (err) {
-    return null;
+    throw classifyAiError(err, { provider: 'openai', operation: 'embed' });
   }
 }
 
@@ -76,15 +87,23 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
     params.response_format = { type: 'json_object' };
   }
 
-  const resp = await client.chat.completions.create(params);
-  const content = resp.choices?.[0]?.message?.content || '';
-  const inputTokens = resp.usage?.prompt_tokens || 0;
-  const outputTokens = resp.usage?.completion_tokens || 0;
+  try {
+    const resp = await client.chat.completions.create(params);
+    const content = resp.choices?.[0]?.message?.content || '';
+    const inputTokens = resp.usage?.prompt_tokens || 0;
+    const outputTokens = resp.usage?.completion_tokens || 0;
 
-  return {
-    content,
-    usage: { inputTokens, outputTokens },
-  };
+    if (!content?.trim()) {
+      throw new AiProviderError('AI_EMPTY_RESPONSE', { provider: 'openai', operation: 'generate' });
+    }
+
+    return {
+      content,
+      usage: { inputTokens, outputTokens },
+    };
+  } catch (err) {
+    throw classifyAiError(err, { provider: 'openai', operation: 'generate' });
+  }
 }
 
 module.exports = {

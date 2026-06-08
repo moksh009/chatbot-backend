@@ -115,6 +115,43 @@ function startOfDayIST() {
   return new Date(ist.getTime() - 5.5 * 60 * 60 * 1000);
 }
 
+/** YYYY-MM-DD in Asia/Kolkata (UTC+5:30). */
+function formatDateStrIST(date = new Date()) {
+  const ist = new Date(date.getTime() + 5.5 * 60 * 60 * 1000);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ist.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function todayDateStrIST() {
+  return formatDateStrIST(new Date());
+}
+
+function istDateOffsetDays(dateStr, deltaDays) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const utcMidnight = Date.UTC(y, m - 1, d);
+  const shifted = new Date(utcMidnight + deltaDays * 86400000);
+  return formatDateStrIST(new Date(shifted.getTime() - 5.5 * 60 * 60 * 1000));
+}
+
+function startOfDayForDateStrIST(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0) - 5.5 * 60 * 60 * 1000);
+}
+
+function endOfDayForDateStrIST(dateStr) {
+  return new Date(startOfDayForDateStrIST(dateStr).getTime() + 86400000 - 1);
+}
+
+/** Inclusive IST date range for dashboard period KPIs (max 90 days). */
+function istDateRangeStrings(days) {
+  const n = Math.min(Math.max(parseInt(days, 10) || 1, 1), 90);
+  const end = todayDateStrIST();
+  const start = istDateOffsetDays(end, -(n - 1));
+  return { start, end, days: n };
+}
+
 function startOfWeekIST() {
   const sod  = startOfDayIST();
   const day  = sod.getDay(); // 0=Sun
@@ -176,6 +213,12 @@ module.exports = {
   startOfDayIST,
   startOfWeekIST,
   startOfMonthIST,
+  formatDateStrIST,
+  todayDateStrIST,
+  istDateOffsetDays,
+  startOfDayForDateStrIST,
+  endOfDayForDateStrIST,
+  istDateRangeStrings,
   safeAggregate,
   safeCount,
   safeFindOne

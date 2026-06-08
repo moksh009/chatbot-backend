@@ -9,10 +9,10 @@ const { resolveApiKeyForClient } = require('../../services/ai/aiWalletService');
 const { getAppRedis } = require('./redisFactory');
 const { callAI } = require('./aiGateway');
 const { formatReplyForWhatsApp, resolveQuickFaqReply } = require('./personaEngine');
+const { mapRagReasonToUserMessage, isAiProviderError } = require('./aiProviderErrors');
 
 const QUERY_CACHE_TTL_SEC = 300;
 const MIN_VECTOR_SCORE = 0.12;
-const RAG_USER_ERROR = "Error: System cannot access the Knowledge Base, Ops we've faced technical bug";
 const RAG_NOTIFY_TTL_SEC = 3600;
 
 class RagUnavailableError extends Error {
@@ -20,9 +20,9 @@ class RagUnavailableError extends Error {
     super('RAG_UNAVAILABLE');
     this.name = 'RagUnavailableError';
     this.code = 'RAG_UNAVAILABLE';
-    this.userMessage = RAG_USER_ERROR;
     this.reason = reason;
     this.meta = meta;
+    this.userMessage = mapRagReasonToUserMessage(reason, meta);
   }
 }
 
@@ -109,7 +109,14 @@ async function embedQuery(clientId, query) {
       embedding = result?.embedding || null;
     }
   } catch (err) {
-    throw new RagUnavailableError('query_embed_failed', { detail: err.message });
+    const detail = isAiProviderError(err)
+      ? err.userMessage
+      : (err.message || 'Embedding request failed');
+    throw new RagUnavailableError('query_embed_failed', {
+      detail,
+      provider: err.provider || resolved.provider,
+      code: err.code || null,
+    });
   }
 
   if (!embedding?.length) {
@@ -212,7 +219,7 @@ async function notifyRagFailure(clientId, reason) {
     await NotificationService.createNotification(clientId, {
       type: 'system',
       title: 'Knowledge Base unavailable',
-      message: RAG_USER_ERROR,
+      message: mapRagReasonToUserMessage(reason),
       metadata: { feature: 'rag', reason: reason || 'unknown' },
     });
   } catch (_) {}
@@ -601,5 +608,4 @@ module.exports = {
   notifyRagFailure,
   RagUnavailableError,
   isRagUnavailableError,
-  RAG_USER_ERROR,
 };

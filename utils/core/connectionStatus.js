@@ -1,6 +1,12 @@
 'use strict';
 
 const { decrypt } = require('./encryption');
+const {
+  getEffectiveWhatsAppAccessToken,
+  getEffectiveWhatsAppPhoneNumberId,
+  getEffectiveWhatsAppWabaId,
+  isWhatsAppOutboundReady,
+} = require('../meta/clientWhatsAppCreds');
 const SHOPIFY_CONNECTION_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
 
 /**
@@ -49,21 +55,9 @@ function buildConnectionStatusPayload(client) {
     (typeof shopifyTok === 'string' && shopifyTok.length > 8) ||
     (typeof shopifyEnc === 'string' && shopifyEnc.trim().length > 12);
 
-  const phoneId =
-    client.phoneNumberId ||
-    client.whatsapp?.phoneNumberId ||
-    client.config?.phoneNumberId ||
-    '';
-  const waba =
-    client.wabaId ||
-    client.whatsapp?.wabaId ||
-    client.config?.wabaId ||
-    '';
-  const waEnc =
-    client.whatsappToken ||
-    client.whatsapp?.accessToken ||
-    '';
-  const waTok = decryptToken(waEnc);
+  const phoneId = getEffectiveWhatsAppPhoneNumberId(client);
+  const waba = getEffectiveWhatsAppWabaId(client);
+  const waTok = getEffectiveWhatsAppAccessToken(client);
 
   const instagramTok =
     client.instagramAccessToken ||
@@ -89,7 +83,7 @@ function buildConnectionStatusPayload(client) {
     shopify_connected: bypassShopifyConnected
       ? true
       : isShopifyCredentialConnected(client),
-    whatsapp_connected: !!(waTok.length > 5 && phoneId && waba),
+    whatsapp_connected: isWhatsAppOutboundReady(client),
     meta_connected: !!metaAdsOk,
     instagram_connected: !!(decryptToken(instagramTok).length > 10 && instagramPage),
   };
@@ -102,19 +96,14 @@ function resolveWhatsAppFields(client) {
   if (!client) {
     return { phoneNumberId: '', wabaId: '', tokenPlain: '', tokenEnc: '' };
   }
-  const phoneNumberId =
-    client.phoneNumberId ||
-    client.whatsapp?.phoneNumberId ||
-    client.config?.phoneNumberId ||
-    '';
-  const wabaId =
-    client.wabaId || client.whatsapp?.wabaId || client.config?.wabaId || '';
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
+  const wabaId = getEffectiveWhatsAppWabaId(client);
+  const tokenPlain = getEffectiveWhatsAppAccessToken(client);
   const tokenEnc =
     client.whatsappToken ||
     client.whatsapp?.accessToken ||
     client.config?.whatsappToken ||
     '';
-  const tokenPlain = decryptToken(tokenEnc);
   return { phoneNumberId, wabaId, tokenPlain, tokenEnc };
 }
 

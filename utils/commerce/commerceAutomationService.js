@@ -4,6 +4,7 @@ const FollowUpSequence = require('../../models/FollowUpSequence');
 const sequenceTemplates = require('../../data/sequenceTemplates');
 const WhatsApp = require('../meta/whatsapp');
 const log = require('../core/logger')('CommerceAutomation');
+const { isMongoTransientError, withMongoRetry } = require('../core/mongoRetry');
 const {
   mergeSystemAutomations,
   isSystemAutomation,
@@ -499,9 +500,35 @@ async function ensureSystemAutomationsPersisted(clientConfig = {}) {
         );
       }
     }
-    await Client.findOneAndUpdate({ clientId: clientConfig.clientId }, { $set: clientUpdate });
+    try {
+      await withMongoRetry(() =>
+        Client.findOneAndUpdate({ clientId: clientConfig.clientId }, { $set: clientUpdate })
+      );
+    } catch (err) {
+      log.warn('commerce automations persist skipped — serving read-only merge', {
+        clientId: clientConfig.clientId,
+        error: err.message,
+        transient: isMongoTransientError(err),
+      });
+    }
   }
   return merged;
+}
+
+/** Read-only merge for API fallback when persist is unavailable. */
+function buildAutomationsFromConfig(clientConfig = {}) {
+  const base =
+    Array.isArray(clientConfig.commerceAutomations) && clientConfig.commerceAutomations.length > 0
+      ? clientConfig.commerceAutomations
+      : buildUnifiedFromLegacy(clientConfig);
+  const withSystem = mergeSystemAutomations(base);
+  const linked = autoLinkApprovedTemplatesToSystemRules(
+    withSystem,
+    clientConfig?.syncedMetaTemplates || []
+  );
+  return pruneDuplicateOrderNotificationRules(
+    syncSystemOrderRulesFromNicheMap(linked, clientConfig?.nicheData || {})
+  );
 }
 
 async function listAutomations(clientConfig = {}) {
@@ -854,6 +881,7 @@ module.exports = {
   normalizeEvent,
   ensureMigration,
   ensureSystemAutomationsPersisted,
+  buildAutomationsFromConfig,
   sendAutomationTemplate,
   pruneDuplicateOrderNotificationRules,
   listAutomations,

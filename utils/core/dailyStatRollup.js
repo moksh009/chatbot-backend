@@ -8,6 +8,11 @@ const Appointment = require('../../models/Appointment');
 const Order = require('../../models/Order');
 const { timeParallel } = require('./perfLogger');
 const log = require('./logger')('DailyStatRollup');
+const {
+  todayDateStrIST,
+  startOfDayForDateStrIST,
+  endOfDayForDateStrIST,
+} = require('./queryHelpers');
 
 const ROLLUP_CONCURRENCY = parseInt(process.env.DAILY_STAT_ROLLUP_CONCURRENCY || '4', 10);
 const ON_DEMAND_ROLLUP_CAP = parseInt(process.env.DAILY_STAT_ON_DEMAND_CAP || '31', 10);
@@ -22,16 +27,15 @@ function noopTimer() {
 }
 
 function todayDateStr() {
-  return new Date().toISOString().split('T')[0];
+  return todayDateStrIST();
 }
 
-/** Local-midnight bounds for YYYY-MM-DD (matches getTimelineStats date loop). */
+/** IST midnight bounds for YYYY-MM-DD (matches getTimelineStats date loop). */
 function dayBounds(dateStr) {
-  const start = new Date(dateStr);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(dateStr);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
+  return {
+    start: startOfDayForDateStrIST(dateStr),
+    end: endOfDayForDateStrIST(dateStr),
+  };
 }
 
 function yesterdayDateStr() {

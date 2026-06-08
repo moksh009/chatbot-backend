@@ -12,7 +12,11 @@ class CircuitBreaker {
     this.resetTimeMs = resetTimeMs;
   }
 
-  async call(fn) {
+  async call(fn, options = {}) {
+    const shouldCountFailure = typeof options.shouldCountFailure === 'function'
+      ? options.shouldCountFailure
+      : () => true;
+
     if (this.state === "OPEN") {
       if (Date.now() - this.lastFailureTime > this.resetTimeMs) {
         this.state = "HALF_OPEN";
@@ -29,11 +33,13 @@ class CircuitBreaker {
       }
       return result;
     } catch (err) {
-      this.failures += 1;
-      this.lastFailureTime = Date.now();
-      if (this.failures >= this.threshold) {
-        this.state = "OPEN";
-        log.warn(`[CircuitBreaker] ${this.name} opened after ${this.failures} failures`);
+      if (shouldCountFailure(err)) {
+        this.failures += 1;
+        this.lastFailureTime = Date.now();
+        if (this.failures >= this.threshold) {
+          this.state = "OPEN";
+          log.warn(`[CircuitBreaker] ${this.name} opened after ${this.failures} failures`);
+        }
       }
       throw err;
     }

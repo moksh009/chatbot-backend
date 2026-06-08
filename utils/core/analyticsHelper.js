@@ -24,6 +24,13 @@ const {
   needsRollup,
   ON_DEMAND_ROLLUP_CAP,
 } = require('./dailyStatRollup');
+const {
+  startOfDayForDateStrIST,
+  endOfDayForDateStrIST,
+  todayDateStrIST,
+  istDateOffsetDays,
+  istDateRangeStrings,
+} = require('./queryHelpers');
 
 function noopTimer() {
   return {
@@ -67,7 +74,7 @@ async function fetchGcalEventsCached(clientId, calendarIds, startDate, endDate) 
  * Increments daily statistics for a given client.
  */
 async function trackEcommerceEvent(clientId, increments = {}, productAdditions = {}) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayDateStrIST();
 
   try {
     const update = { $inc: increments };
@@ -113,15 +120,10 @@ async function getRealtimeStats(clientId, client, daysInput, options = {}) {
 
   const rawRealtimeDays = parseInt(daysInput, 10) || 1;
   const days = Math.min(Math.max(rawRealtimeDays, 1), MAX_LIVE_ANALYTICS_DAYS);
-  const startDate = new Date();
-  if (days > 1) {
-    startDate.setDate(startDate.getDate() - (days - 1));
-  }
-  startDate.setHours(0, 0, 0, 0);
-  timer.checkpoint('date_range_computed', { days });
-
-  const dateGte = startDate.toISOString().split('T')[0];
-  const dateLte = new Date().toISOString().split('T')[0];
+  const { start: dateGte, end: dateLte } = istDateRangeStrings(days);
+  const startDate = startOfDayForDateStrIST(dateGte);
+  const endDate = endOfDayForDateStrIST(dateLte);
+  timer.checkpoint('date_range_computed', { days, dateGte, dateLte });
 
   const realtimeParallel = await timeParallel(
     timer,
@@ -410,9 +412,8 @@ async function getTopProducts(clientId, options = {}) {
       createdAt: { $gte: options.startDate, $lte: options.endDate },
     });
   } else if (rangeDays && Number(rangeDays) > 0) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - (Number(rangeDays) - 1));
-    startDate.setHours(0, 0, 0, 0);
+    const { start } = istDateRangeStrings(Number(rangeDays));
+    const startDate = startOfDayForDateStrIST(start);
     match = buildSuccessfulOrderMatch(clientId, { createdAt: { $gte: startDate } });
   }
 
@@ -569,21 +570,26 @@ async function getAgentEscalationResponseMap(clientId, startDate, endDate) {
 
 function resolveTimelineRange(range = {}) {
   let { start, end, days } = range;
-  const endDate = end ? new Date(end) : new Date();
-  const startDate = start ? new Date(start) : new Date();
+  const endDateStr = end
+    ? (typeof end === 'string' ? end.slice(0, 10) : todayDateStrIST())
+    : todayDateStrIST();
+  const endDate = endOfDayForDateStrIST(endDateStr);
 
-  if (!start) {
+  let startDateStr;
+  if (start) {
+    startDateStr = typeof start === 'string' ? start.slice(0, 10) : endDateStr;
+  } else {
     const rawDays = parseInt(days, 10) || 7;
     const effectiveDays = Math.min(Math.max(rawDays, 1), MAX_LIVE_ANALYTICS_DAYS);
-    startDate.setDate(endDate.getDate() - effectiveDays);
+    startDateStr = istDateOffsetDays(endDateStr, -(effectiveDays - 1));
   }
 
-  startDate.setHours(0, 0, 0, 0);
-  endDate.setHours(23, 59, 59, 999);
-
+  const startDate = startOfDayForDateStrIST(startDateStr);
   const dates = [];
-  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-    dates.push(d.toISOString().split('T')[0]);
+  let cursor = startDateStr;
+  while (cursor <= endDateStr) {
+    dates.push(cursor);
+    cursor = istDateOffsetDays(cursor, 1);
   }
   return { startDate, endDate, dates };
 }
@@ -1028,15 +1034,16 @@ async function getOperatorsStats(clientId, daysInput, options = {}) {
   const User = require('../../models/User');
   const ConversationAssignment = require('../../models/ConversationAssignment');
 
-  const endDate = new Date();
-  endDate.setHours(23, 59, 59, 999);
-  const startDate = new Date(endDate);
+  const endDateStr = todayDateStrIST();
+  const endDate = endOfDayForDateStrIST(endDateStr);
+  let startDateStr = endDateStr;
   if (daysInput && daysInput !== 'all') {
-    startDate.setDate(startDate.getDate() - (parseInt(daysInput, 10) - 1));
+    const n = Math.min(Math.max(parseInt(daysInput, 10) || 1, 1), MAX_LIVE_ANALYTICS_DAYS);
+    startDateStr = istDateOffsetDays(endDateStr, -(n - 1));
   } else {
-    startDate.setFullYear(2000);
+    startDateStr = '2000-01-01';
   }
-  startDate.setHours(0, 0, 0, 0);
+  const startDate = startOfDayForDateStrIST(startDateStr);
   timer.checkpoint('date_limit_computed');
 
   const [humanAgg, aiAgg, teamUsers, responseMap] = await Promise.all([

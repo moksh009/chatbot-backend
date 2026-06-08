@@ -1,7 +1,7 @@
 'use strict';
 
-const moment = require('moment');
 const DailyStat = require('../../models/DailyStat');
+const { istDateRangeStrings, startOfDayForDateStrIST, istDateOffsetDays } = require('./queryHelpers');
 const Order = require('../../models/Order');
 const Message = require('../../models/Message');
 
@@ -77,10 +77,27 @@ function sumTimelineKpis(timeline = []) {
 }
 
 function dateRangeStrings(days) {
+  return istDateRangeStrings(days);
+}
+
+/** Prior window of equal length immediately before the current period (for dashboard deltas). */
+function priorDateRangeStrings(days) {
   const n = Math.min(Math.max(parseInt(days, 10) || 1, 1), 90);
-  const end = moment().format('YYYY-MM-DD');
-  const start = moment().subtract(n - 1, 'days').format('YYYY-MM-DD');
-  return { start, end, days: n };
+  const { start: currentStart } = istDateRangeStrings(n);
+  const priorEnd = istDateOffsetDays(currentStart, -1);
+  const priorStart = istDateOffsetDays(priorEnd, -(n - 1));
+  return { start: priorStart, end: priorEnd, days: n };
+}
+
+async function buildPriorCommercePeriodKpis(clientId, daysInput) {
+  const { start, end, days } = priorDateRangeStrings(daysInput);
+  const startDate = startOfDayForDateStrIST(start);
+  const [dailyKpis, liveOrders] = await Promise.all([
+    aggregateDailyStatKpis(clientId, start, end),
+    aggregateLiveOrdersForRange(clientId, startDate),
+  ]);
+  const kpis = reconcileKpis({}, dailyKpis, liveOrders);
+  return { ...kpis, days, startDate: start, endDate: end, source: 'prior_reconciled' };
 }
 
 /**
@@ -269,7 +286,7 @@ function reconcileKpis(timelineKpis, dailyKpis, liveOrders) {
 async function buildCommercePeriodKpis(opts) {
   const { clientId, days: daysInput, timeline } = opts;
   const { start, end, days } = dateRangeStrings(daysInput);
-  const startDate = opts.startDate || moment(start).startOf('day').toDate();
+  const startDate = opts.startDate || startOfDayForDateStrIST(start);
 
   const [dailyKpis, liveOrders] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
@@ -316,6 +333,8 @@ module.exports = {
   aggregateLiveOrdersForRange,
   reconcileKpis,
   buildCommercePeriodKpis,
+  buildPriorCommercePeriodKpis,
   mergeRealtimeWithPeriodKpis,
   dateRangeStrings,
+  priorDateRangeStrings,
 };

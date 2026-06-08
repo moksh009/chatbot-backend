@@ -12,7 +12,6 @@ const {
   getAnalyticsChart,
   getCartRecoveryChart,
 } = require('../utils/core/dashboardChartAnalytics');
-const { getConversationsList } = require('../routes/conversations');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { createTimer } = require('../utils/core/perfLogger');
 const { dedupeAsync } = require('../utils/core/requestDedupe');
@@ -28,6 +27,7 @@ const Shopify = require('../utils/shopify/shopifyGraphQL');
 const { buildRecoveredRevenueSummary } = require('../utils/hub/recoveredRevenueSummary');
 const {
   buildCommercePeriodKpis,
+  buildPriorCommercePeriodKpis,
   mergeRealtimeWithPeriodKpis,
 } = require('../utils/core/commercePeriodKpis');
 
@@ -70,10 +70,6 @@ exports.getSummary = async (req, res) => {
       { key: 'topProducts', run: () => getTopProducts(clientId, { timer, days: requestedDays }) },
       { key: 'humanQueue', run: () => getHumanQueueConversations(clientId, { timer }) },
       { key: 'timeline', run: () => getTimelineStats(clientId, client, { days: requestedDays }, { timer }) },
-      {
-        key: 'conversations',
-        run: () => getConversationsList(req.user, { ...req.query, clientId }, { timer }),
-      },
     ];
     if (includeOperators) {
       summaryTasks.push({
@@ -97,12 +93,16 @@ exports.getSummary = async (req, res) => {
     });
 
     let periodKpis = null;
+    let priorPeriodKpis = null;
     try {
-      periodKpis = await buildCommercePeriodKpis({
-        clientId,
-        days: requestedDays,
-        timeline: byKey.timeline || [],
-      });
+      [periodKpis, priorPeriodKpis] = await Promise.all([
+        buildCommercePeriodKpis({
+          clientId,
+          days: requestedDays,
+          timeline: byKey.timeline || [],
+        }),
+        buildPriorCommercePeriodKpis(clientId, requestedDays),
+      ]);
     } catch (kpiErr) {
       logger.warn('[Dashboard Summary] periodKpis failed:', kpiErr.message);
     }
@@ -114,7 +114,7 @@ exports.getSummary = async (req, res) => {
       realtime,
       timeline: byKey.timeline,
       periodKpis,
-      conversations: byKey.conversations,
+      priorPeriodKpis,
       topProducts: byKey.topProducts,
       humanQueue: byKey.humanQueue || [],
       operators: byKey.operators?.operators || [],

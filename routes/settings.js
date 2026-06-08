@@ -98,6 +98,7 @@ const {
   mergeWebsiteWidgetConfig,
   buildWebsiteWidgetSettingsBundle,
 } = require('../utils/core/websiteWidgetDefaults');
+const { isWebsiteChatWidgetSettingsEnabled } = require('../utils/core/featureFlags');
 
 router.get('/:clientId/website-chat-widget', protect, verifyClientAccess, async (req, res) => {
   try {
@@ -118,6 +119,14 @@ router.get('/:clientId/website-chat-widget', protect, verifyClientAccess, async 
 
 router.put('/:clientId/website-chat-widget', protect, verifyClientAccess, async (req, res) => {
   try {
+    if (!isWebsiteChatWidgetSettingsEnabled()) {
+      return res.status(503).json({
+        success: false,
+        code: 'WEBSITE_WIDGET_SETTINGS_DISABLED',
+        message: 'Website chat widget settings are coming soon. See docs/internal/WEBSITE-CHAT-WIDGET-PAUSED.md',
+      });
+    }
+
     const { clientId } = req.params;
     const incoming = req.body?.websiteChatWidgetConfig || req.body || {};
     const merged = mergeWebsiteWidgetConfig(incoming);

@@ -2,6 +2,12 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const axios = require('axios');
 const logger = require('./logger')("Gemini");
 const { geminiBreaker } = require('./circuitBreaker');
+const {
+    AiProviderError,
+    classifyAiError,
+    isNonTransientAiError,
+    isQuotaOrBillingError,
+} = require('./aiProviderErrors');
 
 // Dynamically load Vertex AI for enterprise GCP credit usage
 let VertexAI;
@@ -101,15 +107,19 @@ function resolveModel(options = {}) {
 
 async function safeBreakerCall(fn) {
     try {
-        return await geminiBreaker.call(fn);
+        return await geminiBreaker.call(fn, {
+            shouldCountFailure: (err) => !isNonTransientAiError(err),
+        });
     } catch (err) {
-        const msg = err?.message || "";
-        if (msg.includes("[CircuitBreaker]") && msg.includes("OPEN")) {
-            logger.warn("Gemini circuit open — skipping AI call");
-            return null;
-        }
-        throw err;
+        throw classifyAiError(err, { provider: 'gemini' });
     }
+}
+
+function throwGeminiFailure(lastError, options = {}) {
+    if (lastError) {
+        throw classifyAiError(lastError, { provider: 'gemini', ...options });
+    }
+    throw new AiProviderError('AI_EMPTY_RESPONSE', { provider: 'gemini', ...options });
 }
 
 /**
@@ -148,7 +158,8 @@ async function generateText(prompt, apiKey, options = {}) {
         return null;
     }
 
-    return safeBreakerCall(async () => {
+    try {
+    return await safeBreakerCall(async () => {
     const safePrompt = String(prompt)
         .replace(/ignore (previous|all) instructions/gi, "[filtered]")
         .replace(/system prompt/gi, "[filtered]")
@@ -254,6 +265,10 @@ async function generateText(prompt, apiKey, options = {}) {
     logger.error("All AI attempts exhausted:", lastError?.message);
     return null;
     });
+    } catch (err) {
+        logger.error("Gemini generateText failed:", err.userMessage || err.message);
+        return null;
+    }
 }
 
 async function generateJSON(prompt, apiKey, options = {}) {
@@ -328,6 +343,9 @@ async function generateMultimodal(apiKey, parts, options = {}) {
         }
         logger.error("Multimodal AI failed:", lastError?.message);
         return null;
+    }).catch((err) => {
+        logger.error("Gemini multimodal failed:", err.userMessage || err.message);
+        return null;
     });
 }
 
@@ -392,7 +410,9 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
     const platformKey = process.env.GEMINI_API_KEY?.trim();
 
     if (!activeKey) {
-        if (noEnvFallback) return null;
+        if (noEnvFallback) {
+            throw new AiProviderError('AI_NOT_CONFIGURED', { provider: 'gemini', operation: 'generate' });
+        }
         activeKey = platformKey;
     }
 
@@ -401,7 +421,7 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
     const activeModel = model || resolveModel({ isPlatform, fast });
 
     if (!useVertex && noEnvFallback && !isKeyValid(activeKey)) {
-        return null;
+        throw new AiProviderError('AI_INVALID_KEY', { provider: 'gemini', operation: 'generate' });
     }
 
     return safeBreakerCall(async () => {
@@ -433,7 +453,9 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
                     ]);
                 } else {
                     const currentKey = (attempt > 1 && useVertex) ? platformKey : activeKey;
-                    if (!isKeyValid(currentKey)) return null;
+                    if (!isKeyValid(currentKey)) {
+                        throw new AiProviderError('AI_INVALID_KEY', { provider: 'gemini', operation: 'generate' });
+                    }
 
                     const genAI = getStudioClient(currentKey);
                     const modelConfig = { model: activeModel, generationConfig };
@@ -465,6 +487,9 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
                     logger.warn(`Vertex AI failed, falling back to AI Studio: ${msg}`);
                     continue;
                 }
+                if (isQuotaOrBillingError(err)) {
+                    throw classifyAiError(err, { provider: 'gemini', operation: 'generate' });
+                }
                 if (msg.includes("429") || msg.includes("RATE_LIMIT") || msg.includes("quota")) {
                     await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
                     continue;
@@ -472,12 +497,12 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
                 if (msg.includes("timeout")) continue;
                 if (msg.includes("API_KEY_INVALID") || msg.includes("invalid")) {
                     studioClientCache.delete(activeKey);
-                    break;
+                    throw classifyAiError(err, { provider: 'gemini', operation: 'generate' });
                 }
             }
         }
         logger.error("All AI attempts exhausted:", lastError?.message);
-        return null;
+        throwGeminiFailure(lastError, { operation: 'generate' });
     });
 }
 
@@ -587,13 +612,16 @@ async function batchEmbedContentsRest(texts, apiKey, options = {}) {
 async function embedText(text, apiKey, options = {}) {
     const key = typeof apiKey === 'string' ? apiKey.trim() : '';
     if (!isKeyValid(key)) {
-        throw new Error('Invalid Gemini API key for embeddings');
+        throw new AiProviderError('AI_INVALID_KEY', { provider: 'gemini', operation: 'embed' });
     }
 
     return safeBreakerCall(async () => {
         try {
             return await embedContentRest(text, key, options);
         } catch (restErr) {
+            if (isQuotaOrBillingError(restErr)) {
+                throw classifyAiError(restErr, { provider: 'gemini', operation: 'embed' });
+            }
             logger.warn(`Gemini REST embed failed (${restErr.message}) — trying SDK fallback`);
             const genAI = getStudioClient(key);
             const model = genAI.getGenerativeModel({ model: options.model || EMBEDDING_MODEL });
@@ -612,13 +640,16 @@ async function embedText(text, apiKey, options = {}) {
 async function embedTextsBatch(texts, apiKey, options = {}) {
     const key = typeof apiKey === 'string' ? apiKey.trim() : '';
     if (!isKeyValid(key)) {
-        throw new Error('Invalid Gemini API key for embeddings');
+        throw new AiProviderError('AI_INVALID_KEY', { provider: 'gemini', operation: 'embed' });
     }
 
     return safeBreakerCall(async () => {
         try {
             return await batchEmbedContentsRest(texts, key, options);
         } catch (restErr) {
+            if (isQuotaOrBillingError(restErr)) {
+                throw classifyAiError(restErr, { provider: 'gemini', operation: 'embed' });
+            }
             logger.warn(`Gemini REST batch embed failed (${restErr.message}) — trying SDK fallback`);
             const genAI = getStudioClient(key);
             const model = genAI.getGenerativeModel({ model: options.model || EMBEDDING_MODEL });

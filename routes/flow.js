@@ -429,6 +429,10 @@ router.post('/generate', protect, async (req, res) => {
     const out = await generateFlow({ clientId, ...req.body, user: req.user, io });
     return res.json({ success: true, ...out });
   } catch (e) {
+    const { sendAiError } = require('../utils/core/aiProviderErrors');
+    if (e?.code && e?.userMessage) {
+      return sendAiError(res, e, { success: false, message: e.userMessage });
+    }
     return res.status(500).json({ success: false, message: e.message });
   }
 });

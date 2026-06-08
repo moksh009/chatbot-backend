@@ -63,7 +63,7 @@ router.get('/', protect, apiCache(30), async (req, res) => {
     const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/team', req.user?.clientId || '');
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
         const team = await timer.time('team.metrics', () => buildTeamWithMetrics(clientId));
         res.json({ success: true, team });
         timer.finish(`200 ok | count=${team.length}`);
@@ -73,9 +73,10 @@ router.get('/', protect, apiCache(30), async (req, res) => {
     }
 });
 
-router.get('/team', protect, async (req, res) => {
+router.get('/team', protect, verifyTenantScope(), async (req, res) => {
     try {
-        const team = await buildTeamWithMetrics(req.user.clientId);
+        const clientId = tenantClientId(req);
+        const team = await buildTeamWithMetrics(clientId);
         res.json({ success: true, team });
     } catch (error) {
         console.error('[TeamAPI] Fetch Error:', error);

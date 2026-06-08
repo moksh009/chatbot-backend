@@ -17,6 +17,7 @@ const {
   OPENAI_MODELS,
 } = require('../services/ai/aiWalletService');
 const { validateGeminiKey, validateOpenAiKey, callAI } = require('../utils/core/aiGateway');
+const { sendAiError } = require('../utils/core/aiProviderErrors');
 
 router.get('/status', protect, async (req, res) => {
   try {
@@ -130,10 +131,7 @@ router.post('/test-prompt', protect, async (req, res) => {
     });
     res.json({ success: true, reply: formatReplyForWhatsApp(result.content), usage: result.usage, provider: result.provider });
   } catch (err) {
-    if (err.code === 'AI_NOT_CONFIGURED') {
-      return res.status(400).json({ error: 'Connect an API key first.', code: 'AI_NOT_CONFIGURED' });
-    }
-    res.status(500).json({ error: err.message });
+    return sendAiError(res, err);
   }
 });
 

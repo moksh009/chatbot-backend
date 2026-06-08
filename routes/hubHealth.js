@@ -10,7 +10,9 @@ const { buildPlatformHealth } = require('../utils/hub/platformHealth');
 
 function assertClientAccess(req, res) {
   const { clientId } = req.params;
-  if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'super-admin') {
+  const role = String(req.user?.role || '').toUpperCase();
+  if (role === 'SUPER_ADMIN') return true;
+  if (req.user?.clientId && req.user.clientId !== clientId) {
     res.status(403).json({ success: false, message: 'Forbidden' });
     return false;
   }

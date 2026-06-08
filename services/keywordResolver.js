@@ -3,6 +3,7 @@
 const { findMatchingRule } = require('../utils/core/rulesEngine');
 const KeywordTrigger = require('../models/KeywordTrigger');
 const { getAppRedis } = require('../utils/core/redisFactory');
+const { isSmartRulesEngineEnabled } = require('../utils/core/featureFlags');
 const log = require('../utils/core/logger')('KeywordResolver');
 
 const CACHE_TTL = 60;
@@ -42,11 +43,15 @@ function matchKeywordTrigger(triggers, message, context = {}) {
  */
 async function findMatchingTrigger({ client, clientId, message, context = {} }) {
   const cid = clientId || client?.clientId;
-  const behaviorRules = client?.behaviorRules || client?.automationRules || [];
-  const behavior = findMatchingRule(behaviorRules, message, context);
-  if (behavior) {
-    return { type: 'behavior', match: behavior, action: behavior.actions };
+
+  if (isSmartRulesEngineEnabled()) {
+    const behaviorRules = client?.behaviorRules || client?.automationRules || [];
+    const behavior = findMatchingRule(behaviorRules, message, context);
+    if (behavior) {
+      return { type: 'behavior', match: behavior, action: behavior.actions };
+    }
   }
+
   const triggers = await getKeywordTriggers(cid);
   const kw = matchKeywordTrigger(triggers, message, context);
   if (kw) return kw;

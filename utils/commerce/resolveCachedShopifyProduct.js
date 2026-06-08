@@ -101,7 +101,7 @@ async function fetchLiveShopifyProduct(clientId, productId) {
   if (!client?.shopDomain || !client?.shopifyAccessToken) return null;
 
   try {
-    const { withShopifyRetry } = require("../shopify/shopifyClient");
+    const { withShopifyRetry } = require("../shopify/shopifyHelper");
     const product = await withShopifyRetry(clientId, async (shop) => {
       const resp = await shop.get(
         `/products/${id}.json?fields=id,title,handle,body_html,variants,images,status`

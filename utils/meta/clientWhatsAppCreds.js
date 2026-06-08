@@ -27,7 +27,14 @@ function maybeDecryptSecret(value) {
 }
 
 /**
- * Bearer token for Graph API: premium (decrypted) → root whatsappToken → nested whatsapp.accessToken.
+ * Mongoose .select() for any outbound WhatsApp send / envelope dispatch.
+ * Includes legacy nested paths (whatsapp.*, config.*) and premium overrides.
+ */
+const WHATSAPP_CREDENTIAL_SELECT =
+  "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp whatsappConnectionType whatsappConnectionMethod config complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
+
+/**
+ * Bearer token for Graph API: premium → root whatsappToken → nested whatsapp/config.
  */
 function getEffectiveWhatsAppAccessToken(client) {
   if (!client) return "";
@@ -35,11 +42,13 @@ function getEffectiveWhatsAppAccessToken(client) {
   if (premium) return premium;
   const root = maybeDecryptSecret(client.whatsappToken);
   if (root) return root;
-  return maybeDecryptSecret(client.whatsapp?.accessToken);
+  const nested = maybeDecryptSecret(client.whatsapp?.accessToken);
+  if (nested) return nested;
+  return maybeDecryptSecret(client.config?.whatsappToken);
 }
 
 /**
- * Phone number ID for /v21.0/{id}/messages — same precedence as legacy sends, plus nested whatsapp.
+ * Phone number ID for /v21.0/{id}/messages — premium → root → nested → config.
  */
 function getEffectiveWhatsAppPhoneNumberId(client) {
   if (!client) return "";
@@ -47,8 +56,66 @@ function getEffectiveWhatsAppPhoneNumberId(client) {
     String(client.premiumPhoneId || "").trim() ||
     String(client.phoneNumberId || "").trim() ||
     String(client.whatsapp?.phoneNumberId || "").trim() ||
+    String(client.config?.phoneNumberId || "").trim() ||
     ""
   );
+}
+
+/** WABA id — root → nested → config. */
+function getEffectiveWhatsAppWabaId(client) {
+  if (!client) return "";
+  return (
+    String(client.wabaId || "").trim() ||
+    String(client.whatsapp?.wabaId || "").trim() ||
+    String(client.config?.wabaId || "").trim() ||
+    ""
+  );
+}
+
+/**
+ * Resolved credentials for sends + connection checks (single source of truth).
+ */
+function resolveWhatsAppCredentials(client) {
+  return {
+    token: getEffectiveWhatsAppAccessToken(client),
+    phoneNumberId: getEffectiveWhatsAppPhoneNumberId(client),
+    wabaId: getEffectiveWhatsAppWabaId(client),
+    connectionType: client?.whatsappConnectionType || "",
+    connectionMethod: client?.whatsappConnectionMethod || "",
+  };
+}
+
+/** True when outbound WhatsApp Cloud API calls can be made for this tenant. */
+function isWhatsAppOutboundReady(client) {
+  const { token, phoneNumberId, wabaId } = resolveWhatsAppCredentials(client);
+  return !!(token && token.length > 5 && phoneNumberId && wabaId);
+}
+
+/**
+ * Mirror credential writes to all legacy storage paths so manual + embedded signup
+ * stay compatible after switching connection methods.
+ */
+function buildWhatsAppCredentialMirror({ phoneNumberId, wabaId, accessToken } = {}) {
+  const set = {};
+  if (phoneNumberId) {
+    const pid = String(phoneNumberId).trim();
+    set.phoneNumberId = pid;
+    set["whatsapp.phoneNumberId"] = pid;
+    set["config.phoneNumberId"] = pid;
+  }
+  if (wabaId) {
+    const wid = String(wabaId).trim();
+    set.wabaId = wid;
+    set["whatsapp.wabaId"] = wid;
+    set["config.wabaId"] = wid;
+  }
+  if (accessToken) {
+    const tok = String(accessToken).trim();
+    set.whatsappToken = tok;
+    set["whatsapp.accessToken"] = tok;
+    set["config.whatsappToken"] = tok;
+  }
+  return set;
 }
 
 /**
@@ -88,13 +155,19 @@ function getMetaCatalogAccessTokens(client) {
   push(client.premiumAccessToken);
   push(client.whatsappToken);
   push(client.whatsapp?.accessToken);
+  push(client.config?.whatsappToken);
   return out;
 }
 
 module.exports = {
+  WHATSAPP_CREDENTIAL_SELECT,
   maybeDecryptSecret,
   getEffectiveWhatsAppAccessToken,
   getEffectiveWhatsAppPhoneNumberId,
+  getEffectiveWhatsAppWabaId,
+  resolveWhatsAppCredentials,
+  isWhatsAppOutboundReady,
+  buildWhatsAppCredentialMirror,
   getMetaCatalogAccessTokens,
   phoneNumberIdMatchFilter,
 };

@@ -36,6 +36,7 @@ const {
   isWhatsAppClientConnected,
 } = require('../utils/core/connectionStatus');
 const { invalidateClientCache } = require('../utils/core/clientCache');
+const { buildWhatsAppCredentialMirror } = require('../utils/meta/clientWhatsAppCreds');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -156,9 +157,11 @@ router.post('/complete', protect, async (req, res) => {
 
   // ── Step 8: Persist to Client ─────────────────────────────────────────────
   const updatePayload = {
-    wabaId,
-    phoneNumberId,
-    whatsappToken: accessToken,          // encrypted by Client pre-save hook
+    ...buildWhatsAppCredentialMirror({
+      phoneNumberId,
+      wabaId,
+      accessToken,
+    }),
     whatsappDisplayPhoneNumber: displayPhoneNumber,
     whatsappVerifiedName: verifiedName,
     whatsappQualityRating: qualityRating,

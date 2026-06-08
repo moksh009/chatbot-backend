@@ -1374,10 +1374,12 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (wabaId !== undefined) {
       updateFields.wabaId = wabaId;
       updateFields['whatsapp.wabaId'] = wabaId;
+      updateFields['config.wabaId'] = wabaId;
     }
     if (phoneNumberId !== undefined) {
       updateFields.phoneNumberId = phoneNumberId;
       updateFields['whatsapp.phoneNumberId'] = phoneNumberId;
+      updateFields['config.phoneNumberId'] = phoneNumberId;
     }
     if (verifyToken !== undefined) {
       const v = String(verifyToken || '').trim();
@@ -1401,6 +1403,12 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (whatsappToken !== undefined && whatsappToken !== '••••••••' && whatsappToken.trim() !== '') {
       updateFields.whatsappToken = whatsappToken;
       updateFields['whatsapp.accessToken'] = whatsappToken;
+      updateFields['config.whatsappToken'] = whatsappToken;
+    }
+
+    if (waPatchRequested) {
+      updateFields.whatsappConnectionType = 'manual';
+      updateFields.whatsappConnectionMethod = 'manual';
     }
 
     if (waPatchRequested && _waVerifySnapshot && _waVerifySnapshot.ok) {

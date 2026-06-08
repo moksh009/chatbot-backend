@@ -6,17 +6,17 @@
 const NodeCache = require('node-cache');
 const Client = require('../../models/Client');
 const { dedupeAsync } = require('./requestDedupe');
+const { WHATSAPP_CREDENTIAL_SELECT } = require('../meta/clientWhatsAppCreds');
 
 const DEFAULT_SELECT = '-visualFlows -flowNodes -flowEdges';
 /** Webhook / inbound engine — skip multi-MB knowledge blobs; graphs load via flowGraphCache. */
 const WHATSAPP_INBOUND_SELECT =
   '-visualFlows -flowNodes -flowEdges -knowledgeBase -pendingKnowledge';
 /** Minimal fields for agent send + translation (avoids loading multi-MB client docs). */
-const WHATSAPP_SEND_SELECT =
-  'clientId phoneNumberId whatsappToken premiumAccessToken premiumPhoneId whatsapp translationConfig geminiApiKey config';
+const WHATSAPP_SEND_SELECT = WHATSAPP_CREDENTIAL_SELECT;
 /** Connection flags for workspace + ConnectionContext */
 const CONNECTION_STATUS_SELECT =
-  'clientId shopDomain shopifyAccessToken shopifyScopes shopifyStores shopifyConnectionStatus commerce phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappCoexistence whatsappQualityRating whatsappWebhookSubscribed whatsapp instagramAccessToken instagramPageId social metaAdsConnected metaAdsToken metaAdAccountId';
+  'clientId shopDomain shopifyAccessToken shopifyScopes shopifyStores shopifyConnectionStatus commerce phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappCoexistence whatsappQualityRating whatsappMessagingLimit whatsappWebhookSubscribed whatsapp instagramAccessToken instagramPageId social metaAdsConnected metaAdsToken metaAdAccountId';
 /** Settings validation / automation health */
 const VALIDATION_SELECT =
   'automationFlows syncedMetaTemplates shopDomain shopifyAccessToken whatsappToken phoneNumberId wabaId commerce';

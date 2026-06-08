@@ -8,6 +8,7 @@ const Client = require('../models/Client');
 const { normalizePersonaTone, buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaAcrossSystem, resolveQuickFaqReply, buildQuickFaqDirective } = require('../utils/core/personaEngine');
 const { callAI } = require('../utils/core/aiGateway');
 const { retrieveKnowledge, notifyRagFailure, isRagUnavailableError, getActiveKnowledgeHealth } = require('../utils/core/ragEngine');
+const { sendAiError } = require('../utils/core/aiProviderErrors');
 
 const TONE_OPTIONS = [
   'Professional & Helpful',
@@ -119,15 +120,21 @@ router.post('/persona/preview', protect, async (req, res) => {
         ragContext = ragChunks.map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`).join('\n');
       } catch (err) {
         if (isRagUnavailableError(err)) {
-          await notifyRagFailure(clientId, err.reason);
-          return res.status(503).json({
-            error: err.userMessage,
-            code: err.code,
-            reason: err.reason,
-            ragBlocked: true,
-          });
+          if (err.reason === 'query_embed_failed') {
+            ragChunks = [];
+            ragContext = '';
+          } else {
+            await notifyRagFailure(clientId, err.reason);
+            return res.status(503).json({
+              error: err.userMessage,
+              code: err.code,
+              reason: err.reason,
+              ragBlocked: true,
+            });
+          }
+        } else {
+          throw err;
         }
-        throw err;
       }
     }
 
@@ -156,12 +163,10 @@ router.post('/persona/preview', protect, async (req, res) => {
       chunks: ragChunks,
       retrievalMode: ragChunks.some((c) => c.mode === 'vector') ? 'hybrid' : ragChunks.length ? 'keyword' : 'none',
       matchedFaq: faqMatch ? { question: faqMatch.question } : null,
+      ragDegraded: ragContext === '' && health.active > 0,
     });
   } catch (err) {
-    if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
-      return res.status(400).json({ error: 'Configure your Gemini API key in AI Setup first.' });
-    }
-    res.status(500).json({ error: err.message });
+    return sendAiError(res, err);
   }
 });
 

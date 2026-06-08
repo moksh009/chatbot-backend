@@ -4,6 +4,7 @@ const AiTokenTransaction = require('../../models/AiTokenTransaction');
 const { generateTextWithUsage: geminiGenerate, isKeyValid } = require('./gemini');
 const { generateTextWithUsage: openaiGenerate, validateOpenAiKey } = require('./openaiProvider');
 const { resolveApiKeyForClient, incrementWalletTotals, getMaxOutputTokens } = require('../../services/ai/aiWalletService');
+const { AiProviderError, classifyAiError, isAiProviderError } = require('./aiProviderErrors');
 
 const CREDIT_RATE = {
   gemini: {
@@ -67,10 +68,7 @@ async function callAI({
 }) {
   const resolved = await resolveApiKeyForClient(clientId, { provider: provider || null });
   if (!resolved.configured) {
-    const err = new Error('AI_NOT_CONFIGURED');
-    err.code = 'AI_NOT_CONFIGURED';
-    err.userMessage = 'Add your API key in Intelligence Hub → AI Setup.';
-    throw err;
+    throw new AiProviderError('AI_NOT_CONFIGURED', { provider: provider || resolved.provider || null });
   }
 
   const walletMaxTokens = await getMaxOutputTokens(clientId);
@@ -81,27 +79,30 @@ async function callAI({
   const apiKey = resolved.apiKey;
 
   let result;
-  if (activeProvider === 'openai') {
-    result = await openaiGenerate(prompt, apiKey, {
-      systemInstruction: systemPrompt || undefined,
-      maxTokens: effectiveMaxTokens,
-      temperature,
-      model: activeModel,
-      responseMimeType: jsonMode ? 'application/json' : undefined,
-    });
-  } else {
-    result = await geminiGenerate(prompt, apiKey, {
-      noEnvFallback: true,
-      fast,
-      maxTokens: effectiveMaxTokens,
-      temperature,
-      model: activeModel,
-      systemInstruction: systemPrompt || undefined,
-      responseMimeType: jsonMode ? 'application/json' : undefined,
-    });
-  }
-
-  if (!result?.content) {
+  try {
+    if (activeProvider === 'openai') {
+      result = await openaiGenerate(prompt, apiKey, {
+        systemInstruction: systemPrompt || undefined,
+        maxTokens: effectiveMaxTokens,
+        temperature,
+        model: activeModel,
+        responseMimeType: jsonMode ? 'application/json' : undefined,
+      });
+    } else {
+      result = await geminiGenerate(prompt, apiKey, {
+        noEnvFallback: true,
+        fast,
+        maxTokens: effectiveMaxTokens,
+        temperature,
+        model: activeModel,
+        systemInstruction: systemPrompt || undefined,
+        responseMimeType: jsonMode ? 'application/json' : undefined,
+      });
+    }
+  } catch (err) {
+    const classified = isAiProviderError(err)
+      ? err
+      : classifyAiError(err, { provider: activeProvider, operation: 'generate' });
     await logTransaction({
       clientId,
       feature,
@@ -112,11 +113,25 @@ async function callAI({
       costUsd: 0,
       source: 'byo',
       success: false,
-      errorCode: 'EMPTY_RESPONSE',
+      errorCode: classified.code,
     });
-    const err = new Error('AI_EMPTY_RESPONSE');
-    err.code = 'AI_EMPTY_RESPONSE';
-    throw err;
+    throw classified;
+  }
+
+  if (!result?.content?.trim()) {
+    await logTransaction({
+      clientId,
+      feature,
+      provider: activeProvider,
+      model: activeModel,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      source: 'byo',
+      success: false,
+      errorCode: 'AI_EMPTY_RESPONSE',
+    });
+    throw new AiProviderError('AI_EMPTY_RESPONSE', { provider: activeProvider, operation: 'generate' });
   }
 
   const inputTokens = result.usage?.inputTokens || 0;

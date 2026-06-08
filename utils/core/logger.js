@@ -15,10 +15,9 @@ const COLORS = {
 };
 
 function formatMsg(level, service, message, data) {
-  const ts = new Date().toISOString();
   const colorCode = COLORS[level] || COLORS.reset;
   const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
-  return `${colorCode}[${ts}] [${level.toUpperCase()}] [${service}] ${message}${dataStr}${COLORS.reset}`;
+  return `${colorCode}[${level.toUpperCase()}] [${service}] ${message}${dataStr}${COLORS.reset}`;
 }
 
 function createLogger(service) {

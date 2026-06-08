@@ -1,7 +1,8 @@
 'use strict';
 
 const Client = require('../../models/Client');
-const { withShopifyRetry } = require('../shopify/shopifyClient');
+const { withShopifyRetry } = require('../shopify/shopifyHelper');
+const { resolveShopifyCredentials } = require('../shopify/resolveShopifyCredentials');
 
 function mapProduct(p) {
   const variant = p.variants?.[0];
@@ -21,9 +22,8 @@ async function listShopifyProductsForPicker(clientId, { q = '', limit = 50 } = {
   const client = await Client.findOne({ clientId }).lean();
   if (!client) return { success: false, products: [], message: 'Client not found' };
 
-  const shopDomain = client.shopDomain || client.commerce?.shopify?.domain;
-  const hasToken = !!(client.shopifyAccessToken || client.commerce?.shopify?.accessToken);
-  if (!shopDomain || !hasToken) {
+  const creds = resolveShopifyCredentials(client);
+  if (!creds.shopDomain || !creds.tokenPlain) {
     return { success: false, products: [], message: 'Shopify not connected' };
   }
 
