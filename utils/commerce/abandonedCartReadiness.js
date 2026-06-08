@@ -219,13 +219,13 @@ function buildChecklist(ctx) {
       id: 'shopify',
       label: 'Shopify store connected',
       status: ctx.flags.shopify_connected ? 'ok' : 'error',
-      href: '/settings?tab=integrations',
+      href: '/settings?tab=connections&connect=shopify',
     },
     {
       id: 'whatsapp',
       label: 'WhatsApp Business connected',
       status: ctx.flags.whatsapp_connected ? 'ok' : 'error',
-      href: '/settings?tab=integrations',
+      href: '/settings?tab=connections&connect=whatsapp',
     },
     {
       id: 'templates',
@@ -240,14 +240,14 @@ function buildChecklist(ctx) {
       label: 'Cart follow-up rules active',
       status: ctx.cartRulesActive >= 3 ? 'ok' : ctx.cartRulesActive > 0 ? 'warn' : 'error',
       detail: `${ctx.cartRulesActive}/3 live`,
-      href: '/shopify-automation-center?section=automations',
+      href: '/shopify-automation-center?section=abandoned-cart',
     },
     {
       id: 'pixel',
-      label: 'Deep pixel receiving checkout events',
+      label: 'Website tracking receiving checkout events',
       status: ctx.pixelInstalled && ctx.lastEventAt ? 'ok' : ctx.pixelInstalled ? 'warn' : 'error',
       href: '/commerce-hub?tab=tracking',
-      actionLabel: 'Set up Deep pixel',
+      actionLabel: 'Set up tracking',
     },
     {
       id: 'pcd',
