@@ -39,7 +39,6 @@ router.get('/suppliers', protect, apiCache(120), dashboardController.getSupplier
 router.delete('/suppliers/:id', protect, dashboardController.deleteSupplier);
 router.get('/restock-drafts', protect, apiCache(60), dashboardController.getRestockDrafts);
 router.get('/operations-summary', protect, apiCache(60), dashboardController.getOperationsSummary);
-router.get('/quality-stats', protect, apiCache(45), dashboardController.getQualityStats);
 router.post('/competitors', protect, dashboardController.createCompetitor);
 router.post('/competitors/:id/battle-plan', protect, dashboardController.generateBattlePlan);
 router.post('/suppliers', protect, dashboardController.createSupplier);

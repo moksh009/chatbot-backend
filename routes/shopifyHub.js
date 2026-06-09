@@ -236,36 +236,11 @@ router.get('/:clientId/products', protect, verifyClientAccess, apiCache(120), as
  * @route   PUT /api/shopify-hub/:clientId/products/:productId/price
  * @desc    Update product price in Shopify
  */
-router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const { variantId, price } = req.body;
-
-    await withShopifyRetry(clientId, async (shop) => {
-        return await shop.put(`/variants/${variantId}.json`, {
-          variant: { id: variantId, price }
-        });
-    });
-
-    try {
-      const { writeAuditLog } = require('../utils/messaging/writeAuditLog');
-      await writeAuditLog({
-        clientId,
-        action_type: 'commerce_price_changed',
-        target_resource: `product:${req.params.productId}`,
-        actor: {
-          type: 'user',
-          userId: req.user?._id || req.user?.id,
-          source: 'dashboard',
-        },
-        payload: { variantId, price, category: 'commerce' },
-      });
-    } catch (_) {}
-
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, async (_req, res) => {
+  res.status(403).json({
+    success: false,
+    error: 'Price changes from the dashboard are disabled. Update prices in Shopify Admin.',
+  });
 });
 
 /**

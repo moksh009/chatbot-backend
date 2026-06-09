@@ -34,12 +34,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
   switch (action) {
     
     case "ESCALATE_HUMAN": {
-      await Conversation.findByIdAndUpdate(convo._id, {
-        botPaused:         true,
-        requiresAttention: true,
-        attentionReason:   "Bot flow escalated to human",
-        status:            'HUMAN_TAKEOVER'
-      });
+      const { buildReopenAttentionUpdate } = require('../core/supportConversationMetrics');
+      await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
+        botPaused: true,
+        attentionReason: 'Bot flow escalated to human',
+        status: 'HUMAN_TAKEOVER',
+      }));
       
       try {
         const AdLead = require("../../models/AdLead");
@@ -77,28 +77,14 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     }
     
     case "SEND_WARRANTY_PDF": {
-      try {
-        const { generateWarrantyCertificatePdf } = require('../commerce/warrantyCertificatePdf');
-        const meta = convo?.metadata || {};
-        const pdf = await generateWarrantyCertificatePdf(client, {
-          productName: meta._warranty_product_name,
-          orderRef: meta._warranty_order_ref,
-          expiresDisplay: meta._warranty_expires_display,
-          customerName: meta.customer_name || lead?.name,
-        });
-        const caption =
-          `📄 *Warranty certificate*\n\nProduct: ${meta._warranty_product_name || "your product"}\nValid until: ${meta._warranty_expires_display || "—"}`;
-        await WhatsApp.sendDocument(client, phone, pdf.publicUrl, "Warranty_Certificate.pdf");
-        await WhatsApp.sendText(client, phone, caption);
-      } catch (err) {
+      const meta = convo?.metadata || {};
+      await WhatsApp.sendText(
+        client,
+        phone,
+        `📄 *Warranty certificate*\n\nProduct: ${meta._warranty_product_name || "your product"}\nOrder: ${meta._warranty_order_ref || "—"}\nValid until: ${meta._warranty_expires_display || "—"}`
+      ).catch((err) => {
         console.error("[NodeActions] SEND_WARRANTY_PDF error:", err.message);
-        const meta = convo?.metadata || {};
-        await WhatsApp.sendText(
-          client,
-          phone,
-          `📄 Warranty details:\nProduct: ${meta._warranty_product_name || "—"}\nExpires: ${meta._warranty_expires_display || "—"}`
-        ).catch(() => {});
-      }
+      });
       break;
     }
 
@@ -488,9 +474,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           ? nodeChannel
           : (pref === "whatsapp" || pref === "email" || pref === "both" ? pref : "both");
 
+      const { buildReopenAttentionUpdate } = require('../core/supportConversationMetrics');
       await Conversation.findOneAndUpdate(
         { phone, clientId: client.clientId },
-        { requiresAttention: true, attentionReason: topic }
+        buildReopenAttentionUpdate({ attentionReason: topic })
       );
 
       await NotificationService.sendAdminAlert(client, {

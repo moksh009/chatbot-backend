@@ -253,7 +253,13 @@ async function handleImportLeads(data, job) {
 
         if (global.io) {
             global.io.to(`client_${clientId}`).emit('import_completed', {
-                batchId, success, updated, failed, batchTag, errors: session.errorLog
+                batchId,
+                sessionId: String(session._id),
+                success,
+                updated,
+                failed,
+                batchTag,
+                errors: session.errorLog,
             });
         }
 

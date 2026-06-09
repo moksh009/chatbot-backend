@@ -2,6 +2,7 @@
 
 const axios        = require("axios");
 const Conversation = require("../../models/Conversation");
+const { buildReopenAttentionUpdate } = require('../core/supportConversationMetrics');
 const AdLead       = require("../../models/AdLead");
 const Message      = require("../../models/Message");
 const DailyStat    = require("../../models/DailyStat");
@@ -1790,7 +1791,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           });
       }
       // Optional: Pause bot or mark for takeover
-      await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', requiresAttention: true });
+      await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({ status: 'HUMAN_TAKEOVER' }));
       try {
         await AdLead.findOneAndUpdate(
           { phoneNumber: phone, clientId: client.clientId },
@@ -1915,18 +1916,15 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Check human handoff interrupts
     if (_globalInterruptKeywords.humanHandoff.some(k => userTextLower.includes(k))) {
       log.info(`🙋 [GlobalInterrupt] Human request "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
-      await Conversation.findByIdAndUpdate(convo._id, {
-        $set: {
-          status: 'HUMAN_TAKEOVER',
-          requiresAttention: true,
-          botPaused: true,
-          isBotPaused: true,
-          botStatus: 'paused',
-          lastStepId: null,
-          waitingForVariable: null,
-          captureResumeNodeId: null
-        }
-      });
+      await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
+        status: 'HUMAN_TAKEOVER',
+        botPaused: true,
+        isBotPaused: true,
+        botStatus: 'paused',
+        lastStepId: null,
+        waitingForVariable: null,
+        captureResumeNodeId: null,
+      }));
       try {
         const { applyNeedHelpTag } = require('./needHelpTag');
         await applyNeedHelpTag(client.clientId, phone);
@@ -1997,19 +1995,16 @@ async function runDualBrainEngine(parsedMessage, client) {
         if (retries >= maxRetries) {
           // Safeguard 1: Infinite Loop Trap -> Escalate
           log.warn(`🚨 Max retries (${maxRetries}) reached for ${phone}. Escalating to human.`);
-          await Conversation.findByIdAndUpdate(convo._id, {
-            $set: {
+          await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
               status: 'HUMAN_SUPPORT',
               botPaused: true,
               isBotPaused: true,
               botStatus: 'paused',
-              requiresAttention: true,
               attentionReason: 'Validation failed — human support',
               waitingForVariable: null,
               captureResumeNodeId: null,
-              captureRetries: 0
-            }
-          });
+              captureRetries: 0,
+            }));
           await WhatsApp.sendText(client, phone, "I'm having trouble understanding. Let me connect you with a member of our team! 👤");
         } else {
           await Conversation.findByIdAndUpdate(convo._id, { $inc: { captureRetries: 1 } });
@@ -3590,11 +3585,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       "";
 
     // 1. Mark conversation as needing attention (does not pause bot — handoff nodes handle pause)
-    await Conversation.findByIdAndUpdate(convo._id, {
-      requiresAttention: true,
+    await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
       attentionReason: alertMsg,
       lastInteraction: new Date(),
-    });
+    }));
 
     // 2. Emit real-time socket event to dashboard
     if (io) {
@@ -4271,15 +4265,14 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   if (node.type === 'livechat') {
-    await Conversation.findByIdAndUpdate(convo._id, { 
-      status: 'HUMAN_SUPPORT', 
-      botPaused: true, 
+    await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
+      status: 'HUMAN_SUPPORT',
+      botPaused: true,
       isBotPaused: true,
       botStatus: 'paused',
-      requiresAttention: true,
       attentionReason: '🙋 Human support requested via flow',
-      lastInteraction: new Date()
-    });
+      lastInteraction: new Date(),
+    }));
     try {
       const { applyNeedHelpTag } = require('./needHelpTag');
       await applyNeedHelpTag(client.clientId, phone);

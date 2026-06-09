@@ -964,7 +964,9 @@ const getClientOrders = async (req, res) => {
 
         const dedupeKey = `orders:list:${clientConfig.clientId}:${JSON.stringify(req.query || {})}`;
         const result = await dedupeAsync(dedupeKey, async () => {
-            const fetchLimit = 5000;
+            const tab = statusTab || req.query.statusTab || 'All';
+            const needsTabFilter = String(tab).toLowerCase() !== 'all';
+            const fetchLimit = needsTabFilter ? 15000 : Math.min(15000, Math.max(limit * page + limit, 500));
             const raw = await timer.time('Order.find', () => {
                 const q = Order.find(mongoQuery).sort({ createdAt: -1 }).limit(fetchLimit).lean();
                 if (mongoQuery.clientId) {
@@ -973,13 +975,15 @@ const getClientOrders = async (req, res) => {
                 return q;
             });
             let list = dedupeOrdersByShopifyKey(raw);
-            list = filterOrdersByStatusTab(list, statusTab || req.query.statusTab || 'All');
-            const total = list.length;
+            list = filterOrdersByStatusTab(list, tab);
+            const dbCount = await Order.countDocuments(mongoQuery);
+            const total = Math.max(list.length, needsTabFilter ? list.length : dbCount);
             const totalPages = Math.max(1, Math.ceil(total / limit));
             const safePage = Math.min(page, totalPages);
             const start = (safePage - 1) * limit;
             const orders = list.slice(start, start + limit).map((order) => ({
                 ...order,
+                items: normalizeOrderItemsForList(order),
                 cartValue: computeOrderCartValue(order),
             }));
             return { orders, total, page: safePage, limit, totalPages };
@@ -1230,32 +1234,100 @@ async function syncOrderStatusToShopifyAPI({ clientId, order, status, trackingNu
     }
     const st = String(status || '').toLowerCase();
     const nd = nicheData || {};
-    try {
-        if (st === 'shipped' || st === 'fulfilled') {
-            let activeLocId = nd.shopifyLocationId;
-            if (!activeLocId) {
-                try {
-                    const locRes = await shopifyApi.get('/locations.json');
-                    activeLocId = locRes.data.locations?.[0]?.id;
-                } catch (locErr) {
-                    console.error('[ShopifySync] locations fetch:', locErr.message);
+    const shopifyOrderId = order.shopifyOrderId;
+
+    async function resolveLocationId() {
+        let activeLocId = nd.shopifyLocationId;
+        if (!activeLocId) {
+            try {
+                const locRes = await shopifyApi.get('/locations.json');
+                activeLocId = locRes.data.locations?.[0]?.id;
+            } catch (locErr) {
+                console.error('[ShopifySync] locations fetch:', locErr.message);
+            }
+        }
+        return activeLocId || null;
+    }
+
+    async function createFulfillmentIfNeeded() {
+        const { data: fulData } = await shopifyApi.get(`/orders/${shopifyOrderId}/fulfillments.json`);
+        const fulfillments = fulData?.fulfillments || [];
+        const tn = trackingNumber || order.trackingNumber;
+        const tu = trackingUrl || order.trackingUrl;
+        if (fulfillments.length > 0) {
+            if (tn || tu) {
+                const latest = fulfillments[fulfillments.length - 1];
+                if (latest?.id) {
+                    try {
+                        await shopifyApi.put(`/orders/${shopifyOrderId}/fulfillments/${latest.id}.json`, {
+                            fulfillment: {
+                                tracking_number: tn || latest.tracking_number || undefined,
+                                tracking_urls: tu ? [tu] : latest.tracking_urls,
+                            },
+                        });
+                    } catch (trackErr) {
+                        console.error('[ShopifySync] fulfillment tracking update:', trackErr.message);
+                    }
                 }
             }
-            const tn = trackingNumber || order.trackingNumber;
-            const tu = trackingUrl || order.trackingUrl;
-            const urls = tu ? [tu] : [];
-            await shopifyApi.post(`/orders/${order.shopifyOrderId}/fulfillments.json`, {
-                fulfillment: {
-                    location_id: activeLocId || null,
-                    tracking_number: tn || undefined,
-                    tracking_urls: urls,
-                    notify_customer: false,
+            return fulfillments;
+        }
+        const activeLocId = await resolveLocationId();
+        const urls = tu ? [tu] : [];
+        const createRes = await shopifyApi.post(`/orders/${shopifyOrderId}/fulfillments.json`, {
+            fulfillment: {
+                location_id: activeLocId,
+                tracking_number: tn || undefined,
+                tracking_urls: urls,
+                notify_customer: false,
+            },
+        });
+        return createRes.data?.fulfillment ? [createRes.data.fulfillment] : [];
+    }
+
+    try {
+        if (st === 'paid') {
+            const { data: shopData } = await shopifyApi.get(`/orders/${shopifyOrderId}.json`);
+            const shopOrder = shopData?.order;
+            if (!shopOrder) return { ok: false, error: 'Order not found on Shopify' };
+            const fin = String(shopOrder.financial_status || '').toLowerCase();
+            if (fin === 'paid' || fin === 'partially_paid') {
+                return { ok: true, skipped: true };
+            }
+            const amount = shopOrder.total_price || shopOrder.current_total_price;
+            await shopifyApi.post(`/orders/${shopifyOrderId}/transactions.json`, {
+                transaction: {
+                    kind: 'sale',
+                    status: 'success',
+                    amount,
+                    currency: shopOrder.currency || 'INR',
+                    gateway: 'manual',
+                    source: 'external',
                 },
             });
             return { ok: true };
         }
+        if (st === 'shipped' || st === 'fulfilled') {
+            await createFulfillmentIfNeeded();
+            return { ok: true };
+        }
+        if (st === 'delivered') {
+            const fulfillments = await createFulfillmentIfNeeded();
+            const latest = fulfillments[fulfillments.length - 1];
+            if (!latest?.id) {
+                return { ok: false, error: 'Could not create fulfillment on Shopify' };
+            }
+            const shipmentStatus = String(latest.shipment_status || '').toLowerCase();
+            if (shipmentStatus === 'delivered') {
+                return { ok: true, skipped: true };
+            }
+            await shopifyApi.post(`/orders/${shopifyOrderId}/fulfillments/${latest.id}/events.json`, {
+                event: { status: 'delivered' },
+            });
+            return { ok: true };
+        }
         if (st === 'cancelled') {
-            await shopifyApi.post(`/orders/${order.shopifyOrderId}/cancel.json`, { reason: 'customer' });
+            await shopifyApi.post(`/orders/${shopifyOrderId}/cancel.json`, { reason: 'customer' });
             return { ok: true };
         }
         return { ok: true, skipped: true };
@@ -1370,24 +1442,88 @@ const updateOrderStatus = async (req, res) => {
     }
 };
 
+function normalizeShippingAddressInput(raw = {}) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    return {
+        address1: String(src.address1 || src.line1 || '').trim(),
+        address2: String(src.address2 || src.line2 || '').trim(),
+        city: String(src.city || '').trim(),
+        state: String(src.state || src.province || src.province_code || '').trim(),
+        zip: String(src.zip || src.postal_code || '').trim(),
+        country: String(src.country || src.country_code || 'India').trim() || 'India',
+        first_name: src.first_name || src.firstName || undefined,
+        last_name: src.last_name || src.lastName || undefined,
+    };
+}
+
+function normalizeOrderItemsForList(order) {
+    const raw = Array.isArray(order?.items) && order.items.length
+        ? order.items
+        : (Array.isArray(order?.lineItems) ? order.lineItems : []);
+    return raw.map((item) => {
+        const image =
+            (item?.image && typeof item.image === 'object' ? item.image.src : item.image) ||
+            item.imageUrl ||
+            item.product_image ||
+            null;
+        return {
+            ...item,
+            name: item.name || item.title || item.productName || 'Item',
+            quantity: item.quantity ?? item.qty ?? 1,
+            image,
+        };
+    });
+}
+
 const updateOrderAddress = async (req, res) => {
     const { createTimer } = require('../../utils/core/perfLogger');
     const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/address', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
-        const { shippingAddress } = req.body;
-        const { clientId } = req.clientConfig;
+        const shippingAddress = normalizeShippingAddressInput(req.body?.shippingAddress || req.body);
+        const { clientId, shopDomain, shopifyAccessToken } = req.clientConfig;
 
-        const order = await Order.findOneAndUpdate(
-            { _id: orderId, clientId },
-            { $set: { shippingAddress } },
-            { new: true }
-        );
-
+        const order = await Order.findOne({ _id: orderId, clientId });
         if (!order) {
             timer.finish('404');
             return res.status(404).json({ error: 'Order not found' });
         }
+
+        if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
+            try {
+                const shopifyApi = await getShopifyClient(clientId);
+                await shopifyApi.put(`/orders/${order.shopifyOrderId}.json`, {
+                    order: {
+                        id: order.shopifyOrderId,
+                        shipping_address: {
+                            address1: shippingAddress.address1,
+                            address2: shippingAddress.address2 || '',
+                            city: shippingAddress.city,
+                            province: shippingAddress.state,
+                            zip: shippingAddress.zip,
+                            country: shippingAddress.country,
+                            first_name: shippingAddress.first_name,
+                            last_name: shippingAddress.last_name,
+                        },
+                    },
+                });
+            } catch (shopErr) {
+                const detail = shopErr.response?.data || shopErr.message;
+                console.error('[UpdateOrderAddress] Shopify sync failed:', detail);
+                return res.status(502).json({
+                    error: 'Shopify rejected this address update. Your dashboard was not changed.',
+                    shopifySyncFailed: true,
+                    details: detail,
+                });
+            }
+        }
+
+        order.shippingAddress = shippingAddress;
+        order.address = shippingAddress.address1;
+        order.city = shippingAddress.city;
+        order.state = shippingAddress.state;
+        order.zip = shippingAddress.zip;
+        await order.save();
 
         const io = req.app.get('socketio');
         if (io) {
@@ -1396,7 +1532,7 @@ const updateOrderAddress = async (req, res) => {
             } catch (_) { /* non-fatal */ }
         }
 
-        res.json({ success: true, order });
+        res.json({ success: true, order: order.toObject() });
         timer.finish('200 ok');
     } catch (error) {
         console.error('[UpdateOrderAddress] Error:', error);

@@ -422,9 +422,6 @@ app.use('/api/reseller', require('./routes/reseller'));
 app.use('/api/warranty', require('./routes/warranty'));
 app.use('/api/template-gate', require('./routes/templateGate'));
 
-// Bot Quality Analytics (replaces deleted /api/intelligence/footprint)
-app.use('/api/bot-quality', require('./routes/botQuality'));
-
 // Intelligence DNA route (Customer 360 — LiveChat deferred intelligence)
 app.use('/api/intelligence', require('./routes/intelligenceDna'));
 

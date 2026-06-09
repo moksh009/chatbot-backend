@@ -592,7 +592,7 @@ router.post('/webhook/shopify/log-restore-event', async (req, res) => {
   }
 });
 
-router.get('/orders', apiCache(120), async (req, res) => {
+router.get('/orders', ...secure, apiCache(120), async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -606,7 +606,7 @@ router.get('/orders', apiCache(120), async (req, res) => {
   }
 });
 
-router.patch('/orders/:orderId/status', async (req, res) => {
+router.patch('/orders/:orderId/status', ...secure, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -648,7 +648,7 @@ router.get('/order-messages/overview', ...secure, apiCache(60), async (req, res)
   }
 });
 
-router.patch('/orders/:orderId/address', async (req, res) => {
+router.patch('/orders/:orderId/address', ...secure, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {

@@ -411,14 +411,22 @@ const buildCsvStream = (cursor, selectedFields) => {
 router.post('/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
     req.setTimeout(30000); // 30s timeout
     try {
-        const { clientId, mode, pages = [], filter = {}, fields } = req.body;
-        
+        const { mode, pages = [], filter = {}, fields } = req.body;
+        const { tenantClientId } = require('../utils/core/queryHelpers');
+        const clientId = tenantClientId(req) || req.body.clientId;
+
+        if (!clientId) {
+            return res.status(400).json({ success: false, message: 'clientId is required' });
+        }
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
              return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
         let query = { clientId };
-        let selectedFields = fields ? fields.split(',').map(f => f.trim()) : null;
+        const FIELD_ALIASES = { phone: 'phoneNumber', lastInteraction: 'lastInteraction' };
+        let selectedFields = fields
+            ? fields.split(',').map((f) => FIELD_ALIASES[f.trim()] || f.trim()).filter(Boolean)
+            : null;
 
         if (mode === 'pages' && pages.length) {
             const limit = 20; // Default page size

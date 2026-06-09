@@ -69,7 +69,6 @@ const modules = [
   './routes/reseller',
   './routes/warranty',
   './routes/templateGate',
-  './routes/botQuality',
   './routes/intelligenceDna',
   './routes/keywords',
   './routes/igAutomationRoutes',

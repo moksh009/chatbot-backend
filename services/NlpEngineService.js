@@ -3,7 +3,6 @@ const { LangEn } = require('@nlpjs/lang-en');
 const { LangHi } = require('@nlpjs/lang-hi');
 const IntentRule = require('../models/IntentRule');
 const ActionExecutorService = require('./ActionExecutorService');
-const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const IntentAnalytics = require('../models/IntentAnalytics');
 const Conversation = require('../models/Conversation');
 const path = require('path');
@@ -232,36 +231,7 @@ class NlpEngineService {
       return { recorded: false, reason: 'matched', intent, score };
     }
 
-    try {
-      const exists = await UnrecognizedPhrase.findOne({
-        clientId,
-        phrase: text,
-        status: 'PENDING'
-      })
-        .select('_id')
-        .lean();
-
-      if (!exists) {
-        await UnrecognizedPhrase.create({
-          clientId,
-          phrase: text,
-          phoneNumber: phoneNumber || '',
-          language: result.language || 'unknown',
-          source: 'WHATSAPP',
-          status: 'PENDING',
-          conversationId: conversationId || undefined
-        });
-        console.log(
-          `[NLPEngine] Training Inbox gap (WHATSAPP): "${text.substring(0, 80)}…" conversation=${conversationId || 'none'}`
-        );
-        return { recorded: true, intent, score };
-      }
-    } catch (err) {
-      console.error('[NLPEngine] enqueueWhatsAppTrainingGap save error:', err.message);
-      return { recorded: false, reason: 'save_error' };
-    }
-
-    return { recorded: false, reason: 'duplicate_pending', intent, score };
+    return { recorded: false, reason: 'low_confidence', intent, score };
   }
 
   /** Resolve conversation for aggregated WhatsApp / Meta text pipeline (phone variants). */
@@ -294,19 +264,8 @@ class NlpEngineService {
 
       // BUG 6 FIX: Use unified confidence threshold from nlpConfig
       if (score < CONFIDENCE_THRESHOLD || intent === 'None' || !intent) {
-        console.warn(`[NLPEngine] Intent confidence too low or UNKNOWN (${score.toFixed(4)}). Logging for review.`);
+        console.warn(`[NLPEngine] Intent confidence too low or UNKNOWN (${score.toFixed(4)}).`);
         this.trackAnalytics(clientId, false, true);
-
-        UnrecognizedPhrase.create({
-          clientId,
-          phrase: finalString,
-          phoneNumber,
-          language: result.language || 'unknown',
-          source: 'WHATSAPP',
-          status: 'PENDING',
-          conversationId: conversationDoc ? conversationDoc._id : undefined
-        }).catch(err => console.error('[NLPEngine] Failed to log unrecognized phrase:', err));
-
         return result;
       }
 

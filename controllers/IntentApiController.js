@@ -1,10 +1,7 @@
 const mongoose = require('mongoose');
 const IntentRule = require('../models/IntentRule');
 const NlpEngineService = require('../services/NlpEngineService');
-const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const IntentAnalytics = require('../models/IntentAnalytics');
-const Conversation = require('../models/Conversation');
-const Message = require('../models/Message');
 const { CONFIDENCE_THRESHOLD } = require('../utils/core/nlpConfig');
 const ClientModel = require('../models/Client');
 const { callAIJSON } = require('../utils/core/aiGateway');
@@ -21,18 +18,6 @@ const { tenantClientId } = require('../utils/core/queryHelpers');
  */
 function resolveClientId(req) {
   return tenantClientId(req);
-}
-
-function previewTrainingMessageBody(m) {
-  const text =
-    (m.content && String(m.content).trim()) ||
-    (m.translatedContent && String(m.translatedContent).trim()) ||
-    (m.voiceTranscript && String(m.voiceTranscript).trim()) ||
-    '';
-  if (text) return text;
-  if (m.mediaUrl) return '[Media attachment]';
-  if (m.type && m.type !== 'text') return `[${m.type}]`;
-  return '[Non-text message]';
 }
 
 /**
@@ -193,160 +178,6 @@ exports.getIntents = async (req, res) => {
 };
 
 /**
- * TASK 3: Resolves a failed phrase by either assigning it to an intent or ignoring it.
- * BUG 8 FIX: ASSIGN now uses background retraining instead of blocking.
- */
-exports.resolvePhrase = async (req, res) => {
-  try {
-    const { phraseId, intentId, action } = req.body;
-    const clientId = resolveClientId(req);
-
-    if (!clientId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized.' });
-    }
-
-    // 1. Fetch the unrecognized phrase
-    const unrecognized = await UnrecognizedPhrase.findOne({ _id: phraseId, clientId });
-    if (!unrecognized) {
-      return res.status(404).json({ success: false, message: 'Unrecognized phrase pattern not found.' });
-    }
-
-    if (action === 'IGNORE') {
-      unrecognized.status = 'IGNORED';
-      await unrecognized.save();
-      console.log(`[IntentApi] Phrase ${phraseId} marked as IGNORED.`);
-    } else if (action === 'ASSIGN') {
-      if (!intentId) return res.status(400).json({ message: 'Target intentId required for ASSIGN action.' });
-
-      const rule = await IntentRule.findOne({ _id: intentId, clientId });
-      if (!rule) return res.status(404).json({ message: 'Target Intent Rule not found.' });
-
-      // Add the phrase to the training set if not already present
-      if (!rule.trainingPhrases.includes(unrecognized.phrase)) {
-        rule.trainingPhrases.push(unrecognized.phrase);
-        await rule.save();
-      }
-
-      unrecognized.status = 'RESOLVED';
-      await unrecognized.save();
-
-      // BUG 8 FIX: Retrain in background — same pattern as upsertIntent
-      console.log(`[IntentApi] Pattern Assigned. Scheduling background retraining for ${clientId}...`);
-      setImmediate(async () => {
-        try {
-          await NlpEngineService.trainClientModel(clientId);
-          if (global.io) {
-            global.io.to(`client_${clientId}`).emit('intent_training_complete', {
-              success: true, message: 'Phrase learned. Brain optimized.'
-            });
-          }
-        } catch (err) {
-          console.error('[ResolvePhrase] Background training failed:', err.message);
-        }
-      });
-    }
-
-    // Respond immediately — don't wait for retraining
-    res.status(200).json({ 
-        success: true, 
-        message: action === 'ASSIGN' ? 'Pattern assigned. Brain optimizing in background.' : 'Pattern ignored successfully.' 
-    });
-
-  } catch (error) {
-    console.error('[IntentApi] Resolve Error:', error);
-    res.status(500).json({ success: false, error: 'Failed to resolve unrecognized loop pattern.' });
-  }
-};
-
-/**
- * TASK 4 BRIDGE: Fetches PENDING unrecognized phrases with pagination.
- * GAP 10 FIX: Added pagination support.
- */
-exports.getPendingPhrases = async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized.' });
-    }
-
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-
-    const [phrases, total] = await Promise.all([
-      UnrecognizedPhrase.find({ clientId, status: 'PENDING' })
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit),
-      UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' })
-    ]);
-
-    res.status(200).json({
-      success: true,
-      phrases,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch pending intelligence gaps.' });
-  }
-};
-
-/**
- * Loads recent messages for Training Inbox "conversation context" (WhatsApp / Live Chat threads).
- */
-exports.getTrainingConversationMessages = async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    const { conversationId } = req.params;
-
-    if (!clientId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized.' });
-    }
-    if (!conversationId || !mongoose.Types.ObjectId.isValid(conversationId)) {
-      return res.status(400).json({ success: false, message: 'Invalid conversation id.' });
-    }
-
-    const convo = await Conversation.findOne({ _id: conversationId, clientId }).lean();
-    if (!convo) {
-      return res.status(404).json({ success: false, message: 'Conversation not found.' });
-    }
-
-    const rows = await Message.find({ conversationId: convo._id, clientId })
-      .sort({ timestamp: -1 })
-      .limit(60)
-      .lean();
-
-    rows.reverse();
-
-    const messages = rows.map((m) => ({
-      id: String(m._id),
-      direction: m.direction,
-      body: previewTrainingMessageBody(m),
-      timestamp: m.timestamp,
-      channel: m.channel || 'whatsapp',
-      type: m.type
-    }));
-
-    return res.status(200).json({
-      success: true,
-      conversation: {
-        id: String(convo._id),
-        phone: convo.phone,
-        customerName: convo.customerName || ''
-      },
-      messages
-    });
-  } catch (error) {
-    console.error('[IntentApi] Conversation context:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to load conversation context.' });
-  }
-};
-
-/**
  * BUG 3 FIX: Returns stats matching frontend field expectations.
  */
 exports.getIntentStats = async (req, res) => {
@@ -356,10 +187,8 @@ exports.getIntentStats = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized.' });
     }
     
-    // Count active intents and pending phrases
-    const [activeIntents, pendingPhrases, analyticsStats] = await Promise.all([
+    const [activeIntents, analyticsStats] = await Promise.all([
       IntentRule.countDocuments({ clientId, isActive: true }),
-      UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' }),
       IntentAnalytics.find({ clientId }).sort({ date: -1 }).limit(30)
     ]);
 
@@ -378,7 +207,7 @@ exports.getIntentStats = async (req, res) => {
       success: true, 
       stats: {
         activeIntents,
-        pendingPhrases,
+        pendingPhrases: 0,
         totalLearningHits: totals.totalMatched,
         accuracy
       }
@@ -476,196 +305,7 @@ exports.toggleIntent = async (req, res) => {
 };
 
 /**
- * GAP 9: Bulk resolve multiple unrecognized phrases at once.
- * Only triggers ONE background retrain after all assignments complete.
- */
-exports.resolveBulk = async (req, res) => {
-  try {
-    const { phraseIds, action, intentId } = req.body;
-    const clientId = resolveClientId(req);
-
-    if (!clientId) return res.status(401).json({ success: false, message: 'Unauthorized.' });
-    if (!phraseIds?.length) return res.status(400).json({ success: false, message: 'No phrases selected.' });
-
-    if (action === 'IGNORE') {
-      await UnrecognizedPhrase.updateMany(
-        { _id: { $in: phraseIds }, clientId },
-        { $set: { status: 'IGNORED' } }
-      );
-    } else if (action === 'ASSIGN') {
-      if (!intentId) return res.status(400).json({ message: 'Target intentId required for ASSIGN action.' });
-
-      const rule = await IntentRule.findOne({ _id: intentId, clientId });
-      if (!rule) return res.status(404).json({ message: 'Target Intent Rule not found.' });
-
-      // Fetch all phrases to assign
-      const phrases = await UnrecognizedPhrase.find({ _id: { $in: phraseIds }, clientId });
-      const newPhrases = phrases
-        .map(p => p.phrase)
-        .filter(p => !rule.trainingPhrases.includes(p));
-
-      if (newPhrases.length > 0) {
-        await IntentRule.updateOne(
-          { _id: intentId, clientId },
-          { $push: { trainingPhrases: { $each: newPhrases } } }
-        );
-      }
-
-      await UnrecognizedPhrase.updateMany(
-        { _id: { $in: phraseIds }, clientId },
-        { $set: { status: 'RESOLVED' } }
-      );
-
-      // ONE background retrain for all assignments
-      setImmediate(async () => {
-        try {
-          await NlpEngineService.trainClientModel(clientId);
-          if (global.io) {
-            global.io.to(`client_${clientId}`).emit('intent_training_complete', {
-              success: true, message: `${phraseIds.length} phrases learned. Brain optimized.`
-            });
-          }
-        } catch (err) {
-          console.error('[ResolveBulk] Background training failed:', err.message);
-        }
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `${phraseIds.length} phrases ${action === 'ASSIGN' ? 'assigned' : 'ignored'} successfully.`
-    });
-  } catch (error) {
-    console.error('[IntentApi] Bulk Resolve Error:', error);
-    res.status(500).json({ success: false, error: 'Bulk resolve failed.' });
-  }
-};
-
-/**
- * NEW 3: Suggest intent clusters from unrecognized phrases.
- * Groups PENDING phrases by common word overlap for auto-intent suggestions.
- */
-exports.suggestClusters = async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(401).json({ success: false, message: 'Unauthorized.' });
-
-    const phrases = await UnrecognizedPhrase.find({ clientId, status: 'PENDING' })
-      .sort({ createdAt: -1 })
-      .limit(200);
-
-    if (phrases.length < 3) {
-      return res.status(200).json({ success: true, clusters: [] });
-    }
-
-    // Simple word-overlap clustering (2-gram approach)
-    const phraseTexts = phrases.map(p => ({
-      id: p._id,
-      text: p.phrase.toLowerCase().trim(),
-      words: p.phrase.toLowerCase().trim().split(/\s+/)
-    }));
-
-    const clusters = [];
-    const used = new Set();
-
-    for (let i = 0; i < phraseTexts.length; i++) {
-      if (used.has(i)) continue;
-      const cluster = [phraseTexts[i]];
-      used.add(i);
-
-      for (let j = i + 1; j < phraseTexts.length; j++) {
-        if (used.has(j)) continue;
-        // Check word overlap (at least 2 common words)
-        const commonWords = phraseTexts[i].words.filter(w =>
-          w.length > 2 && phraseTexts[j].words.includes(w)
-        );
-        if (commonWords.length >= 2) {
-          cluster.push(phraseTexts[j]);
-          used.add(j);
-        }
-      }
-
-      if (cluster.length >= 3) {
-        // Generate a suggested name from most common words
-        const wordFreq = {};
-        cluster.forEach(c => c.words.forEach(w => {
-          if (w.length > 2) wordFreq[w] = (wordFreq[w] || 0) + 1;
-        }));
-        const topWords = Object.entries(wordFreq)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 3)
-          .map(([w]) => w.charAt(0).toUpperCase() + w.slice(1));
-
-        clusters.push({
-          suggestedName: topWords.join(' ') + ' Query',
-          phrases: cluster.map(c => c.text),
-          phraseIds: cluster.map(c => c.id),
-          count: cluster.length
-        });
-      }
-    }
-
-    res.status(200).json({ success: true, clusters: clusters.slice(0, 5) });
-  } catch (error) {
-    console.error('[IntentApi] Cluster Suggestion Error:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate clusters.' });
-  }
-};
-
-/**
- * Integration 3: Intent analytics for dashboard charts.
- */
-exports.getIntentAnalytics = async (req, res) => {
-  try {
-    const clientId = resolveClientId(req);
-    if (!clientId) return res.status(401).json({ success: false, message: 'Unauthorized.' });
-
-    const period = parseInt(req.query.days) || 7;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - period);
-    const startDateStr = startDate.toISOString().split('T')[0];
-
-    const [dailyStats, topIntents] = await Promise.all([
-      IntentAnalytics.find({ clientId, date: { $gte: startDateStr } }).sort({ date: 1 }),
-      IntentRule.find({ clientId, isActive: true })
-        .select('intentName totalTriggerCount lastTriggeredAt')
-        .sort({ totalTriggerCount: -1 })
-        .limit(10)
-    ]);
-
-    const dailyHits = dailyStats.map(d => ({
-      date: d.date,
-      matched: d.intentsMatched,
-      fallback: d.fallbackCount,
-      total: d.totalMessagesProcessed
-    }));
-
-    const totalProcessed = dailyStats.reduce((s, d) => s + d.totalMessagesProcessed, 0);
-    const totalMatched = dailyStats.reduce((s, d) => s + d.intentsMatched, 0);
-    const avgConfidence =
-      totalProcessed > 0 ? parseFloat(((totalMatched / totalProcessed) * 100).toFixed(1)) : null;
-
-    res.status(200).json({
-      success: true,
-      dailyHits,
-      topIntents: topIntents.map(i => ({
-        intentName: i.intentName,
-        count: i.totalTriggerCount || 0,
-        lastTriggered: i.lastTriggeredAt
-      })),
-      avgConfidence,
-      hasAnalyticsTraffic: totalProcessed > 0,
-    });
-  } catch (error) {
-    console.error('[IntentApi] Analytics Error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch analytics.' });
-  }
-};
-
-/**
  * MODULE 1: THE EPHEMERAL INTENT SIMULATOR (Sandbox)
- * Tests trained intents without firing actual webhooks or saving to database.
- * BUG 6 FIX: Uses unified CONFIDENCE_THRESHOLD from nlpConfig.
  */
 exports.simulateIntent = async (req, res) => {
   try {
@@ -687,48 +327,21 @@ exports.simulateIntent = async (req, res) => {
 
     // 2. Fetch associated Actions only if score passes unified threshold
     let simulatedActions = [];
-    let savedToInbox = false;
 
     if (score >= CONFIDENCE_THRESHOLD && intent && intent !== 'None') {
       const rule = await IntentRule.findOne({ clientId, intentName: intent });
       if (rule) {
         simulatedActions = rule.actions;
       }
-    } else {
-      // LOW CONFIDENCE: Save to Training Inbox so users can review it
-      try {
-        // Avoid duplicates — only save if this exact phrase isn't already pending
-        const exists = await UnrecognizedPhrase.findOne({ 
-          clientId, 
-          phrase: text.trim(), 
-          status: 'PENDING' 
-        });
-        
-        if (!exists) {
-          await UnrecognizedPhrase.create({
-            clientId,
-            phrase: text.trim(),
-            phoneNumber: '0000000000', // Fallback for strict old schemas
-            source: 'SIMULATOR',
-            status: 'PENDING'
-          });
-          savedToInbox = true;
-          console.log(`[IntentSimulator] Low-confidence phrase saved to Training Inbox: "${text}"`);
-        }
-      } catch (saveErr) {
-        console.error('[IntentSimulator] Failed to save to Training Inbox:', saveErr.message);
-        // We continue to return the simulation result, but savedToInbox remains false
-      }
     }
 
-    // 3. Return payload without executing ActionExecutor or saving Conversation
     res.status(200).json({
-      success: true, // Simulation itself succeeded
+      success: true,
       originalText: text,
       detectedIntent: intent,
       confidenceScore: score,
       simulatedActions,
-      savedToInbox
+      savedToInbox: false
     });
 
   } catch (error) {

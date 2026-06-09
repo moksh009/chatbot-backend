@@ -39,7 +39,7 @@ const ROUTE_FILES = [
   'notifications.js', 'dashboard.js', 'ecommerce.js', 'shopify.js', 'shopifyHub.js',
   'shopifyCatalog.js', 'whatsapp.js', 'whatsappFlows.js', 'metaTemplates.js', 'keywords.js',
   'rules.js', 'routingRules.js', 'audience.js', 'insights.js', 'intelligenceDna.js',
-  'bi.js', 'botQuality.js', 'storeEconomics.js', 'support.js', 'growth.js', 'qrcodes.js',
+  'bi.js', 'storeEconomics.js', 'support.js', 'growth.js', 'qrcodes.js',
   'customTags.js', 'autoTemplates.js', 'wizard.js', 'variables.js', 'validation.js',
   'onboardingState.js', 'onboardingV2.js', 'media.js', 'payment.js', 'abandonedCarts.js',
   'inboxRoutes.js', 'igAutomationRoutes.js', 'catalog.js', 'ai.js', 'business.js',

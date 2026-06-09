@@ -89,8 +89,17 @@ function priorDateRangeStrings(days) {
   return { start: priorStart, end: priorEnd, days: n };
 }
 
-async function buildPriorCommercePeriodKpis(clientId, daysInput) {
-  const { start, end, days } = priorDateRangeStrings(daysInput);
+async function buildPriorCommercePeriodKpis(clientId, daysInput, opts = {}) {
+  let start;
+  let end;
+  let days;
+  if (opts.end && opts.days) {
+    days = Math.min(Math.max(parseInt(opts.days, 10) || 1, 1), 90);
+    end = typeof opts.end === 'string' ? opts.end.slice(0, 10) : opts.end;
+    start = istDateOffsetDays(end, -(days - 1));
+  } else {
+    ({ start, end, days } = priorDateRangeStrings(daysInput));
+  }
   const startDate = startOfDayForDateStrIST(start);
   const [dailyKpis, liveOrders] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
@@ -284,9 +293,20 @@ function reconcileKpis(timelineKpis, dailyKpis, liveOrders) {
  * @param {{ clientId: string, days: number, timeline?: array, startDate?: Date }} opts
  */
 async function buildCommercePeriodKpis(opts) {
-  const { clientId, days: daysInput, timeline } = opts;
-  const { start, end, days } = dateRangeStrings(daysInput);
-  const startDate = opts.startDate || startOfDayForDateStrIST(start);
+  const { clientId, days: daysInput, timeline, start: startOverride, end: endOverride } = opts;
+  let start;
+  let end;
+  let days;
+  if (startOverride && endOverride) {
+    start = startOverride.slice(0, 10);
+    end = endOverride.slice(0, 10);
+    const startMs = startOfDayForDateStrIST(start).getTime();
+    const endMs = startOfDayForDateStrIST(end).getTime();
+    days = Math.min(Math.max(Math.floor((endMs - startMs) / 86400000) + 1, 1), 90);
+  } else {
+    ({ start, end, days } = dateRangeStrings(daysInput));
+  }
+  const startDate = startOfDayForDateStrIST(start);
 
   const [dailyKpis, liveOrders] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),

@@ -3,7 +3,6 @@ const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const Order = require('../models/Order');
 const Client = require('../models/Client');
-const { aggregateRtoProtectionStats } = require('../utils/commerce/rtoProtectionService');
 const { protect } = require('../middleware/auth');
 const { verifyTenantScope } = require('../middleware/verifyTenantScope');
 const { logAction } = require('../middleware/audit');
@@ -119,36 +118,6 @@ router.get('/:clientId/cod-pipeline', protect, verifyTenantScope(), logPersonalD
         totalPages: Math.ceil(total / limitNum)
       }
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.get('/:clientId/commerce-insights', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId || clientId !== req.params.clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-    const range = ['7d', '30d', 'all'].includes(String(req.query.range)) ? req.query.range : '30d';
-    const { getOrdersCommerceInsights } = require('../utils/commerce/ordersCommerceInsights');
-    const payload = await getOrdersCommerceInsights(clientId, range);
-    res.json(payload);
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.get('/:clientId/rto-analytics', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId || clientId !== req.params.clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const client = await Client.findOne({ clientId }).lean();
-    const payload = await aggregateRtoProtectionStats(clientId, client);
-    res.json(payload);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

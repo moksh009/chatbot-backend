@@ -12,7 +12,7 @@ const {
   getAnalyticsChart,
   getCartRecoveryChart,
 } = require('../utils/core/dashboardChartAnalytics');
-const { tenantClientId } = require('../utils/core/queryHelpers');
+const { tenantClientId, startOfDayForDateStrIST, endOfDayForDateStrIST, istDateOffsetDays } = require('../utils/core/queryHelpers');
 const { createTimer } = require('../utils/core/perfLogger');
 const { dedupeAsync } = require('../utils/core/requestDedupe');
 const DashboardLayout = require('../models/DashboardLayout');
@@ -46,10 +46,37 @@ exports.getSummary = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Unauthorized' });
     }
 
-    const requestedDays = Math.min(
-      parseInt(req.query.days, 10) || 30,
-      MAX_LIVE_ANALYTICS_DAYS
-    );
+    const startQuery = typeof req.query.start === 'string' ? req.query.start.slice(0, 10) : null;
+    const endQuery = typeof req.query.end === 'string' ? req.query.end.slice(0, 10) : null;
+    const hasCustomRange = Boolean(startQuery && endQuery);
+
+    let requestedDays;
+    let timelineRange = {};
+    let topProductsOpts = {};
+    let dedupeRangeKey;
+
+    if (hasCustomRange) {
+      timelineRange = { start: startQuery, end: endQuery };
+      const startMs = startOfDayForDateStrIST(startQuery).getTime();
+      const endMs = startOfDayForDateStrIST(endQuery).getTime();
+      requestedDays = Math.min(
+        Math.max(Math.floor((endMs - startMs) / 86400000) + 1, 1),
+        MAX_LIVE_ANALYTICS_DAYS
+      );
+      topProductsOpts = {
+        startDate: startOfDayForDateStrIST(startQuery),
+        endDate: endOfDayForDateStrIST(endQuery),
+      };
+      dedupeRangeKey = `${startQuery}:${endQuery}`;
+    } else {
+      requestedDays = Math.min(
+        parseInt(req.query.days, 10) || 30,
+        MAX_LIVE_ANALYTICS_DAYS
+      );
+      timelineRange = { days: requestedDays };
+      topProductsOpts = { days: requestedDays };
+      dedupeRangeKey = String(requestedDays);
+    }
 
     const client = await timer.time('getCachedClient', () =>
       getCachedClient(clientId, 'businessName name googleCalendarId config.calendars')
@@ -61,20 +88,34 @@ exports.getSummary = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
 
-    const includeOperators = ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(req.user.role);
-    const dedupeKey = `dashboard-summary:${clientId}:${requestedDays}:${includeOperators}`;
+    const userRole = String(req.user.role || '').toUpperCase();
+    const includeFullOperators = ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(userRole);
+    const includeSelfOperator = userRole === 'AGENT';
+    const includeOperators = includeFullOperators || includeSelfOperator;
+    const agentIdFilter = includeSelfOperator ? String(req.user._id || req.user.id || '') : '';
+    const dedupeKey = `dashboard-summary:${clientId}:${dedupeRangeKey}:${includeOperators}:${agentIdFilter || 'all'}`;
 
     const payload = await dedupeAsync(dedupeKey, async () => {
     const summaryTasks = [
       { key: 'realtime', run: () => getRealtimeStats(clientId, client, requestedDays, { timer }) },
-      { key: 'topProducts', run: () => getTopProducts(clientId, { timer, days: requestedDays }) },
+      { key: 'topProducts', run: () => getTopProducts(clientId, { timer, ...topProductsOpts }) },
       { key: 'humanQueue', run: () => getHumanQueueConversations(clientId, { timer }) },
-      { key: 'timeline', run: () => getTimelineStats(clientId, client, { days: requestedDays }, { timer }) },
+      { key: 'timeline', run: () => getTimelineStats(clientId, client, timelineRange, { timer }) },
     ];
     if (includeOperators) {
       summaryTasks.push({
         key: 'operators',
-        run: () => getOperatorsStats(clientId, requestedDays, { timer }),
+        run: () =>
+          getOperatorsStats(clientId, requestedDays, {
+            timer,
+            ...(agentIdFilter ? { agentIdFilter } : {}),
+            ...(hasCustomRange
+              ? {
+                  startDate: startOfDayForDateStrIST(startQuery),
+                  endDate: endOfDayForDateStrIST(endQuery),
+                }
+              : {}),
+          }),
       });
     }
 
@@ -100,8 +141,14 @@ exports.getSummary = async (req, res) => {
           clientId,
           days: requestedDays,
           timeline: byKey.timeline || [],
+          ...(hasCustomRange ? { start: startQuery, end: endQuery } : {}),
         }),
-        buildPriorCommercePeriodKpis(clientId, requestedDays),
+        hasCustomRange
+          ? buildPriorCommercePeriodKpis(clientId, requestedDays, {
+              end: istDateOffsetDays(startQuery, -1),
+              days: requestedDays,
+            })
+          : buildPriorCommercePeriodKpis(clientId, requestedDays),
       ]);
     } catch (kpiErr) {
       logger.warn('[Dashboard Summary] periodKpis failed:', kpiErr.message);
@@ -119,7 +166,11 @@ exports.getSummary = async (req, res) => {
       humanQueue: byKey.humanQueue || [],
       operators: byKey.operators?.operators || [],
       teamAvgResponseTimeMs: byKey.operators?.teamAvgResponseTimeMs ?? null,
-      meta: { days: requestedDays, generatedAt: new Date().toISOString() },
+      meta: {
+        days: requestedDays,
+        ...(hasCustomRange ? { start: startQuery, end: endQuery } : {}),
+        generatedAt: new Date().toISOString(),
+      },
     };
     });
 
@@ -464,193 +515,6 @@ exports.getFlows = async (req, res) => {
   }
 };
 
-exports.getQualityStats = async (req, res) => {
-  try {
-    const clientId = req.user.clientId;
-    const days = 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
-    const TrainingCase = require('../models/TrainingCase');
-    const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const IntentRule = require('../models/IntentRule');
-    const { buildBotQualityRecommendations } = require('../utils/core/botQualityInsights');
-
-    const [
-      qualityDocs,
-      allConvs,
-      aiHandledConvs,
-      orders,
-      totalCorrections,
-      dropoffs,
-      pendingPhrases,
-      publishedFlows,
-      intentsDefined,
-      intentsCold,
-    ] = await Promise.all([
-      Conversation.find({ clientId, aiQualityScore: { $gt: 0 }, createdAt: { $gte: startDate } })
-        .select('aiQualityScore csatScore sentimentScore firstInboundAt firstResponseAt createdAt')
-        .lean(),
-      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate } }),
-      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate }, botPaused: { $ne: true } }),
-      Order.find({ clientId, createdAt: { $gte: startDate } }).select('phone customerPhone').lean(),
-      TrainingCase.countDocuments({ clientId, createdAt: { $gte: startDate } }),
-      Conversation.aggregate([
-        {
-          $match: {
-            clientId,
-            createdAt: { $gte: startDate },
-            'lastNodeVisited.nodeLabel': { $exists: true, $ne: null },
-          },
-        },
-        { $group: { _id: '$lastNodeVisited.nodeLabel', count: { $sum: 1 }, nodeId: { $first: '$lastNodeVisited.nodeId' } } },
-        { $sort: { count: -1 } },
-        { $limit: 5 },
-      ]),
-      UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' }),
-      WhatsAppFlow.countDocuments({ clientId, status: 'PUBLISHED' }),
-      IntentRule.countDocuments({ clientId, isActive: true }),
-      IntentRule.countDocuments({
-        clientId,
-        isActive: true,
-        $or: [{ totalTriggerCount: { $exists: false } }, { totalTriggerCount: null }, { totalTriggerCount: 0 }],
-      }),
-    ]);
-
-    const dropoffNodes = dropoffs.map((d) => ({
-      label: d._id || 'Unknown step',
-      count: d.count,
-      nodeId: d.nodeId,
-    }));
-
-    const qualitySample = qualityDocs.length;
-    const avgScore =
-      qualitySample > 0
-        ? Math.round(qualityDocs.reduce((acc, curr) => acc + curr.aiQualityScore, 0) / qualitySample)
-        : null;
-
-    const csatRatings = qualityDocs.filter((d) => d.csatScore?.rating != null);
-    const avgCsat =
-      csatRatings.length > 0
-        ? (csatRatings.reduce((acc, curr) => acc + Number(curr.csatScore.rating), 0) / csatRatings.length).toFixed(1)
-        : null;
-
-    const speedDocs = qualityDocs.filter((d) => d.firstInboundAt && d.firstResponseAt);
-    const avgSpeedSeconds =
-      speedDocs.length > 0
-        ? Math.round(
-            speedDocs.reduce(
-              (acc, curr) => acc + (new Date(curr.firstResponseAt) - new Date(curr.firstInboundAt)),
-              0
-            ) /
-              speedDocs.length /
-              1000
-          )
-        : null;
-
-    const orderPhones = new Set(orders.map((o) => o.phone || o.customerPhone).filter(Boolean));
-    const winRatePct = allConvs > 0 ? (orderPhones.size / allConvs) * 100 : null;
-
-    const coveragePct = allConvs > 0 ? (aiHandledConvs / allConvs) * 100 : null;
-
-    const history = [];
-    for (let i = 6; i >= 0; i--) {
-      const day = new Date();
-      day.setDate(day.getDate() - i);
-      const dayName = day.toLocaleDateString('en-US', { weekday: 'short' });
-      const dayStart = new Date(day);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(day);
-      dayEnd.setHours(23, 59, 59, 999);
-
-      const dayConvs = qualityDocs.filter((c) => {
-        const t = new Date(c.createdAt);
-        return t >= dayStart && t <= dayEnd;
-      });
-      const dayScore =
-        dayConvs.length > 0
-          ? Math.round(dayConvs.reduce((a, c) => a + c.aiQualityScore, 0) / dayConvs.length)
-          : null;
-      history.push({
-        name: dayName,
-        score: dayScore ?? 0,
-        hasData: dayConvs.length > 0,
-      });
-    }
-
-    let drift = null;
-    const withData = history.filter((h) => h.hasData);
-    if (withData.length >= 4) {
-      const mid = Math.floor(withData.length / 2);
-      const early = withData.slice(0, mid);
-      const late = withData.slice(mid);
-      const avg = (arr) => arr.reduce((s, h) => s + h.score, 0) / arr.length;
-      drift = Math.round(avg(late) - avg(early));
-    }
-
-    const dimensions =
-      qualitySample > 0 && avgScore != null
-        ? [
-            { subject: 'Accuracy', A: Math.min(100, avgScore), fullMark: 100 },
-            { subject: 'Tone', A: Math.min(100, avgScore + 5), fullMark: 100 },
-            {
-              subject: 'Speed',
-              A: avgSpeedSeconds != null ? Math.max(0, Math.min(100, 100 - avgSpeedSeconds / 2)) : 50,
-              fullMark: 100,
-            },
-            { subject: 'Retention', A: Math.max(0, Math.min(100, avgScore - 10)), fullMark: 100 },
-            {
-              subject: 'Sales',
-              A: winRatePct != null ? Math.min(100, winRatePct * 5) : 0,
-              fullMark: 100,
-            },
-          ]
-        : [];
-
-    const displayScore =
-      avgScore != null ? avgScore : coveragePct != null ? Math.round(Math.min(100, coveragePct)) : null;
-
-    const { recommendations, summaryLine, gradeLetter, gradeTone } = buildBotQualityRecommendations({
-      pendingPhrases,
-      publishedFlows,
-      qualitySample,
-      conversations30d: allConvs,
-      dropoffNodes,
-      corrections: totalCorrections,
-      intentsDefined,
-      intentsCold,
-      compositeScore: displayScore,
-    });
-
-    const stats = {
-      avgScore: avgScore ?? 0,
-      displayScore,
-      qualitySample,
-      gradeLetter,
-      gradeTone,
-      summaryLine,
-      recommendations,
-      totalConversations: allConvs,
-      aiHandledConversations: aiHandledConvs,
-      coveragePct: coveragePct != null ? Number(coveragePct.toFixed(1)) : null,
-      winRate: winRatePct != null ? winRatePct.toFixed(1) : null,
-      csat: avgCsat,
-      drift,
-      driftAvailable: drift != null,
-      totalCorrections,
-      dropoffNodes,
-      dimensions,
-      history,
-      hasScoredQuality: qualitySample > 0,
-    };
-
-    res.json({ success: true, stats });
-  } catch (error) {
-    logger.error('Quality Stats Error', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
 
 exports.createCompetitor = async (req, res) => {
   try {

@@ -485,31 +485,21 @@ async function getTopProducts(clientId, options = {}) {
   return enrichTopProductsWithShopifyImages(clientId, apptProducts, timer);
 }
 
+const {
+  buildNeedsHumanHelpQuery,
+  fetchOpenSupportConversations,
+  capResponseTimeMs,
+  medianMs,
+} = require('./supportConversationMetrics');
+
 /**
- * Unassigned conversations needing human support (dashboard queue).
+ * Live WhatsApp threads needing human support (dashboard queue — aligned with Live Chat).
  */
 async function getHumanQueueConversations(clientId, options = {}) {
   const timer = options.timer || noopTimer();
   const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 200);
   return timer.time('Conversation.humanQueue', () =>
-    Conversation.find({
-      clientId,
-      $and: [
-        { $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }] },
-        {
-          $or: [
-            { status: { $in: ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT'] } },
-            { requiresAttention: true },
-          ],
-        },
-      ],
-    })
-      .sort({ lastMessageAt: -1 })
-      .limit(limit)
-      .select(
-        '_id phone customerName lastMessage lastMessageAt status requiresAttention assignedTo clientId'
-      )
-      .lean()
+    fetchOpenSupportConversations(clientId, { limit })
   );
 }
 
@@ -517,6 +507,7 @@ async function getHumanQueueConversations(clientId, options = {}) {
  * Average response time from escalation to first agent message (per agent).
  */
 async function getAgentEscalationResponseMap(clientId, startDate, endDate) {
+  const { MAX_AGENT_RESPONSE_MS: maxResponseMs } = require('./supportConversationMetrics');
   const rows = await Message.aggregate([
     {
       $match: {
@@ -549,19 +540,28 @@ async function getAgentEscalationResponseMap(clientId, startDate, endDate) {
       },
     },
     {
+      $addFields: {
+        responseMs: { $subtract: ['$firstReply', '$escalationAt'] },
+      },
+    },
+    {
+      $match: {
+        responseMs: { $gte: 0, $lte: maxResponseMs },
+      },
+    },
+    {
       $group: {
         _id: '$_id.agentId',
-        avgResponseTimeMs: {
-          $avg: { $subtract: ['$firstReply', '$escalationAt'] },
-        },
+        samples: { $push: '$responseMs' },
         conversationCount: { $sum: 1 },
       },
     },
   ]);
   const map = {};
   rows.forEach((r) => {
+    const med = medianMs(r.samples);
     map[String(r._id)] = {
-      avgResponseTimeMs: Math.max(0, r.avgResponseTimeMs || 0),
+      avgResponseTimeMs: med != null ? capResponseTimeMs(med) : null,
       escalationPairs: r.conversationCount || 0,
     };
   });
@@ -1027,71 +1027,118 @@ async function getTimelineStats(clientId, client, range = {}, options = {}) {
 }
 
 /**
- * @returns {Promise<{ success: boolean, operators: Array }>}
+ * @returns {Promise<{ success: boolean, operators: Array, teamAvgResponseTimeMs: number|null }>}
  */
 async function getOperatorsStats(clientId, daysInput, options = {}) {
   const timer = options.timer || noopTimer();
   const User = require('../../models/User');
   const ConversationAssignment = require('../../models/ConversationAssignment');
 
-  const endDateStr = todayDateStrIST();
-  const endDate = endOfDayForDateStrIST(endDateStr);
-  let startDateStr = endDateStr;
-  if (daysInput && daysInput !== 'all') {
-    const n = Math.min(Math.max(parseInt(daysInput, 10) || 1, 1), MAX_LIVE_ANALYTICS_DAYS);
-    startDateStr = istDateOffsetDays(endDateStr, -(n - 1));
+  let startDate;
+  let endDate;
+  if (options.startDate && options.endDate) {
+    startDate = options.startDate;
+    endDate = options.endDate;
   } else {
-    startDateStr = '2000-01-01';
+    const endDateStr = todayDateStrIST();
+    endDate = endOfDayForDateStrIST(endDateStr);
+    let startDateStr = endDateStr;
+    if (daysInput && daysInput !== 'all') {
+      const n = Math.min(Math.max(parseInt(daysInput, 10) || 1, 1), MAX_LIVE_ANALYTICS_DAYS);
+      startDateStr = istDateOffsetDays(endDateStr, -(n - 1));
+    } else {
+      startDateStr = '2000-01-01';
+    }
+    startDate = startOfDayForDateStrIST(startDateStr);
   }
-  const startDate = startOfDayForDateStrIST(startDateStr);
   timer.checkpoint('date_limit_computed');
 
-  const [humanAgg, aiAgg, teamUsers, responseMap] = await Promise.all([
-    timer.time('ConversationAssignment.humanAgg', () =>
+  const [handledAgg, solvedAgg, openList, aiAgg, teamUsers, responseMap] = await Promise.all([
+    timer.time('ConversationAssignment.handledDistinct', () =>
       ConversationAssignment.aggregate([
         { $match: { clientId, assignedAt: { $gte: startDate, $lte: endDate } } },
         {
-          $lookup: {
-            from: 'conversations',
-            localField: 'conversationId',
-            foreignField: '_id',
-            as: 'conv',
-          },
-        },
-        { $unwind: '$conv' },
-        {
           $group: {
-            _id: '$assignedAgentId',
-            currentOpenTickets: {
-              $sum: {
-                $cond: [{ $in: ['$conv.status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0],
-              },
-            },
-            ticketsSolved: { $sum: { $cond: [{ $eq: ['$conv.status', 'CLOSED'] }, 1, 0] } },
-            pendingTickets: {
-              $sum: { $cond: [{ $eq: ['$conv.status', 'WAITING_FOR_INPUT'] }, 1, 0] },
-            },
-            totalHandled: { $sum: 1 },
+            _id: { agentId: '$assignedAgentId', conversationId: '$conversationId' },
           },
         },
+        { $group: { _id: '$_id.agentId', totalHandled: { $sum: 1 } } },
       ])
     ),
-    timer.time('Conversation.aiAgg', () =>
+    timer.time('Conversation.solvedByAgent', () =>
       Conversation.aggregate([
-        { $match: { clientId, updatedAt: { $gte: startDate, $lte: endDate }, assignedTo: null } },
+        {
+          $match: {
+            clientId,
+            resolvedAt: { $gte: startDate, $lte: endDate, $ne: null },
+            assignedTo: { $exists: true, $ne: null },
+          },
+        },
+        { $group: { _id: '$assignedTo', ticketsSolved: { $sum: 1 } } },
+      ])
+    ),
+    fetchOpenSupportConversations(clientId, { limit: 200 }),
+    timer.time('Conversation.aiMetrics', () =>
+      Conversation.aggregate([
+        {
+          $match: {
+            clientId,
+            updatedAt: { $gte: startDate, $lte: endDate },
+            $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }],
+          },
+        },
         {
           $group: {
-            _id: '__AI_BOT__',
-            currentOpenTickets: {
+            _id: null,
+            totalHandled: {
               $sum: {
-                $cond: [{ $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0],
+                $cond: [
+                  {
+                    $or: [
+                      { $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] },
+                      { $eq: ['$requiresAttention', true] },
+                      { $eq: ['$botStatus', 'paused'] },
+                      { $ne: ['$resolvedAt', null] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
               },
             },
-            ticketsSolved: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+            ticketsSolved: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$resolvedAt', null] },
+                      { $gte: ['$resolvedAt', startDate] },
+                      { $lte: ['$resolvedAt', endDate] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            currentOpenTickets: {
+              $sum: {
+                $cond: [
+                  {
+                    $or: [
+                      { $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] },
+                      { $eq: ['$requiresAttention', true] },
+                      { $eq: ['$botStatus', 'paused'] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
             pendingTickets: {
               $sum: { $cond: [{ $eq: ['$status', 'WAITING_FOR_INPUT'] }, 1, 0] },
             },
-            totalHandled: { $sum: 1 },
           },
         },
       ])
@@ -1104,43 +1151,47 @@ async function getOperatorsStats(clientId, daysInput, options = {}) {
     getAgentEscalationResponseMap(clientId, startDate, endDate),
   ]);
 
-  const agentMap = {};
-  humanAgg.forEach((g) => {
-    agentMap[String(g._id)] = {
-      currentOpenTickets: g.currentOpenTickets,
-      pendingTickets: g.pendingTickets,
-      ticketsSolved: g.ticketsSolved,
-      totalHandled: g.totalHandled,
-    };
+  const handledMap = {};
+  handledAgg.forEach((g) => {
+    handledMap[String(g._id)] = g.totalHandled || 0;
+  });
+  const solvedMap = {};
+  solvedAgg.forEach((g) => {
+    solvedMap[String(g._id)] = g.ticketsSolved || 0;
+  });
+  const openMap = {};
+  (openList || []).forEach((c) => {
+    const agentId = c.assignedTo?._id ? String(c.assignedTo._id) : 'unassigned';
+    openMap[agentId] = (openMap[agentId] || 0) + 1;
   });
 
-  let operators = teamUsers.map((u) => {
-    const agentStats = agentMap[String(u._id)] || {
-      currentOpenTickets: 0,
-      pendingTickets: 0,
-      ticketsSolved: 0,
-      totalHandled: 0,
-    };
-    const rt = responseMap[String(u._id)];
-    const pairs = rt?.escalationPairs || 0;
-    const avgResponseTimeMs = pairs > 0 ? rt.avgResponseTimeMs : null;
+  let filteredTeam = teamUsers;
+  if (options.agentIdFilter) {
+    const fid = String(options.agentIdFilter);
+    filteredTeam = teamUsers.filter((u) => String(u._id) === fid);
+  }
 
+  let operators = filteredTeam.map((u) => {
+    const agentId = String(u._id);
+    const rt = responseMap[agentId];
+    const pairs = rt?.escalationPairs || 0;
     return {
-      agentId: String(u._id),
+      agentId,
       agentName: u.name || 'Unknown Agent',
       agentEmail: u.email || '-',
       isBot: false,
-      currentOpenTickets: agentStats.currentOpenTickets,
-      pendingTickets: agentStats.pendingTickets,
-      ticketsSolved: agentStats.ticketsSolved,
-      totalHandled: agentStats.totalHandled,
-      avgResponseTimeMs,
+      currentOpenTickets: openMap[agentId] || 0,
+      unassignedOpenTickets: openMap.unassigned || 0,
+      pendingTickets: 0,
+      ticketsSolved: solvedMap[agentId] || 0,
+      totalHandled: handledMap[agentId] || 0,
+      avgResponseTimeMs: pairs > 0 ? rt.avgResponseTimeMs : null,
       escalationPairs: pairs,
     };
   });
 
+  const unassignedOpen = (openList || []).filter((c) => !c.assignedTo).length;
   const ai = aiAgg[0] || {
-    currentOpenTickets: 0,
     pendingTickets: 0,
     ticketsSolved: 0,
     totalHandled: 0,
@@ -1150,7 +1201,7 @@ async function getOperatorsStats(clientId, daysInput, options = {}) {
     agentName: 'AI Bot',
     agentEmail: 'system@ai-bot',
     isBot: true,
-    currentOpenTickets: ai.currentOpenTickets,
+    currentOpenTickets: unassignedOpen,
     pendingTickets: ai.pendingTickets,
     ticketsSolved: ai.ticketsSolved,
     totalHandled: ai.totalHandled,
@@ -1166,10 +1217,10 @@ async function getOperatorsStats(clientId, daysInput, options = {}) {
 
   const humans = operators.filter((o) => !o.isBot);
   const withRt = humans.filter((o) => o.escalationPairs > 0);
-  const teamAvgResponseTimeMs =
-    withRt.length > 0
-      ? withRt.reduce((s, o) => s + (o.avgResponseTimeMs || 0), 0) / withRt.length
-      : null;
+  const rtSamples = withRt
+    .map((o) => o.avgResponseTimeMs)
+    .filter((v) => v != null && Number.isFinite(v) && v > 0);
+  const teamAvgResponseTimeMs = rtSamples.length ? medianMs(rtSamples) : null;
 
   timer.checkpoint('operators_assembly_done', { count: operators.length });
   return { success: true, operators, teamAvgResponseTimeMs };

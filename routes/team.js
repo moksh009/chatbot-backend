@@ -25,7 +25,11 @@ async function buildTeamWithMetrics(clientId) {
                 $group: {
                     _id: '$assignedTo',
                     totalAssigned: { $sum: 1 },
-                    resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+                    resolvedCount: {
+                        $sum: {
+                            $cond: [{ $ne: ['$resolvedAt', null] }, 1, 0],
+                        },
+                    },
                     avgCsat: { $avg: '$csatScore.rating' },
                     lastActive: { $max: '$lastInteraction' },
                 },

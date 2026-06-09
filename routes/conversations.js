@@ -89,10 +89,33 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     options.timer ||
     createTimer('getConversationsList', queryParams.clientId || user?.clientId || '');
 
-  const { days, clientId, phone, isImported, importBatchId: importBatchIdRaw, page: pageRaw, limit: limitRaw } = queryParams;
+  const {
+    days,
+    clientId,
+    phone,
+    search,
+    isImported,
+    importBatchId: importBatchIdRaw,
+    page: pageRaw,
+    limit: limitRaw,
+  } = queryParams;
   let query = {};
   if (phone) {
     query.phone = phone;
+  } else if (search && String(search).trim()) {
+    const term = String(search).trim();
+    const digits = term.replace(/\D/g, '');
+    if (digits.length >= 4) {
+      query.phone = { $regex: digits };
+    } else if (term.length >= 2) {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
+      query.$or = [
+        { customerName: regex },
+        { lastMessage: regex },
+        { phone: regex },
+      ];
+    }
   }
 
   const qClient = clientId && String(clientId).trim() ? String(clientId).trim() : null;
@@ -140,13 +163,31 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
         AdLead.find(leadQuery).select('phoneNumber').lean()
       );
       const importedPhones = importedLeads.map((l) => l.phoneNumber);
-      if (query.phone) {
-        if (!importedPhones.includes(query.phone)) {
-          query.phone = '___UNMATCHABLE___';
-        }
+      const phoneFilter = query.phone;
+      const orFilter = query.$or;
+      delete query.phone;
+      delete query.$or;
+
+      let phoneConstraint;
+      if (!importedPhones.length) {
+        phoneConstraint = '___UNMATCHABLE___';
+      } else if (phoneFilter && typeof phoneFilter === 'string') {
+        phoneConstraint = importedPhones.includes(phoneFilter) ? phoneFilter : '___UNMATCHABLE___';
+      } else if (phoneFilter && typeof phoneFilter === 'object' && phoneFilter.$regex) {
+        const matched = importedPhones.filter((p) => phoneFilter.$regex.test(String(p)));
+        phoneConstraint = matched.length ? { $in: matched } : '___UNMATCHABLE___';
       } else {
-        query.phone = importedPhones.length ? { $in: importedPhones } : '___UNMATCHABLE___';
+        phoneConstraint = { $in: importedPhones };
       }
+
+      if (phoneConstraint === '___UNMATCHABLE___') {
+        query.phone = '___UNMATCHABLE___';
+      } else if (orFilter) {
+        query.$and = [{ $or: orFilter }, { phone: phoneConstraint }];
+      } else {
+        query.phone = phoneConstraint;
+      }
+
       timer.checkpoint('imported_filter_applied', {
         phones: importedPhones.length,
         importBatchId: importBatchId || 'all',
@@ -280,6 +321,7 @@ router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) =
       req.query.limit || '50',
       req.query.days || '',
       req.query.phone || '',
+      req.query.search || '',
       req.query.isImported || '',
       req.query.includeTotal || '',
     ].join(':');
@@ -2364,16 +2406,6 @@ router.put('/:id/resolve', protect, async (req, res) => {
     conversation.resolvedAt = new Date();
     conversation.requiresAttention = false;
     await conversation.save();
-
-    // --- Phase 29: Track 2 AI Quality Scorer ---
-    setImmediate(async () => {
-      try {
-        const { scoreConversation } = require('../utils/core/qualityScorer');
-        await scoreConversation(conversation._id, conversation.clientId);
-      } catch (err) {
-        console.error('[QualityScorer] Error:', err.message);
-      }
-    });
 
     // --- Phase 23: Track 6 CSAT Trigger ---
     const { triggerCSAT } = require('../utils/core/csatService');

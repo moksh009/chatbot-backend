@@ -1368,6 +1368,24 @@ router.patch('/my-settings', protect, async (req, res) => {
         updateFields.flowNodes = nodes;
         updateFields.flowEdges = edges;
       }
+
+      try {
+        const { invalidateFlowGraphCache, setCachedFlowGraph } = require('../utils/flow/flowGraphCache');
+        invalidateFlowGraphCache(targetClientId, flowId);
+        setCachedFlowGraph(targetClientId, flowId, {
+          flowId,
+          name: flowName,
+          platform: wfExisting?.platform || 'whatsapp',
+          folderId: wfExisting?.folderId || '',
+          status: wfExisting?.status || 'DRAFT',
+          version: wfExisting?.version || 1,
+          nodes,
+          edges,
+          updatedAt: new Date(),
+        });
+      } catch (cacheErr) {
+        console.warn('[flowDraft] graph cache refresh failed:', cacheErr.message);
+      }
     }
 
     // Commercial & Meta Fields

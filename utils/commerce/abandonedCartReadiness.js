@@ -10,6 +10,7 @@ const { buildTrackingHealth } = require('./trackingHealth');
 const commerceAutomationService = require('./commerceAutomationService');
 const { mergeSystemAutomations } = require('./commerceAutomationPresets');
 const { planCartRuleActivation } = require('../../constants/cartRecoverySlotPresets');
+const { buildPlatformHealth } = require('../hub/platformHealth');
 
 const CART_TEMPLATE_KEYS = ['cart_recovery_1', 'cart_recovery_2', 'cart_recovery_3'];
 
@@ -98,7 +99,7 @@ async function buildAbandonedCartReadiness(clientId) {
   const automations = mergeSystemAutomations(client.commerceAutomations || []);
   const cartRulesActive = countActiveCartRules(automations);
 
-  const [metaRows, tracking, phoneStats, lastCheckoutLead, lastCartLead, lastPixel] =
+  const [metaRows, tracking, phoneStats, lastCheckoutLead, lastCartLead, lastPixel, platformHealth] =
     await Promise.all([
       MetaTemplate.find({ clientId, name: { $in: CART_TEMPLATE_KEYS } })
         .select('name status')
@@ -144,6 +145,7 @@ async function buildAbandonedCartReadiness(clientId) {
         .sort({ timestamp: -1 })
         .select('timestamp')
         .lean(),
+      buildPlatformHealth().catch(() => null),
     ]);
 
   const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
@@ -198,6 +200,16 @@ async function buildAbandonedCartReadiness(clientId) {
       lastCartLead?.updatedAt ||
       null,
     thirdParty: buildThirdPartyBlock(clientId, client.audienceContext || {}),
+    automations: platformHealth
+      ? {
+          workersOk: platformHealth.workersOk,
+          redisOk: platformHealth.redisOk,
+          cronWorkerEnabled: platformHealth.cronWorkerEnabled,
+          label: platformHealth.automationsLabel,
+          status: platformHealth.automationsStatus,
+          lastCronAt: platformHealth.lastCronAt,
+        }
+      : null,
     checklist: buildChecklist({
       flags,
       wf,
@@ -208,6 +220,7 @@ async function buildAbandonedCartReadiness(clientId) {
       lastEventAt,
       unknownPhonePct,
       recoveryOn,
+      platformHealth,
     }),
     apiBase: getPublicApiBase(),
   };
@@ -246,8 +259,18 @@ function buildChecklist(ctx) {
       id: 'pixel',
       label: 'Website tracking receiving checkout events',
       status: ctx.pixelInstalled && ctx.lastEventAt ? 'ok' : ctx.pixelInstalled ? 'warn' : 'error',
-      href: '/commerce-hub?tab=tracking',
-      actionLabel: 'Set up tracking',
+      href: '/audience-hub?tab=cart-recovery#cart-pixel',
+      actionLabel: 'Install pixel',
+    },
+    {
+      id: 'workers',
+      label: 'Background automations running',
+      status: ctx.platformHealth?.workersOk
+        ? 'ok'
+        : ctx.platformHealth?.cronWorkerEnabled
+          ? 'warn'
+          : 'warn',
+      detail: ctx.platformHealth?.automationsLabel || 'Unknown',
     },
     {
       id: 'pcd',
