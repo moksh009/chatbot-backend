@@ -279,7 +279,7 @@ async function enqueueAmazonPullForAllClients() {
     .select('clientId')
     .lean();
 
-  const { queueAmazonInventoryPull } = require('../utils/messaging/queues/amazonInventoryPullQueue');
+  const { queueAmazonInventoryPull } = require('../messaging/queues/amazonInventoryPullQueue');
   const results = [];
   for (const c of clients) {
     try {

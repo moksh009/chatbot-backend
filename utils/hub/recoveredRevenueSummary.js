@@ -89,7 +89,7 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
         hours3: delays.delay3Hr,
       },
       messagesSent: Number(s.cartRecoveryMessagesSent) || Number(s.abandonedCartSent) || 0,
-      cartsRecovered: attemptTotals?.recoveredCarts ?? Number(s.cartsRecovered) || 0,
+      cartsRecovered: attemptTotals?.recoveredCarts ?? (Number(s.cartsRecovered) || 0),
       waRecovered: attemptTotals?.waRecovered ?? 0,
       organicRecovered: attemptTotals?.organicRecovered ?? 0,
       waRevenueInr: Math.round(Number(attemptTotals?.waRevenue) || 0),

@@ -145,18 +145,23 @@ function registerAllCrons() {
     cron.schedule(
       "*/14 * * * *",
       wrapCron("Self-Ping keepalive", () => {
-        const https = require("https");
         const url = `${serverUrl.replace(/\/$/, "")}/keepalive-ping`;
         log.info(`[Self-Ping] ${url}`);
-        https
-          .get(url, (resp) => {
-            let data = "";
-            resp.on("data", (chunk) => {
-              data += chunk;
-            });
-            resp.on("end", () => log.info("[Self-Ping] awake!", { data: data.slice(0, 120) }));
-          })
-          .on("error", (err) => log.error("[Self-Ping] Error:", { message: err.message }));
+        try {
+          const parsed = new URL(url);
+          const transport = parsed.protocol === "https:" ? require("https") : require("http");
+          transport
+            .get(url, (resp) => {
+              let data = "";
+              resp.on("data", (chunk) => {
+                data += chunk;
+              });
+              resp.on("end", () => log.info("[Self-Ping] awake!", { data: data.slice(0, 120) }));
+            })
+            .on("error", (err) => log.error("[Self-Ping] Error:", { message: err.message }));
+        } catch (err) {
+          log.error("[Self-Ping] Invalid SERVER_URL:", { message: err.message });
+        }
       })
     );
   } else {
