@@ -691,7 +691,14 @@ async function handleCheckout(client, data) {
     const email = data.email || data.customer?.email;
     const phoneE164 = phoneRaw ? normalizeIndianPhone(phoneRaw) : null;
 
-    if (!phoneE164 && !email) return;
+    if (!phoneE164 && !email) {
+      log.warn(
+        `[Checkout] Dropped — no phone or email (client=${client.clientId}, token=${data.checkout_token || data.token || 'n/a'})`
+      );
+      const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
+      await trackEcommerceEvent(client.clientId, { checkoutDroppedNoContact: 1 }).catch(() => {});
+      return;
+    }
 
     const checkoutToken = data.checkout_token || data.token || '';
     const cartToken = data.cart_token || '';
@@ -1081,20 +1088,25 @@ async function handleOrder(client, data, storeKey = '') {
         log.warn(`[RTOProtection] COD confirm hook: ${e.message}`)
     );
 
-    // 4. Track in DailyStat
-    const isRecovered = lead && lead.recoveryStep > 0;
+    // 4. Track in DailyStat (use CartRecoveryAttempt attribution from handleOrderAtomic)
+    const recoveryAttempt = atomic.recoveryAttempt;
+    const hadAbandonLead = Boolean(atomic.recoveryMatched);
     const statsUpdate = {
         orders: 1,
         revenue: parseFloat(data.total_price)
     };
-    if (isRecovered) {
+    if (hadAbandonLead) {
         statsUpdate.cartsRecovered = 1;
         statsUpdate.cartRevenueRecovered = parseFloat(data.total_price);
-        
-        // Granular Step Attribution
-        if (lead.recoveryStep === 1) statsUpdate.recoveredViaStep1 = 1;
-        else if (lead.recoveryStep === 2) statsUpdate.recoveredViaStep2 = 1;
-        else if (lead.recoveryStep === 3) statsUpdate.recoveredViaStep3 = 1;
+        if (recoveryAttempt?.recoveredViaWhatsapp) {
+            const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
+                .map((t) => Number(t.followupNumber))
+                .filter(Boolean);
+            const recoverStep = sentSteps.length ? Math.max(...sentSteps) : Number(lead?.recoveryStep || 1);
+            if (recoverStep >= 3) statsUpdate.recoveredViaStep3 = 1;
+            else if (recoverStep >= 2) statsUpdate.recoveredViaStep2 = 1;
+            else statsUpdate.recoveredViaStep1 = 1;
+        }
     }
     await trackEcommerceEvent(client.clientId, statsUpdate);
 
@@ -1144,16 +1156,10 @@ async function handleOrder(client, data, storeKey = '') {
 
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
 
-    try {
-        const { attributeOrderToRecoveryAttempt } = require('../utils/commerce/cartRecoveryAttemptService');
-        const attempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
-        if (attempt) {
-            log.info(
-                `[CartRecovery] ${attempt.recoveredViaWhatsapp ? 'WhatsApp' : 'Organic'} recovery for ${cleanPhone}, order ${newOrder.orderId}`
-            );
-        }
-    } catch (craErr) {
-        log.warn(`[CartRecovery] Failed to update attempt record: ${craErr.message}`);
+    if (recoveryAttempt) {
+        log.info(
+            `[CartRecovery] ${recoveryAttempt.recoveredViaWhatsapp ? 'WhatsApp' : 'Organic'} recovery for ${cleanPhone}, order ${newOrder.orderId}`
+        );
     }
 
     // TRRIGER WATERFALL ENGINE: Update score in real-time

@@ -2,8 +2,10 @@
 
 const express = require('express');
 const { handleThirdPartyWebhook } = require('../utils/audience/thirdPartyCheckoutHandler');
+const { thirdPartyWebhookLimiter } = require('../middleware/thirdPartyWebhookLimiter');
 
 const router = express.Router();
+router.use(thirdPartyWebhookLimiter);
 
 async function dispatch(clientId, provider, req, res) {
   try {

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { assertTenantAccess } = require('../utils/core/queryHelpers');
 const ScoreTierConfig = require('../models/ScoreTierConfig');
 const AdLead = require('../models/AdLead');
 const TaskQueueService = require('../services/TaskQueueService');
@@ -12,6 +13,10 @@ const TaskQueueService = require('../services/TaskQueueService');
 router.get('/config/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    const gate = assertTenantAccess(req, clientId);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ success: false, message: gate.message });
+    }
     const doc = await ScoreTierConfig.findOne({ clientId });
     const config = doc || ScoreTierConfig.getDefaultConfig(clientId);
 
@@ -32,6 +37,10 @@ router.get('/config/:clientId', protect, async (req, res) => {
 router.post('/config/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    const gate = assertTenantAccess(req, clientId);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ success: false, message: gate.message });
+    }
     const { tiers } = req.body;
 
     const config = await ScoreTierConfig.findOneAndUpdate(

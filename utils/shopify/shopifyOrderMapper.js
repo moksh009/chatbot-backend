@@ -2,8 +2,10 @@
 
 function lineItemImage(item) {
   if (!item) return '';
+  if (item.image_url) return String(item.image_url);
+  if (item.imageUrl) return String(item.imageUrl);
   if (item.image && typeof item.image === 'object' && item.image.src) return item.image.src;
-  if (typeof item.image === 'string') return item.image;
+  if (typeof item.image === 'string' && item.image.trim()) return item.image.trim();
   return '';
 }
 
@@ -255,6 +257,56 @@ function shopifyOrderFilter(clientId, data) {
   return { clientId, orderId: name };
 }
 
+/**
+ * Fill missing line-item images from synced ShopifyProduct catalog (variant → product).
+ */
+async function enrichOrdersLineItemImages(clientId, orders) {
+  if (!clientId || !Array.isArray(orders) || !orders.length) return orders;
+
+  const variantIds = new Set();
+  const productIds = new Set();
+  for (const order of orders) {
+    const items = Array.isArray(order?.items) ? order.items : [];
+    for (const item of items) {
+      if (lineItemImage(item)) continue;
+      if (item?.variantId) variantIds.add(String(item.variantId));
+      if (item?.productId) productIds.add(String(item.productId));
+    }
+  }
+  if (!variantIds.size && !productIds.size) return orders;
+
+  const ShopifyProduct = require('../../models/ShopifyProduct');
+  const or = [];
+  if (variantIds.size) or.push({ shopifyVariantId: { $in: [...variantIds] } });
+  if (productIds.size) or.push({ shopifyProductId: { $in: [...productIds] } });
+  const products = await ShopifyProduct.find({ clientId, $or: or })
+    .select('shopifyProductId shopifyVariantId imageUrl')
+    .lean();
+
+  const byVariant = new Map();
+  const byProduct = new Map();
+  for (const p of products) {
+    const url = String(p?.imageUrl || '').trim();
+    if (!url) continue;
+    if (p.shopifyVariantId) byVariant.set(String(p.shopifyVariantId), url);
+    if (p.shopifyProductId && !byProduct.has(String(p.shopifyProductId))) {
+      byProduct.set(String(p.shopifyProductId), url);
+    }
+  }
+
+  return orders.map((order) => {
+    const items = (Array.isArray(order.items) ? order.items : []).map((item) => {
+      const existing = lineItemImage(item);
+      if (existing) return { ...item, image: existing };
+      const vid = item?.variantId != null ? String(item.variantId) : '';
+      const pid = item?.productId != null ? String(item.productId) : '';
+      const url = (vid && byVariant.get(vid)) || (pid && byProduct.get(pid)) || '';
+      return url ? { ...item, image: url } : item;
+    });
+    return { ...order, items };
+  });
+}
+
 module.exports = {
   buildShopifyOrderSet,
   shopifyOrderFilter,
@@ -267,4 +319,6 @@ module.exports = {
   computeOrderCartValue,
   loadVariantCompareAtMap,
   parseLineItemCompareAtPrice,
+  enrichOrdersLineItemImages,
+  lineItemImage,
 };

@@ -6,7 +6,7 @@ const { trackEcommerceEvent } = require('../core/analyticsHelper');
 const { logActivity } = require('../core/activityLogger');
 const { recalculateLeadScore } = require('../core/scoringHelper');
 const { normalizeIndianPhone, indianPhoneLookupVariants, indianPhoneDigits } = require('../core/normalizeIndianPhone');
-const { contactPhoneKey } = require('./cartRecoveryAttemptService');
+const { contactPhoneKey, ensureCartRecoveryAttempt } = require('./cartRecoveryAttemptService');
 const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
@@ -182,16 +182,29 @@ async function upsertAbandonedCartLead(client, data = {}) {
     }
   }
 
+  /** New checkout session for same phone — restart recovery ladder (BUG-006). */
+  if (
+    !isPurchased &&
+    checkoutToken &&
+    existing?.checkoutToken &&
+    String(checkoutToken) !== String(existing.checkoutToken)
+  ) {
+    $set.recoveryStep = 0;
+    $set.cartAbandonedAt = now;
+    $set.recoveryStartedAt = null;
+  }
+
   /** WS-3: `cartAbandonedAt` is the cron's timer anchor — set it ONCE on
    *  first abandon. Re-stamping on every `checkouts/update` (Shopify fires
    *  many) would push the recovery timer forward forever and msg #1 would
    *  never reach 25 min elapsed. */
   const $setOnInsert = {
     clientId,
-    phoneNumber: phoneE164 || `unknown_checkout_${checkoutToken || Date.now()}`,
-    source,
     createdAt: now,
   };
+  if (!phoneE164) {
+    $setOnInsert.phoneNumber = `unknown_checkout_${checkoutToken || Date.now()}`;
+  }
   if (!isPurchased) {
     $setOnInsert.cartAbandonedAt = now;
     $setOnInsert.checkoutInitiatedAt = now;
@@ -247,21 +260,16 @@ async function upsertAbandonedCartLead(client, data = {}) {
   await trackEcommerceEvent(clientId, { checkoutInitiatedCount: cartStatus === 'purchased' ? 0 : 1 });
 
   if (phoneE164 && cartStatus !== 'purchased') {
-    try {
-      const CartRecoveryAttempt = require('../../models/CartRecoveryAttempt');
-      const contactPhone = contactPhoneKey(phoneE164) || phoneDigits;
-      await CartRecoveryAttempt.create({
-        clientId,
-        leadId: lead._id,
-        contactPhone,
-        attemptTimestamp: now,
-        messaged: false,
-        recovered: false,
-        status: 'pending',
-      });
-    } catch (craErr) {
-      log.warn(`[CartRecovery] attempt create failed: ${craErr.message}`);
-    }
+    await ensureCartRecoveryAttempt({
+      clientId,
+      leadId: lead._id,
+      contactPhone: contactPhoneKey(phoneE164) || phoneDigits,
+      checkoutToken,
+      cartToken,
+      attemptTimestamp: now,
+    }).catch((craErr) => {
+      log.warn(`[CartRecovery] attempt ensure failed: ${craErr.message}`);
+    });
     await recalculateLeadScore(clientId, phoneDigits || phoneE164).catch(() => {});
   }
 

@@ -106,14 +106,15 @@ async function handleOrderAtomic(client, data, cleanPhone) {
   let recoveredViaWhatsApp = recoveryStep > 0;
 
   let lead = null;
+  let recoveryAttempt = null;
   let cancelled = { sequences: 0, campaignMessages: 0, scheduledMessages: 0 };
   const session = await mongoose.startSession();
 
   try {
     await session.withTransaction(async () => {
       if (existingLead?._id) {
-        const attempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
-        if (attempt?.recoveredViaWhatsapp) recoveredViaWhatsApp = true;
+        recoveryAttempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
+        if (recoveryAttempt?.recoveredViaWhatsapp) recoveredViaWhatsApp = true;
       }
 
       lead = await AdLead.findOneAndUpdate(
@@ -179,7 +180,13 @@ async function handleOrderAtomic(client, data, cleanPhone) {
     }
   });
 
-  return { duplicate: false, lead, cancelled, recoveryMatched: !!existingLead };
+  return {
+    duplicate: false,
+    lead,
+    cancelled,
+    recoveryMatched: !!existingLead,
+    recoveryAttempt,
+  };
 }
 
 module.exports = {

@@ -64,10 +64,14 @@ async function upsertLeadFromCommerce(client, clientId, {
     return existing;
   }
 
+  const { checkoutInitiatedCount: _ci, source: insertSource = "DeepPixel", ...restExtra } =
+    extraSet || {};
+
   const $set = {
     lastInteraction: now,
     lastCartEventAt: now,
-    ...extraSet,
+    source: insertSource,
+    ...restExtra,
   };
 
   /** WS-3 C3: never reset `isOrderPlaced` to false on update — only set
@@ -94,12 +98,12 @@ async function upsertLeadFromCommerce(client, clientId, {
 
   const $setOnInsert = {
     clientId,
-    source: extraSet.source || "DeepPixel",
     createdAt: now,
     isOrderPlaced: false,
   };
-  if (phone) $setOnInsert.phoneNumber = phone;
-  else if (email) $setOnInsert.phoneNumber = `unknown_email_${Date.now()}`;
+  if (!phone && email) {
+    $setOnInsert.phoneNumber = `unknown_email_${Date.now()}`;
+  }
 
   /** WS-3 C3: `cartAbandonedAt` is the cron's timer anchor. Set it ONCE
    *  on insert — repeated pixel events must not slide the timer forward
@@ -108,9 +112,6 @@ async function upsertLeadFromCommerce(client, clientId, {
     $setOnInsert.cartAbandonedAt = now;
     $setOnInsert.checkoutInitiatedAt = now;
   }
-
-  const { checkoutInitiatedCount: _ci, ...restExtra } = extraSet;
-  Object.assign($set, restExtra);
 
   const update = { $set, $setOnInsert };
   if (_ci) update.$inc = { checkoutInitiatedCount: 1 };
@@ -211,33 +212,16 @@ async function processPixelEvent(clientId, eventData) {
      *  so the dashboard funnel + attribution work and the row shows up in
      *  `GET /abandoned-carts/workspace`. Mirrors `upsertAbandonedCartLead`. */
     if (phone && lead?._id) {
-      try {
-        const CartRecoveryAttempt = require("../../models/CartRecoveryAttempt");
-        const existing = await CartRecoveryAttempt.findOne({
-          clientId,
-          leadId: lead._id,
-          status: "pending",
-        })
-          .select("_id")
-          .lean();
-        if (!existing) {
-          await CartRecoveryAttempt.create({
-            clientId,
-            leadId: lead._id,
-            contactPhone: String(phone).replace(/[^0-9]/g, ""),
-            attemptTimestamp: new Date(timestamp || Date.now()),
-            messaged: false,
-            recovered: false,
-            status: "pending",
-          });
-        }
-      } catch (craErr) {
-        // Non-fatal: scheduler still fires on AdLead alone.
-        if (craErr.code !== 11000) {
-          // eslint-disable-next-line no-console
-          console.warn(`[Pixel] CartRecoveryAttempt create failed: ${craErr.message}`);
-        }
-      }
+      const { ensureCartRecoveryAttempt } = require("./cartRecoveryAttemptService");
+      await ensureCartRecoveryAttempt({
+        clientId,
+        leadId: lead._id,
+        contactPhone: String(phone).replace(/[^0-9]/g, ""),
+        checkoutToken,
+        attemptTimestamp: timestamp || Date.now(),
+      }).catch((craErr) => {
+        log.warn(`[Pixel] CartRecoveryAttempt ensure failed: ${craErr.message}`);
+      });
     }
 
     if (global.io && lead) {

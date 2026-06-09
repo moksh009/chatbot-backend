@@ -49,6 +49,9 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
   else cartStatus = 'live';
 
   const startStr = moment(start).format('YYYY-MM-DD');
+  const { getRecoveryTotalsFromAttempts } = require('../commerce/cartRecoveryAttemptService');
+  const attemptTotals = await getRecoveryTotalsFromAttempts(clientId, start, new Date()).catch(() => null);
+
   const agg = await DailyStat.aggregate([
     { $match: { clientId, date: { $gte: startStr } } },
     {
@@ -68,14 +71,14 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
 
   const s = agg[0] || {};
   const cartRevenueInr = Math.round(Number(s.cartRevenueRecovered) || 0);
-  const codRevenueInr = Math.round(Number(s.codConvertedRevenue) || 0);
-  const totalRecoveredInr = cartRevenueInr + codRevenueInr;
+  // V1: cart recovery only — COD→prepaid is coming soon and excluded from hero totals.
+  const totalRecoveredInr = cartRevenueInr;
 
   return {
     days,
     totalRecoveredInr,
     cartRecoveryRevenueInr: cartRevenueInr,
-    codConvertedRevenueInr: codRevenueInr,
+    codConvertedRevenueInr: 0,
     cartRecovery: {
       enabled: cartEnabled,
       status: cartStatus,
@@ -86,7 +89,11 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
         hours3: delays.delay3Hr,
       },
       messagesSent: Number(s.cartRecoveryMessagesSent) || Number(s.abandonedCartSent) || 0,
-      cartsRecovered: Number(s.cartsRecovered) || 0,
+      cartsRecovered: attemptTotals?.recoveredCarts ?? Number(s.cartsRecovered) || 0,
+      waRecovered: attemptTotals?.waRecovered ?? 0,
+      organicRecovered: attemptTotals?.organicRecovered ?? 0,
+      waRevenueInr: Math.round(Number(attemptTotals?.waRevenue) || 0),
+      organicRevenueInr: Math.round(Number(attemptTotals?.organicRevenue) || 0),
       recoveredViaStep1: Number(s.recoveredViaStep1) || 0,
       recoveredViaStep2: Number(s.recoveredViaStep2) || 0,
       recoveredViaStep3: Number(s.recoveredViaStep3) || 0,
@@ -98,13 +105,6 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
         revenueInr: cartRevenueInr,
         status: cartStatus,
         meta: `Msg 1 · ${delays.delay1Min}m · Msg 2 · ${delays.delay2Hr}h · Msg 3 · ${delays.delay3Hr}h`,
-      },
-      {
-        key: 'cod_prepaid',
-        label: 'COD → prepaid nudges',
-        revenueInr: codRevenueInr,
-        status: wf.enableCodToPrepaid ? (waConnected ? 'live' : 'needs_setup') : 'paused',
-        meta: wf.enableCodToPrepaid ? 'Enabled in automations' : 'Off',
       },
       {
         key: 'order_confirm',

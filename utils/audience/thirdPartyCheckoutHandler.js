@@ -23,8 +23,12 @@ function integrationKey(provider) {
   return PROVIDER_KEYS[provider] || 'generic';
 }
 
+function isProductionEnv() {
+  return process.env.NODE_ENV === 'production';
+}
+
 function verifySecret(req, secret) {
-  if (!secret) return true;
+  if (!secret) return !isProductionEnv();
   const header =
     req.headers['x-webhook-secret'] ||
     req.headers['x-topedge-secret'] ||
@@ -37,7 +41,7 @@ function verifySecret(req, secret) {
 }
 
 function verifyRazorpaySignature(req, secret) {
-  if (!secret) return true;
+  if (!secret) return !isProductionEnv();
   const signature = req.headers['x-razorpay-signature'];
   if (!signature) return false;
   const body = req.rawBody || JSON.stringify(req.body || {});

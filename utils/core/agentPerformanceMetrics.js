@@ -1,6 +1,7 @@
 'use strict';
 
 const Conversation = require('../../models/Conversation');
+const ConversationAssignment = require('../../models/ConversationAssignment');
 const Message = require('../../models/Message');
 const { getSupportPipelineCounts } = require('./supportConversationMetrics');
 const { getOperatorsStats } = require('./analyticsHelper');

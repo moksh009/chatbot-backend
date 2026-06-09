@@ -3,6 +3,7 @@ const router = express.Router();
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { translateConditionsToQuery } = require('../services/SegmentQueryBuilder');
 const { apiCache, clearClientCache } = require('../middleware/apiCache');
 
@@ -13,7 +14,8 @@ router.get('/', protect, apiCache(60), async (req, res) => {
     const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/segments', req.user?.clientId || '');
     try {
-        const segments = await Segment.find({ clientId: req.user.clientId })
+        const clientId = tenantClientId(req);
+        const segments = await Segment.find({ clientId })
             .select('name description conditions lastCount lastCountAt createdAt updatedAt')
             .sort({ createdAt: -1 })
             .lean();
@@ -31,7 +33,7 @@ router.get('/', protect, apiCache(60), async (req, res) => {
  */
 router.post('/', protect, async (req, res) => {
     const { name, description, conditions } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
 
     if (!name || !conditions || !Array.isArray(conditions)) {
         return res.status(400).json({ 
@@ -79,7 +81,7 @@ router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
     const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/segments/:id/leads', req.user?.clientId || '');
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
         const segment = await Segment.findOne({ _id: req.params.id, clientId })
             .select('query name')
             .lean();
@@ -112,7 +114,7 @@ router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
  */
 router.delete('/:id', protect, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
         await Segment.findOneAndDelete({ _id: req.params.id, clientId });
         await clearClientCache(clientId);
         res.json({ success: true });
@@ -127,7 +129,7 @@ router.delete('/:id', protect, async (req, res) => {
  */
 router.post('/preview', protect, async (req, res) => {
     const { conditions } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
 
     if (!conditions || !Array.isArray(conditions)) {
         return res.status(400).json({ success: false, error: 'Conditions array is required.' });

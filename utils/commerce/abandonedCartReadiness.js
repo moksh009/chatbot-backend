@@ -169,12 +169,29 @@ async function buildAbandonedCartReadiness(clientId) {
 
   const recoveryOn =
     wf.enableAbandonedCart !== false && cartRulesActive > 0 && approvedCount >= 1;
+  const recoveryFullyLive =
+    wf.enableAbandonedCart !== false &&
+    cartRulesActive >= 3 &&
+    approvedCount >= 3;
+
+  const ac = client.audienceContext || {};
+  const checkoutProvider =
+    ac.manualOverrides?.thirdPartyCheckout ||
+    ac.thirdPartyCheckout ||
+    wf.thirdPartyCheckout ||
+    'shopify_native';
+  const usesThirdPartyCheckout =
+    checkoutProvider && checkoutProvider !== 'shopify_native' && checkoutProvider !== 'shopify';
 
   return {
     shopifyConnected: flags.shopify_connected,
     whatsappConnected: flags.whatsapp_connected,
     enableAbandonedCart: wf.enableAbandonedCart !== false,
     recoveryActive: recoveryOn,
+    recoveryFullyLive,
+    recoveryPartial: recoveryOn && !recoveryFullyLive,
+    checkoutProvider,
+    usesThirdPartyCheckout,
     cartRulesActive,
     cartRulesTotal: 3,
     templates,
@@ -220,13 +237,28 @@ async function buildAbandonedCartReadiness(clientId) {
       lastEventAt,
       unknownPhonePct,
       recoveryOn,
+      recoveryFullyLive,
       platformHealth,
+      usesThirdPartyCheckout,
+      thirdParty: buildThirdPartyBlock(clientId, client.audienceContext || {}),
+      shopDomain: client.shopDomain,
     }),
     apiBase: getPublicApiBase(),
   };
 }
 
+function shopifyCheckoutSettingsUrl(shopDomain) {
+  if (!shopDomain) return 'https://admin.shopify.com/store/settings/checkout';
+  const host = String(shopDomain).replace(/^https?:\/\//, '').split('/')[0];
+  const storeSlug = host.replace('.myshopify.com', '');
+  return `https://admin.shopify.com/store/${storeSlug}/settings/checkout`;
+}
+
 function buildChecklist(ctx) {
+  const thirdPartyReady = !ctx.usesThirdPartyCheckout
+    ? true
+    : (ctx.thirdParty || []).some((p) => p.configured && p.lastReceivedAt);
+
   const items = [
     {
       id: 'shopify',
@@ -241,11 +273,30 @@ function buildChecklist(ctx) {
       href: '/settings?tab=connections&connect=whatsapp',
     },
     {
+      id: 'pcd_approval',
+      label: 'Shopify Protected Customer Data approved',
+      status: ctx.unknownPhonePct > 30 ? 'error' : ctx.unknownPhonePct > 10 ? 'warn' : 'ok',
+      detail:
+        ctx.unknownPhonePct > 30
+          ? 'Partner Dashboard → App → API access → Protected customer data'
+          : 'Required for checkout phone capture (Dec 2025 policy)',
+      href: 'https://partners.shopify.com/',
+      actionLabel: 'Open Partner Dashboard',
+    },
+    {
+      id: 'phone_required',
+      label: 'Phone required at checkout',
+      status: ctx.unknownPhonePct > 30 ? 'warn' : 'ok',
+      detail: 'Mark phone as required in Shopify checkout settings',
+      href: shopifyCheckoutSettingsUrl(ctx.shopDomain),
+      actionLabel: 'Open checkout settings',
+    },
+    {
       id: 'templates',
       label: 'Cart recovery templates approved on Meta',
       status:
         ctx.approvedCount === 3 ? 'ok' : ctx.approvedCount > 0 ? 'warn' : 'error',
-      detail: `${ctx.approvedCount}/3 approved`,
+      detail: `${ctx.approvedCount}/3 approved — all 3 needed for full sequence`,
       href: '/meta-manager?tab=library',
     },
     {
@@ -258,19 +309,39 @@ function buildChecklist(ctx) {
     {
       id: 'pixel',
       label: 'Website tracking receiving checkout events',
-      status: ctx.pixelInstalled && ctx.lastEventAt ? 'ok' : ctx.pixelInstalled ? 'warn' : 'error',
+      status:
+        ctx.usesThirdPartyCheckout
+          ? 'ok'
+          : ctx.pixelInstalled && ctx.lastEventAt
+            ? 'ok'
+            : ctx.pixelInstalled
+              ? 'warn'
+              : 'error',
+      detail: ctx.usesThirdPartyCheckout
+        ? 'Using third-party checkout — pixel optional'
+        : undefined,
       href: '/audience-hub?tab=cart-recovery#cart-pixel',
       actionLabel: 'Install pixel',
     },
     {
+      id: 'third_party_webhook',
+      label: 'Third-party checkout webhook configured',
+      status: ctx.usesThirdPartyCheckout ? (thirdPartyReady ? 'ok' : 'error') : 'ok',
+      detail: ctx.usesThirdPartyCheckout
+        ? thirdPartyReady
+          ? 'Webhook receiving events'
+          : 'Paste webhook URL in GoKwik / Razorpay dashboard'
+        : 'Not required (Shopify native checkout)',
+      href: '/audience-hub?tab=cart-recovery',
+    },
+    {
       id: 'workers',
       label: 'Background automations running',
-      status: ctx.platformHealth?.workersOk
-        ? 'ok'
-        : ctx.platformHealth?.cronWorkerEnabled
-          ? 'warn'
-          : 'warn',
-      detail: ctx.platformHealth?.automationsLabel || 'Unknown',
+      status: ctx.platformHealth?.cronWorkerEnabled === false ? 'error' : ctx.platformHealth?.workersOk ? 'ok' : 'warn',
+      detail:
+        ctx.platformHealth?.cronWorkerEnabled === false
+          ? 'Cron worker offline — recovery messages will not send'
+          : ctx.platformHealth?.automationsLabel || 'Unknown',
     },
     {
       id: 'pcd',
@@ -281,7 +352,12 @@ function buildChecklist(ctx) {
     {
       id: 'recovery',
       label: 'Recovery sending enabled',
-      status: ctx.recoveryOn ? 'ok' : 'warn',
+      status: ctx.recoveryFullyLive ? 'ok' : ctx.recoveryOn ? 'warn' : 'error',
+      detail: ctx.recoveryFullyLive
+        ? 'All 3 messages can send'
+        : ctx.recoveryOn
+          ? 'Partial — approve/enable remaining templates & rules'
+          : 'Enable recovery in setup panel',
     },
   ];
   return items;

@@ -10,11 +10,89 @@ const log = require('../core/logger')('CartRecoveryAttempt');
 
 const CART_FOLLOWUP_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
+/** Industry standard: credit WA recovery only within this window after first message. */
+const WA_RECOVERY_ATTRIBUTION_WINDOW_MS =
+  Number(process.env.CART_RECOVERY_ATTRIBUTION_HOURS || 24) * 60 * 60 * 1000;
+
 function contactPhoneKey(raw) {
   const digits = indianPhoneDigits(raw);
   if (digits && digits.length >= 10) return digits;
   const fallback = String(raw || '').replace(/\D/g, '');
   return fallback.length >= 10 ? fallback.slice(-12) : '';
+}
+
+function withinWaAttributionWindow(attempt, recoveredAt = new Date()) {
+  if (!attempt?.whatsappMessageSentAt) return false;
+  const sentAt = new Date(attempt.whatsappMessageSentAt).getTime();
+  const recoveredMs = new Date(recoveredAt).getTime();
+  return recoveredMs - sentAt <= WA_RECOVERY_ATTRIBUTION_WINDOW_MS && recoveredMs >= sentAt;
+}
+
+/**
+ * Create or reuse a pending attempt for this checkout (dedup by checkoutToken or leadId).
+ */
+async function ensureCartRecoveryAttempt({
+  clientId,
+  leadId,
+  contactPhone,
+  checkoutToken = '',
+  cartToken = '',
+  attemptTimestamp,
+}) {
+  if (!clientId || !contactPhone) return null;
+
+  const token = checkoutToken ? String(checkoutToken).trim() : '';
+  const now = attemptTimestamp ? new Date(attemptTimestamp) : new Date();
+
+  if (token) {
+    const byToken = await CartRecoveryAttempt.findOne({
+      clientId,
+      checkoutToken: token,
+      status: 'pending',
+    }).lean();
+    if (byToken) return byToken;
+  }
+
+  if (leadId) {
+    const byLead = await CartRecoveryAttempt.findOne({
+      clientId,
+      leadId,
+      status: 'pending',
+    }).lean();
+    if (byLead) {
+      if (token && !byLead.checkoutToken) {
+        await CartRecoveryAttempt.updateOne(
+          { _id: byLead._id },
+          { $set: { checkoutToken: token, cartToken: cartToken || byLead.cartToken, updatedAt: now } }
+        );
+      }
+      return CartRecoveryAttempt.findById(byLead._id).lean();
+    }
+  }
+
+  try {
+    return await CartRecoveryAttempt.create({
+      clientId,
+      leadId: leadId || null,
+      contactPhone,
+      checkoutToken: token,
+      cartToken: cartToken ? String(cartToken) : '',
+      attemptTimestamp: now,
+      messaged: false,
+      recovered: false,
+      status: 'pending',
+    });
+  } catch (craErr) {
+    if (craErr.code === 11000) {
+      return CartRecoveryAttempt.findOne({
+        clientId,
+        checkoutToken: token,
+        status: 'pending',
+      }).lean();
+    }
+    log.warn(`[CartRecovery] ensure attempt failed: ${craErr.message}`);
+    return null;
+  }
 }
 
 /**
@@ -48,21 +126,60 @@ async function getCartFollowupConfig(clientId) {
   };
 }
 
-/**
- * After a successful WhatsApp cart recovery template send.
- */
-async function recordWhatsappTemplateSent({ clientId, phone, templateName, followupNumber }) {
+async function findPendingAttemptForSend({ clientId, phone, leadId, checkoutToken }) {
   const contactPhone = contactPhoneKey(phone);
   if (!contactPhone) return null;
 
-  const now = new Date();
-  const attempt = await CartRecoveryAttempt.findOne({
+  const token = checkoutToken ? String(checkoutToken).trim() : '';
+  if (token) {
+    const byToken = await CartRecoveryAttempt.findOne({
+      clientId,
+      checkoutToken: token,
+      status: 'pending',
+    }).sort({ createdAt: -1 });
+    if (byToken) return byToken;
+  }
+
+  if (leadId) {
+    const byLead = await CartRecoveryAttempt.findOne({
+      clientId,
+      leadId,
+      status: 'pending',
+    }).sort({ createdAt: -1 });
+    if (byLead) return byLead;
+  }
+
+  return CartRecoveryAttempt.findOne({
     clientId,
     contactPhone,
     status: 'pending',
     recoveredViaWhatsapp: { $ne: true },
     organicRecovery: { $ne: true },
   }).sort({ createdAt: -1 });
+}
+
+/**
+ * After a successful WhatsApp cart recovery template send.
+ */
+async function recordWhatsappTemplateSent({
+  clientId,
+  phone,
+  templateName,
+  followupNumber,
+  leadId,
+  checkoutToken,
+  messageId,
+}) {
+  const contactPhone = contactPhoneKey(phone);
+  if (!contactPhone) return null;
+
+  const now = new Date();
+  const attempt = await findPendingAttemptForSend({
+    clientId,
+    phone,
+    leadId,
+    checkoutToken,
+  });
 
   if (!attempt) {
     log.debug(`[CartRecovery] No pending attempt for ${clientId}/${contactPhone}`);
@@ -75,12 +192,14 @@ async function recordWhatsappTemplateSent({ clientId, phone, templateName, follo
         templateName: String(templateName || ''),
         sentAt: now,
         followupNumber: Number(followupNumber) || 0,
+        messageId: messageId ? String(messageId) : '',
       },
     },
     $set: {
       messaged: true,
       recoveryStep: Number(followupNumber) || attempt.recoveryStep || 0,
       updatedAt: now,
+      lastSendFailure: { step: 0, reason: '', detail: '', at: null },
     },
   };
 
@@ -92,7 +211,77 @@ async function recordWhatsappTemplateSent({ clientId, phone, templateName, follo
 }
 
 /**
- * Attribute a Shopify order to the latest pending cart attempt for this phone.
+ * Record a failed cart recovery send on the pending attempt (merchant visibility).
+ */
+async function recordCartRecoverySendFailure({
+  clientId,
+  phone,
+  leadId,
+  checkoutToken,
+  stepNum,
+  reason,
+  detail,
+}) {
+  const attempt = await findPendingAttemptForSend({
+    clientId,
+    phone,
+    leadId,
+    checkoutToken,
+  });
+  if (!attempt) return null;
+
+  return CartRecoveryAttempt.findByIdAndUpdate(
+    attempt._id,
+    {
+      $set: {
+        lastSendFailure: {
+          step: Number(stepNum) || 0,
+          reason: String(reason || 'failed'),
+          detail: String(detail || '').slice(0, 512),
+          at: new Date(),
+        },
+        updatedAt: new Date(),
+      },
+    },
+    { new: true }
+  );
+}
+
+async function findPendingAttemptForOrder(clientId, orderData, contactPhone) {
+  const checkoutToken = orderData?.checkout_token || orderData?.token || '';
+  const cartToken = orderData?.cart_token || '';
+
+  if (checkoutToken) {
+    const byCheckout = await CartRecoveryAttempt.findOne({
+      clientId,
+      checkoutToken: String(checkoutToken),
+      status: 'pending',
+    }).sort({ createdAt: -1 });
+    if (byCheckout) return byCheckout;
+  }
+
+  if (cartToken) {
+    const byCart = await CartRecoveryAttempt.findOne({
+      clientId,
+      cartToken: String(cartToken),
+      status: 'pending',
+    }).sort({ createdAt: -1 });
+    if (byCart) return byCart;
+  }
+
+  if (contactPhone) {
+    return CartRecoveryAttempt.findOne({
+      clientId,
+      contactPhone,
+      status: 'pending',
+    }).sort({ createdAt: -1 });
+  }
+
+  return null;
+}
+
+/**
+ * Attribute a Shopify order to a cart attempt (checkout_token → cart_token → phone).
  */
 async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) {
   const phoneRaw =
@@ -101,14 +290,8 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     orderData?.shipping_address?.phone ||
     orderData?.phone;
   const contactPhone = contactPhoneKey(phoneRaw);
-  if (!contactPhone) return null;
 
-  const attempt = await CartRecoveryAttempt.findOne({
-    clientId,
-    contactPhone,
-    status: 'pending',
-  }).sort({ createdAt: -1 });
-
+  const attempt = await findPendingAttemptForOrder(clientId, orderData, contactPhone);
   if (!attempt) return null;
 
   const orderTotal = parseFloat(orderData.total_price || orderData.totalPrice || 0) || 0;
@@ -125,7 +308,7 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     updatedAt: now,
   };
 
-  if (attempt.whatsappMessageSentAt) {
+  if (withinWaAttributionWindow(attempt, now)) {
     patch.recoveredViaWhatsapp = true;
     patch.organicRecovery = false;
   } else {
@@ -134,6 +317,41 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
   }
 
   return CartRecoveryAttempt.findByIdAndUpdate(attempt._id, { $set: patch }, { new: true });
+}
+
+/**
+ * Update delivery/read status on cart recovery template sends (Meta status webhook).
+ */
+async function updateCartRecoveryMessageStatus({ clientId, messageId, status, timestamp }) {
+  if (!clientId || !messageId || !status) return null;
+
+  const attempt = await CartRecoveryAttempt.findOne({
+    clientId,
+    'whatsappTemplatesSent.messageId': String(messageId),
+  });
+  if (!attempt) return null;
+
+  const ts = timestamp ? new Date(timestamp) : new Date();
+  const sent = attempt.whatsappTemplatesSent || [];
+  let idx = -1;
+  for (let i = sent.length - 1; i >= 0; i -= 1) {
+    if (String(sent[i].messageId) === String(messageId)) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return null;
+
+  const field =
+    status === 'delivered' ? 'deliveredAt' : status === 'read' ? 'readAt' : null;
+  if (!field) return null;
+
+  const path = `whatsappTemplatesSent.${idx}.${field}`;
+  return CartRecoveryAttempt.findByIdAndUpdate(
+    attempt._id,
+    { $set: { [path]: ts, updatedAt: ts } },
+    { new: true }
+  );
 }
 
 async function getWhatsappRecoveryMetrics(clientId, from, to) {
@@ -203,6 +421,24 @@ async function getRecoveryTotalsFromAttempts(clientId, from, to) {
         },
         organicCount: { $sum: { $cond: ['$organicRecovery', 1, 0] } },
         waCount: { $sum: { $cond: ['$recoveredViaWhatsapp', 1, 0] } },
+        organicRevenue: {
+          $sum: {
+            $cond: [
+              '$organicRecovery',
+              { $ifNull: ['$recoveredOrderValue', { $ifNull: ['$recoveredOrderAmount', 0] }] },
+              0,
+            ],
+          },
+        },
+        waRevenue: {
+          $sum: {
+            $cond: [
+              '$recoveredViaWhatsapp',
+              { $ifNull: ['$recoveredOrderValue', { $ifNull: ['$recoveredOrderAmount', 0] }] },
+              0,
+            ],
+          },
+        },
       },
     },
   ]);
@@ -212,6 +448,8 @@ async function getRecoveryTotalsFromAttempts(clientId, from, to) {
     revenueRecovered: result[0]?.totalRevenue || 0,
     organicRecovered: result[0]?.organicCount || 0,
     waRecovered: result[0]?.waCount || 0,
+    organicRevenue: result[0]?.organicRevenue || 0,
+    waRevenue: result[0]?.waRevenue || 0,
   };
 }
 
@@ -233,30 +471,97 @@ async function loadLatestAttemptsByPhone(clientId, phones = []) {
   return map;
 }
 
-function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }) {
+function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
+  const sentByNum = new Map();
+  for (const t of attempt?.whatsappTemplatesSent || []) {
+    const n = Number(t.followupNumber);
+    if (n) sentByNum.set(n, t);
+  }
+
+  const labels = [1, 2, 3].map((n) => {
+    const fromConfig = (config.followups || []).find((f) => f.followupNumber === n);
+    return fromConfig?.label || `Message ${n}`;
+  });
+
+  return [1, 2, 3].map((stepNum, idx) => {
+    const tpl = sentByNum.get(stepNum);
+    const failStep = Number(attempt?.lastSendFailure?.step || 0);
+    let status = 'pending';
+    if (tpl?.readAt) status = 'read';
+    else if (tpl?.deliveredAt) status = 'delivered';
+    else if (tpl || Number(leadRecoveryStep) >= stepNum) status = 'sent';
+    else if (failStep === stepNum) status = 'failed';
+
+    return {
+      step: stepNum,
+      label: labels[idx],
+      status,
+      sentAt: tpl?.sentAt || null,
+      deliveredAt: tpl?.deliveredAt || null,
+      readAt: tpl?.readAt || null,
+    };
+  });
+}
+
+function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
+  const steps = buildFollowupSteps(attempt, config, leadRecoveryStep);
+
   if (!attempt) {
     return {
       lines: [{ text: 'Pending — no message sent yet', tone: 'muted' }],
+      steps,
       attempt: null,
     };
   }
 
+  if (attempt.lastSendFailure?.reason && attempt.lastSendFailure?.at) {
+    const failLine = {
+      text: `Send failed (step ${attempt.lastSendFailure.step || '?'}): ${attempt.lastSendFailure.reason}`,
+      tone: 'error',
+    };
+    if (attempt.status === 'recovered') {
+      return {
+        lines: [
+          failLine,
+          attempt.recoveredViaWhatsapp
+            ? { text: 'Recovered via WhatsApp', tone: 'sent' }
+            : { text: 'Organic recovery', tone: 'sent' },
+        ],
+        steps,
+        attempt,
+      };
+    }
+  }
+
   if (attempt.status === 'recovered') {
     if (attempt.recoveredViaWhatsapp) {
-      return { lines: [{ text: 'Recovered via WhatsApp', tone: 'sent' }], attempt };
+      return { lines: [{ text: 'Recovered via WhatsApp', tone: 'sent' }], steps, attempt };
     }
     if (attempt.organicRecovery) {
-      return { lines: [{ text: 'Organic recovery', tone: 'sent' }], attempt };
+      return { lines: [{ text: 'Organic recovery', tone: 'sent' }], steps, attempt };
     }
-    return { lines: [{ text: 'Recovered', tone: 'sent' }], attempt };
+    return { lines: [{ text: 'Recovered', tone: 'sent' }], steps, attempt };
   }
 
   const sent = Array.isArray(attempt.whatsappTemplatesSent) ? attempt.whatsappTemplatesSent : [];
   const lines = [];
 
   if (!sent.length && !attempt.whatsappMessageSentAt) {
+    if (attempt.lastSendFailure?.reason) {
+      return {
+        lines: [
+          {
+            text: `Send failed: ${attempt.lastSendFailure.reason}`,
+            tone: 'error',
+          },
+        ],
+        steps,
+        attempt,
+      };
+    }
     return {
       lines: [{ text: 'Pending — no message sent yet', tone: 'muted' }],
+      steps,
       attempt,
     };
   }
@@ -270,8 +575,12 @@ function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }) {
   const configured = config.followups || [];
   if (configured.length) {
     for (const f of configured) {
-      if (sentByNum.has(f.followupNumber)) {
-        lines.push({ text: `${f.label} — Sent`, tone: 'sent' });
+      const tpl = sentByNum.get(f.followupNumber);
+      if (tpl) {
+        let status = 'Sent';
+        if (tpl.readAt) status = 'Read';
+        else if (tpl.deliveredAt) status = 'Delivered';
+        lines.push({ text: `${f.label} — ${status}`, tone: 'sent' });
       }
     }
     const next = configured.find((f) => !sentByNum.has(f.followupNumber));
@@ -293,7 +602,7 @@ function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }) {
     }
   }
 
-  return { lines, attempt };
+  return { lines, steps, attempt };
 }
 
 function recoveryStatusFromAttempt(attempt, lead) {
@@ -318,17 +627,82 @@ function recoveryStatusFromAttempt(attempt, lead) {
     return { key: 'organic', label: 'Recovered' };
   }
 
+  if (attempt?.lastSendFailure?.reason) {
+    return { key: 'send_failed', label: 'Send failed — retrying' };
+  }
+
   return { key: 'active', label: 'Active abandoned' };
+}
+
+function buildRecoveryTimeline(lead, attempt) {
+  const events = [];
+  const fmt = (d) => (d ? new Date(d) : null);
+
+  const abandonedAt = lead?.cartAbandonedAt || lead?.lastCartEventAt;
+  if (abandonedAt) {
+    events.push({ at: fmt(abandonedAt), label: 'Cart abandoned', kind: 'abandon' });
+  }
+
+  const sent = Array.isArray(attempt?.whatsappTemplatesSent) ? attempt.whatsappTemplatesSent : [];
+  for (const t of sent.sort((a, b) => new Date(a.sentAt) - new Date(b.sentAt))) {
+    const n = Number(t.followupNumber) || 0;
+    if (t.sentAt) {
+      events.push({
+        at: fmt(t.sentAt),
+        label: n ? `Message ${n} sent` : 'Recovery message sent',
+        kind: 'sent',
+      });
+    }
+    if (t.deliveredAt) {
+      events.push({
+        at: fmt(t.deliveredAt),
+        label: n ? `Message ${n} delivered` : 'Message delivered',
+        kind: 'delivered',
+      });
+    }
+    if (t.readAt) {
+      events.push({
+        at: fmt(t.readAt),
+        label: n ? `Message ${n} read` : 'Message read',
+        kind: 'read',
+      });
+    }
+  }
+
+  if (attempt?.recoveredAt) {
+    const via = attempt.recoveredViaWhatsapp ? 'via WhatsApp' : 'organic';
+    const val = attempt.recoveredOrderValue || attempt.recoveredOrderAmount;
+    const amt = val ? ` — ₹${Math.round(Number(val))}` : '';
+    events.push({
+      at: fmt(attempt.recoveredAt),
+      label: `Order placed (${via})${amt}`,
+      kind: 'recovered',
+    });
+  }
+
+  return events
+    .filter((e) => e.at || e.kind === 'abandon')
+    .sort((a, b) => {
+      if (!a.at) return 1;
+      if (!b.at) return -1;
+      return new Date(a.at) - new Date(b.at);
+    });
 }
 
 module.exports = {
   contactPhoneKey,
+  WA_RECOVERY_ATTRIBUTION_WINDOW_MS,
+  ensureCartRecoveryAttempt,
   getCartFollowupConfig,
   recordWhatsappTemplateSent,
+  recordCartRecoverySendFailure,
   attributeOrderToRecoveryAttempt,
+  updateCartRecoveryMessageStatus,
   getWhatsappRecoveryMetrics,
   getRecoveryTotalsFromAttempts,
   loadLatestAttemptsByPhone,
   buildWhatsappFollowupDisplay,
+  buildFollowupSteps,
   recoveryStatusFromAttempt,
+  buildRecoveryTimeline,
 };

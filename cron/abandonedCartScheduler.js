@@ -24,16 +24,30 @@ const { buildRecoveryUrl } = require('../utils/commerce/buildRecoveryUrl');
 
 const CART_DEDUP_TTL_SEC = 48 * 3600;
 
-async function wasCartRecoverySentRecently(clientId, phone, stepNum) {
+function wasStepSentInActivityLog(lead, stepNum, maxAgeSec = CART_DEDUP_TTL_SEC) {
+  if (!lead?.activityLog?.length) return false;
+  const cutoff = Date.now() - maxAgeSec * 1000;
+  const detail = `cart_step_${stepNum}`;
+  return lead.activityLog.some(
+    (l) =>
+      l.action === 'automation_nudge' &&
+      String(l.details || '') === detail &&
+      new Date(l.timestamp).getTime() > cutoff
+  );
+}
+
+async function wasCartRecoverySentRecently(clientId, phone, stepNum, lead = null) {
   const redis = getAppRedis();
-  if (!redis || redis.status !== 'ready') return false;
-  const key = `cart_recovery:${clientId}:${phone}:step${stepNum}`;
-  try {
-    const hit = await redis.get(key);
-    return !!hit;
-  } catch {
-    return false;
+  if (redis && redis.status === 'ready') {
+    const key = `cart_recovery:${clientId}:${phone}:step${stepNum}`;
+    try {
+      const hit = await redis.get(key);
+      if (hit) return true;
+    } catch {
+      /* fall through to Mongo dedup */
+    }
   }
+  return lead ? wasStepSentInActivityLog(lead, stepNum) : false;
 }
 
 async function markCartRecoverySent(clientId, phone, stepNum) {
@@ -79,10 +93,24 @@ function resolveCartNudgeDelay(value, fallback) {
 
 function getCartRecoveryDelays(client) {
   const wf = client.wizardFeatures || {};
+  const cartRules = (client.commerceAutomations || []).filter(
+    (a) => a.meta?.category === 'abandoned_cart'
+  );
+  const ruleDelayMin = (slot) => {
+    const r = cartRules.find((x) => x.meta?.systemSlot === slot);
+    const n = Number(r?.delayMinutes);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
   return {
-    delay1Min: resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
-    delay2Hr: resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2),
-    delay3Hr: resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3),
+    delay1Min:
+      ruleDelayMin('followup_1') ??
+      resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
+    delay2Min:
+      ruleDelayMin('followup_2') ??
+      resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2) * 60,
+    delay3Min:
+      ruleDelayMin('followup_3') ??
+      resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3) * 60,
   };
 }
 
@@ -159,6 +187,8 @@ async function sendRichNudge(client, lead, text, options = {}) {
         let successfullySent = false;
         let lastSkipReason = 'no_channel';
         let lastSkipDetail = null;
+        let templateOut = null;
+        let outboundMessageId = null;
 
         // Email-only checkout (B9): no real phone but has email
         if (!hasRealPhone(phone) && lead.email) {
@@ -192,7 +222,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
               includeHeaderImage: stepNum !== 2,
               discountCode: lead.lastDiscountCode || lead.discountCode,
             });
-            const templateOut = await cronEnvelopeSend({
+            templateOut = await cronEnvelopeSend({
                 client,
                 clientId: client.clientId,
                 channel: 'whatsapp',
@@ -212,6 +242,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
                 if (outcome === 'sent' || outcome === 'duplicate') {
                     await recordNudge(lead, `[Template: ${templateName}]`, 'template');
                     successfullySent = outcome === 'sent';
+                    outboundMessageId = templateOut.messageId || null;
                 } else {
                     lastSkipReason = templateOut.action || outcome || 'failed';
                     lastSkipDetail = templateOut.reason || templateOut.errorCode || null;
@@ -269,6 +300,9 @@ async function sendRichNudge(client, lead, text, options = {}) {
                     phone,
                     templateName: templateName || 'cart_recovery_message',
                     followupNumber: stepNum,
+                    leadId: lead._id,
+                    checkoutToken: lead.checkoutToken || lead.cartSnapshot?.checkoutToken,
+                    messageId: outboundMessageId,
                 });
             } catch (craErr) {
                 log.warn(`[CartRecovery] Failed to record WA send for ${phone}: ${craErr.message}`);
@@ -276,8 +310,29 @@ async function sendRichNudge(client, lead, text, options = {}) {
         }
 
         if (successfullySent) {
-            return { sent: true, channel: hasRealPhone(phone) ? 'whatsapp' : 'email' };
+            return {
+              sent: true,
+              channel: hasRealPhone(phone) ? 'whatsapp' : 'email',
+              messageId: outboundMessageId || templateOut?.messageId,
+            };
         }
+        if (!successfullySent && hasRealPhone(phone)) {
+            try {
+                const { recordCartRecoverySendFailure } = require('../utils/commerce/cartRecoveryAttemptService');
+                await recordCartRecoverySendFailure({
+                    clientId: client.clientId,
+                    phone,
+                    leadId: lead._id,
+                    checkoutToken: lead.checkoutToken || lead.cartSnapshot?.checkoutToken,
+                    stepNum,
+                    reason: lastSkipReason,
+                    detail: lastSkipDetail,
+                });
+            } catch (recErr) {
+                log.warn(`[CartRecovery] Failed to record send failure: ${recErr.message}`);
+            }
+        }
+
         return { sent: false, reason: lastSkipReason, detail: lastSkipDetail };
     } catch (err) {
         const errorMsg = err.friendlyMessage || err.message;
@@ -291,6 +346,10 @@ async function runAbandonedCartTick() {
         try {
             const now = new Date();
             const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+            const maxClientsPerTick = Math.max(
+              5,
+              parseInt(process.env.CART_CRON_MAX_CLIENTS_PER_TICK || '40', 10) || 40
+            );
 
             // Fetch all active clients with automation enabled
             const clients = await Client.find({
@@ -300,14 +359,17 @@ async function runAbandonedCartTick() {
                 ],
             })
                 .select('clientId nicheData wizardFeatures automationFlows shopDomain storeType commerceAutomations')
+                .limit(maxClientsPerTick)
                 .lean();
+
+            if (clients.length >= maxClientsPerTick) {
+                log.warn(`[AbandonedCart] Client batch capped at ${maxClientsPerTick} — increase CART_CRON_MAX_CLIENTS_PER_TICK if needed`);
+            }
 
             for (const client of clients) {
                 await new Promise((r) => setImmediate(r));
                 const niche = client.nicheData || {};
-                const { delay1Min, delay2Hr, delay3Hr } = getCartRecoveryDelays(client);
-                const delay2Min = delay2Hr * 60;
-                const delay3Min = delay3Hr * 60;
+                const { delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client);
 
                 const cartRules = (client.commerceAutomations || []).filter(
                     (a) => a.meta?.category === 'abandoned_cart'
@@ -332,9 +394,10 @@ async function runAbandonedCartTick() {
                 // Phase 9: Pre-fetch all HUMAN_TAKEOVER phones for this client — O(1) skip checks
                 const skipSet = await buildSkipSet(client.clientId);
 
-                // --- Step 0: Browse Abandonment (Customizable Delay) ---
+                // --- Step 0: Browse Abandonment (opt-in only — off by default) ---
+                const browseEnabled = client.wizardFeatures?.enableBrowseAbandonment === true;
                 const browseDelayMin = parseInt(niche.browseDelay) || 30;
-                const browseBatch = await AdLead.find({
+                const browseBatch = browseEnabled ? await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
@@ -342,7 +405,7 @@ async function runAbandonedCartTick() {
                     linkClicks: { $gt: 0 },
                     recoveryStep: { $exists: false },
                     updatedAt: { $lte: new Date(now - browseDelayMin * 60 * 1000), $gte: sevenDaysAgo }
-                }).limit(20);
+                }).limit(20) : [];
 
                 for (const lead of browseBatch) {
                     if (skipSet.has(lead.phoneNumber)) continue;
@@ -405,7 +468,7 @@ async function runAbandonedCartTick() {
                     const dedupePhone = hasRealPhone(lead.phoneNumber) ? lead.phoneNumber : lead.email;
                     if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
                     if (!hasRealPhone(lead.phoneNumber) && !lead.email) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, dedupePhone, 1)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, dedupePhone, 1, lead)) continue;
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
 
                     /** WS-3 hardening: only advance `recoveryStep` when the send
@@ -456,7 +519,7 @@ async function runAbandonedCartTick() {
 
                 for (const lead of batch2) {
                     if (skipSet.has(lead.phoneNumber)) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 2)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 2, lead)) continue;
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
 
                     const outcome = await sendRichNudge(client, lead, msg, {
@@ -502,7 +565,7 @@ async function runAbandonedCartTick() {
 
                 for (const lead of batch3) {
                     if (skipSet.has(lead.phoneNumber)) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 3)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 3, lead)) continue;
                     
                     // Phase 3: Conditional Discount Logic
                     const cartFlow = client.automationFlows?.find(f => f.id === 'abandoned_cart');

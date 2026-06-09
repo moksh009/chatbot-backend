@@ -15,6 +15,7 @@ const {
   verifySecret,
   verifyRazorpaySignature,
 } = require('../../utils/audience/thirdPartyCheckoutHandler');
+const { buildFollowupSteps } = require('../../utils/commerce/cartRecoveryAttemptService');
 
 test('Task 6 — normalizeIndianPhone stores +91 E.164', () => {
   assert.equal(normalizeIndianPhone('9876543210'), '+919876543210');
@@ -98,6 +99,32 @@ test('Task 1 — verifySecret rejects wrong secret', () => {
   assert.equal(verifySecret(req, ''), true);
 });
 
+test('Task 1 — verifySecret rejects missing secret in production', () => {
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    const req = { headers: {}, body: {} };
+    assert.equal(verifySecret(req, ''), false);
+    assert.equal(verifyRazorpaySignature(req, ''), false);
+  } finally {
+    process.env.NODE_ENV = prev;
+  }
+});
+
+test('Cart recovery — 24h WA attribution window helper', () => {
+  const {
+    WA_RECOVERY_ATTRIBUTION_WINDOW_MS,
+    contactPhoneKey,
+  } = require('../../utils/commerce/cartRecoveryAttemptService');
+  assert.equal(WA_RECOVERY_ATTRIBUTION_WINDOW_MS, 24 * 60 * 60 * 1000);
+  assert.ok(contactPhoneKey('+919876543210').endsWith('9876543210'));
+});
+
+test('Cart recovery — min followup 1 delay is 30 minutes', () => {
+  const { CART_FOLLOWUP_MIN_MINUTES } = require('../../utils/commerce/commerceAutomationPresets');
+  assert.equal(CART_FOLLOWUP_MIN_MINUTES.followup_1, 30);
+});
+
 test('Task 1 — verifyRazorpaySignature validates HMAC', () => {
   const crypto = require('crypto');
   const secret = 'test_secret';
@@ -122,7 +149,7 @@ test('Task 4 — system cart rules default to 25m / 4h / 36h (WS-3) with cart va
   assert.equal(f3.delayMinutes, 2160);
   assert.deepEqual(f1.variableMappings.body, { 1: 'first_name', 2: 'product_name', 3: 'cart_total' });
   assert.deepEqual(f2.variableMappings.body, { 1: 'first_name', 2: 'product_name' });
-  assert.equal(f3.variableMappings.body[5], 'discount_code');
+  assert.equal(f3.variableMappings.body[4], 'discount_code');
 });
 
 test('Task 2 Step 5 — mergeSystemAutomations backfills empty cart mappings', () => {
@@ -137,4 +164,21 @@ test('Task 2 Step 5 — mergeSystemAutomations backfills empty cart mappings', (
   const rule = merged.find((r) => r.id === 'sys_cart_followup_1');
   assert.equal(rule.variableMappings.body['1'], 'first_name');
   assert.equal(rule.variableMappings.body['3'], 'cart_total');
+});
+
+test('Cart recovery — buildFollowupSteps returns 3-step ladder with sent/delivered/read', () => {
+  const steps = buildFollowupSteps(
+    {
+      whatsappTemplatesSent: [
+        { followupNumber: 1, sentAt: new Date(), deliveredAt: new Date() },
+        { followupNumber: 2, sentAt: new Date(), readAt: new Date() },
+      ],
+    },
+    { followups: [{ followupNumber: 1, label: 'Msg 1' }] },
+    2
+  );
+  assert.equal(steps.length, 3);
+  assert.equal(steps[0].status, 'delivered');
+  assert.equal(steps[1].status, 'read');
+  assert.equal(steps[2].status, 'pending');
 });

@@ -606,6 +606,20 @@ router.get('/orders', ...secure, apiCache(120), async (req, res) => {
   }
 });
 
+router.get('/orders/customer-refund-count', ...secure, async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.getCustomerRefundCount(req, res);
+    } else {
+      res.status(400).json({ error: 'Orders not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error fetching customer refund count:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
 router.patch('/orders/:orderId/status', ...secure, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;

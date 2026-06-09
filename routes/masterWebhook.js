@@ -176,12 +176,41 @@ async function processStatuses(statuses) {
         }
       }
 
-      // ✅ Phase R3: Emit real-time status update to Live Chat UI — was missing, ticks never updated
-      // Frontend LiveChat listens for 'message_status_update' to show ✓ / ✓✓ / blue ✓✓
+      // Cart recovery delivery/read — lookup by messageId on CartRecoveryAttempt
+      // (cron sends via envelope; Message doc may not exist with this messageId)
+      if (status === 'delivered' || status === 'read') {
+        try {
+          const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
+          const { updateCartRecoveryMessageStatus } = require('../utils/commerce/cartRecoveryAttemptService');
+          let cartClientId = null;
+          const att = await CartRecoveryAttempt.findOne({
+            'whatsappTemplatesSent.messageId': String(messageId),
+          })
+            .select('clientId')
+            .lean();
+          if (att?.clientId) cartClientId = att.clientId;
+
+          const Message = require('../models/Message');
+          const liveMsg = await Message.findOne({ messageId }).lean();
+          if (!cartClientId && liveMsg?.clientId) cartClientId = liveMsg.clientId;
+
+          if (cartClientId) {
+            await updateCartRecoveryMessageStatus({
+              clientId: cartClientId,
+              messageId,
+              status,
+              timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
+            });
+          }
+        } catch (cartStatErr) {
+          log.debug(`Cart recovery status hook skipped: ${cartStatErr.message}`);
+        }
+      }
+
+      const Message = require('../models/Message');
+      const liveMsg = await Message.findOne({ messageId }).lean();
+
       if (global.io) {
-        // Find the conversation's clientId to emit to correct room
-        const Message = require('../models/Message');
-        const liveMsg = await Message.findOne({ messageId }).lean();
         if (liveMsg?.clientId) {
           global.io.to(`client_${liveMsg.clientId}`).emit('message_status_update', {
             messageId,

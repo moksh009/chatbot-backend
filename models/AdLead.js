@@ -114,10 +114,23 @@ const adLeadSchema = new mongoose.Schema({
     titles: [String],
     items: [{
       variant_id: String,
+      id: String,
+      title: String,
+      name: String,
+      product_title: String,
       quantity: Number,
+      price: Number,
+      line_price: Number,
+      compare_at_price: Number,
       image: String,
+      image_url: String,
       url: String
     }],
+    total_price: Number,
+    totalPrice: Number,
+    currency: String,
+    checkoutUrl: String,
+    checkoutToken: String,
     updatedAt: {
       type: Date,
       default: Date.now

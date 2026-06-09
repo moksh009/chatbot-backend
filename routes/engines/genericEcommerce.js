@@ -951,7 +951,10 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 const getClientOrders = async (req, res) => {
     const { createTimer } = require('../../utils/core/perfLogger');
     const { dedupeAsync } = require('../../utils/core/requestDedupe');
-    const { computeOrderCartValue } = require('../../utils/shopify/shopifyOrderMapper');
+    const {
+        computeOrderCartValue,
+        enrichOrdersLineItemImages,
+    } = require('../../utils/shopify/shopifyOrderMapper');
     const timer = createTimer('GET /api/client/:clientId/orders', req.clientConfig?.clientId || '');
     try {
         const clientConfig = req.clientConfig;
@@ -981,11 +984,12 @@ const getClientOrders = async (req, res) => {
             const totalPages = Math.max(1, Math.ceil(total / limit));
             const safePage = Math.min(page, totalPages);
             const start = (safePage - 1) * limit;
-            const orders = list.slice(start, start + limit).map((order) => ({
+            const pageSlice = list.slice(start, start + limit).map((order) => ({
                 ...order,
                 items: normalizeOrderItemsForList(order),
                 cartValue: computeOrderCartValue(order),
             }));
+            const orders = await enrichOrdersLineItemImages(clientConfig.clientId, pageSlice);
             return { orders, total, page: safePage, limit, totalPages };
         });
 
@@ -1463,6 +1467,7 @@ function normalizeOrderItemsForList(order) {
     return raw.map((item) => {
         const image =
             (item?.image && typeof item.image === 'object' ? item.image.src : item.image) ||
+            item.image_url ||
             item.imageUrl ||
             item.product_image ||
             null;
@@ -1480,7 +1485,6 @@ const updateOrderAddress = async (req, res) => {
     const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/address', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
-        const shippingAddress = normalizeShippingAddressInput(req.body?.shippingAddress || req.body);
         const { clientId, shopDomain, shopifyAccessToken } = req.clientConfig;
 
         const order = await Order.findOne({ _id: orderId, clientId });
@@ -1489,19 +1493,46 @@ const updateOrderAddress = async (req, res) => {
             return res.status(404).json({ error: 'Order not found' });
         }
 
-        if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
+        const existingShip =
+            order.shippingAddress && typeof order.shippingAddress === 'object'
+                ? order.shippingAddress
+                : {};
+        const shippingAddress = normalizeShippingAddressInput(req.body?.shippingAddress || req.body);
+        if (!shippingAddress.first_name) {
+            shippingAddress.first_name =
+                existingShip.first_name ||
+                existingShip.firstName ||
+                String(order.customerName || '').trim().split(/\s+/)[0] ||
+                'Customer';
+        }
+        if (!shippingAddress.last_name) {
+            const nameParts = String(order.customerName || '').trim().split(/\s+/);
+            shippingAddress.last_name =
+                existingShip.last_name ||
+                existingShip.lastName ||
+                (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '') ||
+                '';
+        }
+
+        if (!shippingAddress.address1 || !shippingAddress.city) {
+            timer.finish('400');
+            return res.status(400).json({ error: 'Street address and city are required.' });
+        }
+
+        const shopifyNumericId = String(order.shopifyOrderId || '').trim();
+        if (shopDomain && shopifyAccessToken && /^\d+$/.test(shopifyNumericId)) {
             try {
                 const shopifyApi = await getShopifyClient(clientId);
-                await shopifyApi.put(`/orders/${order.shopifyOrderId}.json`, {
+                await shopifyApi.put(`/orders/${shopifyNumericId}.json`, {
                     order: {
-                        id: order.shopifyOrderId,
+                        id: shopifyNumericId,
                         shipping_address: {
                             address1: shippingAddress.address1,
                             address2: shippingAddress.address2 || '',
                             city: shippingAddress.city,
                             province: shippingAddress.state,
                             zip: shippingAddress.zip,
-                            country: shippingAddress.country,
+                            country: shippingAddress.country || 'India',
                             first_name: shippingAddress.first_name,
                             last_name: shippingAddress.last_name,
                         },
@@ -1589,6 +1620,34 @@ const getOrderMessagesOverview = async (req, res) => {
     }
 };
 
+const getCustomerRefundCount = async (req, res) => {
+    try {
+        const { normalizePhone } = require('../../utils/core/helpers');
+        const phoneRaw = req.query.phone || req.query.customerPhone || '';
+        const normalized = normalizePhone(phoneRaw, req.clientConfig?.defaultCountry || 'IN');
+        if (!normalized) {
+            return res.json({ count: 0 });
+        }
+        const digits = String(normalized).replace(/\D/g, '').slice(-10);
+        if (digits.length < 10) {
+            return res.json({ count: 0 });
+        }
+        const { clientId } = req.clientConfig;
+        const count = await Order.countDocuments({
+            clientId,
+            financialStatus: { $in: ['refunded', 'partially_refunded'] },
+            $or: [
+                { customerPhone: { $regex: `${digits}$` } },
+                { phone: { $regex: `${digits}$` } },
+            ],
+        });
+        res.json({ count });
+    } catch (error) {
+        console.error('[getCustomerRefundCount] Error:', error);
+        res.status(500).json({ error: 'Failed to load refund count' });
+    }
+};
+
 module.exports = {
     handleWebhook,
     handleShopifyLinkOpenedWebhook,
@@ -1597,6 +1656,7 @@ module.exports = {
     handleShopifyOrderCompleteWebhook,
     handleShopifyOrderFulfilledWebhook,
     getClientOrders,
+    getCustomerRefundCount,
     getCartSnapshot,
     restoreCart,
     logRestoreEvent,

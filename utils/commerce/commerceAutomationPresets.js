@@ -80,7 +80,7 @@ const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySl
 
 /** Minimum delay after cart abandoned (minutes). User may increase, not decrease. */
 const CART_FOLLOWUP_MIN_MINUTES = {
-  followup_1: 15,
+  followup_1: 30,
   followup_2: 2 * 60,
   followup_3: 24 * 60,
 };

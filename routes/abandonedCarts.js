@@ -140,12 +140,14 @@ router.post(
           key === 'shiprocket' ? 'shiprocket_checkout' : key
         ]?.webhookSecret || '';
 
+      const testPhone = String(req.body?.phone || '9313045439').replace(/\D/g, '').slice(-10);
+
       let body;
       let headers = { 'content-type': 'application/json' };
       if (key === 'gokwik') {
         body = {
           cartId: `test_${Date.now()}`,
-          custPhone: '9876543210',
+          custPhone: testPhone,
           custName: 'Test Customer',
           custEmail: 'test@example.com',
           line_items: [
@@ -165,7 +167,7 @@ router.post(
         body = {
           event: 'cart.abandoned',
           payload: {
-            contact: '9876543210',
+            contact: testPhone,
             email: 'test@example.com',
             customer_name: 'Test Customer',
             cart_value: 999,
@@ -184,7 +186,7 @@ router.post(
         req.rawBody = raw;
       } else {
         body = {
-          customer_phone: '9876543210',
+          customer_phone: testPhone,
           customer_email: 'test@example.com',
           customer_name: 'Test Customer',
           cart_total: 999,

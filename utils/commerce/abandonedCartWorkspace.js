@@ -1,6 +1,7 @@
 'use strict';
 
 const moment = require('moment');
+const { startOfDayIST, startOfDayForDateStrIST, endOfDayForDateStrIST, formatDateStrIST } = require('../core/queryHelpers');
 const AdLead = require('../../models/AdLead');
 const Order = require('../../models/Order');
 const Client = require('../../models/Client');
@@ -13,6 +14,7 @@ const {
   loadLatestAttemptsByPhone,
   buildWhatsappFollowupDisplay,
   recoveryStatusFromAttempt,
+  buildRecoveryTimeline,
 } = require('./cartRecoveryAttemptService');
 
 /** WS-3 defaults — keep aligned with
@@ -36,20 +38,48 @@ function resolveCartNudgeDelay(value, fallback) {
 
 function getCartRecoveryDelays(client = {}) {
   const wf = client.wizardFeatures || {};
+  const cartRules = (client.commerceAutomations || []).filter(
+    (a) => a.meta?.category === 'abandoned_cart'
+  );
+  const ruleDelayMin = (slot) => {
+    const r = cartRules.find((x) => x.meta?.systemSlot === slot);
+    const n = Number(r?.delayMinutes);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
   return {
-    delay1Min: resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
-    delay2Hr: resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2),
-    delay3Hr: resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3),
+    delay1Min:
+      ruleDelayMin('followup_1') ??
+      resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
+    delay2Min:
+      ruleDelayMin('followup_2') ??
+      resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2) * 60,
+    delay3Min:
+      ruleDelayMin('followup_3') ??
+      resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3) * 60,
   };
 }
 
 const PRESETS = {
-  today: () => ({ from: moment().startOf('day').toDate(), to: new Date() }),
-  '7d': () => ({ from: moment().subtract(7, 'days').startOf('day').toDate(), to: new Date() }),
-  '30d': () => ({ from: moment().subtract(30, 'days').startOf('day').toDate(), to: new Date() }),
-  '60d': () => ({ from: moment().subtract(60, 'days').startOf('day').toDate(), to: new Date() }),
-  '90d': () => ({ from: moment().subtract(90, 'days').startOf('day').toDate(), to: new Date() }),
-  all: () => ({ from: new Date(0), to: new Date() }),
+  today: () => ({ from: startOfDayIST(), to: new Date(), timezone: 'Asia/Kolkata' }),
+  '7d': () => {
+    const endStr = formatDateStrIST(new Date());
+    const startStr = formatDateStrIST(new Date(Date.now() - 6 * 86400000));
+    return { from: startOfDayForDateStrIST(startStr), to: new Date(), timezone: 'Asia/Kolkata' };
+  },
+  '30d': () => {
+    const endStr = formatDateStrIST(new Date());
+    const startStr = formatDateStrIST(new Date(Date.now() - 29 * 86400000));
+    return { from: startOfDayForDateStrIST(startStr), to: new Date(), timezone: 'Asia/Kolkata' };
+  },
+  '60d': () => {
+    const startStr = formatDateStrIST(new Date(Date.now() - 59 * 86400000));
+    return { from: startOfDayForDateStrIST(startStr), to: new Date(), timezone: 'Asia/Kolkata' };
+  },
+  '90d': () => {
+    const startStr = formatDateStrIST(new Date(Date.now() - 89 * 86400000));
+    return { from: startOfDayForDateStrIST(startStr), to: new Date(), timezone: 'Asia/Kolkata' };
+  },
+  all: () => ({ from: new Date(0), to: new Date(), timezone: 'Asia/Kolkata' }),
 };
 
 function parseDateRange(query = {}) {
@@ -59,20 +89,45 @@ function parseDateRange(query = {}) {
   const fromRaw = query.from || query.startDate;
   const toRaw = query.to || query.endDate;
   if (fromRaw && toRaw) {
-    const from = moment(fromRaw).startOf('day').toDate();
-    const to = moment(toRaw).endOf('day').toDate();
-    if (from <= to) return { from, to, preset: 'custom' };
+    const fromStr = formatDateStrIST(new Date(fromRaw));
+    const toStr = formatDateStrIST(new Date(toRaw));
+    const from = startOfDayForDateStrIST(fromStr);
+    const to = endOfDayForDateStrIST(toStr);
+    if (from <= to) return { from, to, preset: 'custom', timezone: 'Asia/Kolkata' };
   }
 
   return { ...PRESETS['30d'](), preset: '30d' };
 }
 
 function getRecoverySchedule(client = {}) {
-  const { delay1Min, delay2Hr, delay3Hr } = getCartRecoveryDelays(client);
+  const { delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client);
+  const fmtDelay = (mins) => {
+    if (mins < 60) return `${mins} min`;
+    if (mins < 1440) return `${Math.round(mins / 60)}h`;
+    return `${Math.round(mins / 1440)}d`;
+  };
   return [
-    { step: 1, delayMinutes: delay1Min, label: `Followup 1` },
-    { step: 2, delayMinutes: delay2Hr * 60, label: `Followup 2`, afterPrevious: true },
-    { step: 3, delayMinutes: delay3Hr * 60, label: `Followup 3`, afterPrevious: true },
+    {
+      step: 1,
+      delayMinutes: delay1Min,
+      label: 'Followup 1',
+      timingLabel: `${fmtDelay(delay1Min)} after cart abandoned`,
+      fromAbandonTime: true,
+    },
+    {
+      step: 2,
+      delayMinutes: delay2Min,
+      label: 'Followup 2',
+      timingLabel: `${fmtDelay(delay2Min)} after cart abandoned (requires message 1 sent)`,
+      fromAbandonTime: true,
+    },
+    {
+      step: 3,
+      delayMinutes: delay3Min,
+      label: 'Followup 3',
+      timingLabel: `${fmtDelay(delay3Min)} after cart abandoned (requires message 2 sent)`,
+      fromAbandonTime: true,
+    },
   ];
 }
 
@@ -138,11 +193,11 @@ function normalizeItems(lead) {
   }));
 }
 
-function cartTotals(items, snap = {}) {
+function cartTotals(items, snap = {}, lead = {}) {
   const lineSum = items.reduce((s, i) => s + (i.lineTotal || 0), 0);
   const total =
     lineSum ||
-    Number(snap.total_price ?? snap.totalPrice ?? 0) ||
+    Number(snap.total_price ?? snap.totalPrice ?? lead.cartValue ?? 0) ||
     0;
   const compareSum = items.reduce(
     (s, i) => s + (i.compareAtPrice ? i.compareAtPrice * i.quantity : i.lineTotal),
@@ -186,9 +241,7 @@ function buildFollowupStatus(lead, schedule, now = new Date()) {
       continue;
     }
 
-    const dueAt = s.afterPrevious
-      ? moment(anchor).add(s.delayMinutes, 'minutes')
-      : moment(abandonedAt).add(s.delayMinutes, 'minutes');
+    const dueAt = moment(abandonedAt).add(s.delayMinutes, 'minutes');
 
     if (now >= dueAt.toDate()) {
       lines.push({ text: `${s.label} due now`, tone: 'due' });
@@ -212,31 +265,24 @@ function buildFollowupStatus(lead, schedule, now = new Date()) {
   return { lines, schedule };
 }
 
-function buildCartTimeline(lead, followup) {
+function buildCartTimeline(lead, followup, attempt = null) {
+  const fromAttempt = buildRecoveryTimeline(lead, attempt || followup?.attempt);
+  if (fromAttempt.length) return fromAttempt;
+
   const events = [];
   const abandonedAt = abandonDate(lead);
   if (abandonedAt) {
-    events.push({
-      at: abandonedAt,
-      label: 'Cart abandoned',
-      kind: 'abandon',
-    });
+    events.push({ at: abandonedAt, label: 'Cart abandoned', kind: 'abandon' });
   }
   for (const line of followup?.lines || []) {
-    events.push({
-      at: null,
-      label: line.text,
-      kind: line.tone || 'followup',
-    });
-  }
-  for (const entry of (lead.activityLog || []).slice(-20)) {
-    events.push({
-      at: entry.timestamp || entry.at || entry.createdAt,
-      label: entry.eventName || entry.action || entry.message || entry.type || 'Activity',
-      kind: 'log',
-    });
+    events.push({ at: null, label: line.text, kind: line.tone || 'followup' });
   }
   return events;
+}
+
+function isNonRecoverableLead(lead) {
+  const phone = String(lead?.phoneNumber || '');
+  return !phone || phone.startsWith('unknown_checkout_') || phone.startsWith('unknown_email_');
 }
 
 function recoveryStatusLabel(lead) {
@@ -357,10 +403,13 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     totalAbandoned: 0,
     activeAbandoned: 0,
     recoverableRevenue: 0,
+    nonRecoverableCount: 0,
     recoveredCarts: 0,
     revenueRecovered: 0,
     recoveredFromWhatsapp: 0,
     revenueRecoveredFromWhatsapp: 0,
+    organicRecovered: 0,
+    organicRevenue: 0,
     averageAbandonedCartValue: 0,
   };
 
@@ -377,8 +426,10 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
   const { delay1Min } = getCartRecoveryDelays(client || {});
 
   for (const lead of filtered) {
-    if (String(lead.phoneNumber || '').startsWith('unknown_checkout_')) {
+    const nonRecoverable = isNonRecoverableLead(lead);
+    if (nonRecoverable) {
       unknownPhoneCount += 1;
+      metrics.nonRecoverableCount += 1;
     }
 
     const step = Number(lead.recoveryStep || 0);
@@ -414,7 +465,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     }
 
     const items = normalizeItems(lead);
-    const totals = cartTotals(items, lead.cartSnapshot || {});
+    const totals = cartTotals(items, lead.cartSnapshot || {}, lead);
     const recovered =
       attempt?.status === 'recovered' || isRecoveredLead(lead);
     const active = !recovered;
@@ -423,13 +474,19 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     valueSum += totals.cartValue;
 
     if (active) {
-      metrics.activeAbandoned += 1;
-      metrics.recoverableRevenue += totals.cartValue;
+      if (!nonRecoverable) {
+        metrics.activeAbandoned += 1;
+        metrics.recoverableRevenue += totals.cartValue;
+      }
     }
 
     const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
     const latestOrder = orderMap.get(phoneKeyOrder) || null;
-    const followup = buildWhatsappFollowupDisplay(attempt, followupConfig);
+    const followup = buildWhatsappFollowupDisplay(
+      attempt,
+      followupConfig,
+      Number(lead.recoveryStep || 0)
+    );
     const recovery = recoveryStatusFromAttempt(attempt, lead);
 
     rows.push({
@@ -457,10 +514,20 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
             organicRecovery: attempt.organicRecovery,
             whatsappMessageSentAt: attempt.whatsappMessageSentAt,
             whatsappTemplatesSent: attempt.whatsappTemplatesSent || [],
+            lastSendFailure: attempt.lastSendFailure || null,
+          }
+        : null,
+      nonRecoverable,
+      sendFailure: attempt?.lastSendFailure?.reason
+        ? {
+            step: attempt.lastSendFailure.step,
+            reason: attempt.lastSendFailure.reason,
+            detail: attempt.lastSendFailure.detail,
+            at: attempt.lastSendFailure.at,
           }
         : null,
       recoveryStep: lead.recoveryStep || 0,
-      timeline: buildCartTimeline(lead, followup),
+      timeline: buildCartTimeline(lead, followup, attempt),
       leadId: String(lead._id),
       inboxPath: `/conversations?phone=${encodeURIComponent(lead.phoneNumber || '')}`,
     });
@@ -473,6 +540,8 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
 
   metrics.recoveredCarts = recoveryTotals.recoveredCarts;
   metrics.revenueRecovered = recoveryTotals.revenueRecovered;
+  metrics.organicRecovered = recoveryTotals.organicRecovered || 0;
+  metrics.organicRevenue = recoveryTotals.organicRevenue || 0;
   metrics.recoveredFromWhatsapp = whatsappMetrics.configured
     ? whatsappMetrics.recoveredViaWhatsapp
     : null;
