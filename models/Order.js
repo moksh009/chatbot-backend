@@ -98,6 +98,8 @@ const OrderSchema = new mongoose.Schema({
     success: { type: Boolean, default: false },
     reason: { type: String, default: null },
     source: { type: String, default: '' },
+    metaCategory: { type: String, default: null },
+    estCostInr: { type: Number, default: null },
   }],
 });
 

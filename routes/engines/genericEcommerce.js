@@ -1007,15 +1007,15 @@ const getCartSnapshot = async (req, res) => {
         const { uid } = req.query;
         if (!uid) return res.status(400).json({ success: false, message: 'UID missing' });
 
+        const cid = req.clientConfig?.clientId || req.params?.clientId;
+        if (!cid) return res.status(400).json({ success: false, message: 'Client missing' });
+
         let leadData = null;
         if (uid && /^[0-9a-fA-F]{24}$/.test(uid)) {
-            leadData = await AdLead.findById(uid).catch(() => null);
+            leadData = await AdLead.findOne({ _id: uid, clientId: cid }).catch(() => null);
         }
         if (!leadData) {
-            const cid = req.clientConfig?.clientId || req.params?.clientId;
-            const q = { phoneNumber: uid };
-            if (cid) q.clientId = cid;
-            leadData = await AdLead.findOne(q).catch(() => null);
+            leadData = await AdLead.findOne({ phoneNumber: uid, clientId: cid }).catch(() => null);
         }
 
         if (!leadData || !leadData.cartSnapshot) return res.status(404).json({ success: false, message: 'Cart not found' });
@@ -1031,8 +1031,16 @@ const restoreCart = async (req, res) => {
         const { uid } = req.query;
         if (!uid) return res.status(400).send('UID missing');
 
+        const cid = req.clientConfig?.clientId || req.params?.clientId;
+        if (!cid) return res.status(400).send('Client missing');
+
         let lead = null;
-        if (uid.length === 24) lead = await AdLead.findById(uid);
+        if (/^[0-9a-fA-F]{24}$/.test(String(uid))) {
+            lead = await AdLead.findOne({ _id: uid, clientId: cid });
+        }
+        if (!lead) {
+            lead = await AdLead.findOne({ phoneNumber: uid, clientId: cid });
+        }
         if (!lead) return res.status(404).send('Cart not found');
 
         // Fetch client to get storeUrl

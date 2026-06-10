@@ -1,9 +1,11 @@
 'use strict';
 
-/** India reference rates — Meta per-message billing (Jul 2025+). Verify against Meta rate card before sales. */
-const META_MARKETING_INR = 0.88;
-const META_UTILITY_INR = 0.125;
-const META_SERVICE_INR = 0;
+const { INDIA_RATES_INR } = require('../../constants/metaWhatsAppPricing');
+
+/** India list rates — Meta per-message billing. Source: constants/metaWhatsAppPricing.js */
+const META_MARKETING_INR = INDIA_RATES_INR.MARKETING;
+const META_UTILITY_INR = INDIA_RATES_INR.UTILITY;
+const META_SERVICE_INR = INDIA_RATES_INR.SERVICE;
 const AI_PER_1K_TOKENS_INR = 0.15;
 
 /**

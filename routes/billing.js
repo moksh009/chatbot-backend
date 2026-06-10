@@ -134,6 +134,14 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
       planPriceInr: planLimits?.priceInr || 0,
     });
 
+    let messagingActivity = null;
+    try {
+      const { buildMessagingActivitySummary } = require('../services/messagingActivityService');
+      messagingActivity = await buildMessagingActivitySummary(client);
+    } catch (_) {
+      messagingActivity = null;
+    }
+
     res.json({
       success: true,
       plan: masterPlan,
@@ -145,6 +153,7 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
       subscriptionId: sub?.razorpaySubId,
       costEstimate,
       metaPricing: costEstimate.meta_breakdown?.rates || null,
+      messagingActivity,
     });
 
   } catch (error) {

@@ -17,7 +17,14 @@ const log = require('../core/logger')('DualBrain');
 const { generateText, getGeminiModel, AI_BOT_TIMEOUT_MS } = require('../core/gemini');
 const { createMessage } = require('../core/createMessage');
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require('../core/variableInjector');
-const { findMatchingFlow, findGreetingFlowFast, findFlowStartNode, isGreetingLikeText } = require('../flow/triggerEngine');
+const {
+  findMatchingFlow,
+  findGreetingFlowFast,
+  findFlowStartNode,
+  isGreetingLikeText,
+  shouldAllowGreetingKeywordTrigger,
+  isExplicitFlowResetText,
+} = require('../flow/triggerEngine');
 const {
   getCachedFlowGraph,
   getCachedFlowGraphAsync,
@@ -582,6 +589,14 @@ async function runDualBrainEngine(parsedMessage, client) {
           const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', REDIS_SESSION_LOCK_TTL_SEC);
           if (!acquired) {
               log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+              try {
+                const { enqueueInboundEngineRetry } = require('../messaging/inboundEngineQueue');
+                await enqueueInboundEngineRetry({
+                  clientId: client.clientId,
+                  phone,
+                  parsedMessage,
+                });
+              } catch (_) { /* fallback to in-memory queue */ }
               engineTimer.finish('lock_busy_redis');
               endEngineRun(client.clientId, phone);
               return false;
@@ -596,6 +611,14 @@ async function runDualBrainEngine(parsedMessage, client) {
           );
           if (existingLock._lockOwnerId !== _lockOwnerId) {
             log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+            try {
+              const { enqueueInboundEngineRetry } = require('../messaging/inboundEngineQueue');
+              await enqueueInboundEngineRetry({
+                clientId: client.clientId,
+                phone,
+                parsedMessage,
+              });
+            } catch (_) { /* fallback */ }
             engineTimer.finish('lock_busy_mongo');
             endEngineRun(client.clientId, phone);
             return false;
@@ -799,6 +822,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       !parsedMessage.interactive?.button_reply &&
       !parsedMessage.interactive?.list_reply &&
       (isGreeting(txtLower) || isGreetingLikeText(inboundText)) &&
+      shouldAllowGreetingKeywordTrigger(inboundText, convo) &&
       txtLower.length <= 48 &&
       convo.status !== "HUMAN_SUPPORT" &&
       convo.status !== "HUMAN_TAKEOVER";
@@ -1714,6 +1738,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     const NotificationService = require('../core/notificationService');
     await NotificationService.sendAdminAlert(client, {
       customerPhone: phone,
+      conversationId: convo._id,
       topic: '🔕 USER OPTED OUT',
       triggerSource: `User sent "${userTextRaw}". Bot is now PAUSED; pending jobs cancelled.`,
       channel: 'both',
@@ -1779,9 +1804,11 @@ async function runDualBrainEngine(parsedMessage, client) {
 
       await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
+          conversationId: convo._id,
           topic: "🚨 AGENT REQUEST — Attention Needed",
           triggerSource: `💬 "${userText}"\n👤 ${lead?.name || 'Unknown'}\n🛒 ${cartInfo}\n📦 ${orderInfo}\n🔗 ${DashboardLink}`,
-          channel: 'both'
+          channel: 'both',
+          customerQuery: userText,
       });
       if (io) {
           io.to(`client_${client.clientId}`).emit('attention_required', {
@@ -2777,8 +2804,12 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
           return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
       
-      // If none matched, check for basic greeting reset — ONLY when text is present
-      if (userTextLower && (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu')) {
+      // If none matched, check for explicit menu/start or stale-session greeting reset
+      const allowGraphGreetingReset =
+        userTextLower &&
+        (isExplicitFlowResetText(userTextLower) ||
+          (isGreeting(userTextLower) && shouldAllowGreetingKeywordTrigger(userText, convo)));
+      if (allowGraphGreetingReset) {
           const firstTrigger = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
           if (firstTrigger) {
               log.info(`Graph: Greeting reset to node ${firstTrigger.id}`);

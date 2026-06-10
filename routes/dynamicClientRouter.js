@@ -204,14 +204,38 @@ router.patch('/config', ...secure, async (req, res) => {
           updates[`rtoProtection.${key}`] = rtoProtection[key];
         }
       }
+      if (rtoProtection.enableNdrRescue === true) {
+        const clientRow = await Client.findOne({ clientId }).select('syncedMetaTemplates rtoProtection').lean();
+        const tplName = String(
+          rtoProtection.ndrTemplateName || clientRow?.rtoProtection?.ndrTemplateName || 'rto_ndr_rescue'
+        )
+          .trim()
+          .toLowerCase();
+        const approved = (clientRow?.syncedMetaTemplates || []).some(
+          (t) =>
+            String(t.name || '').toLowerCase() === tplName &&
+            String(t.status || '').toUpperCase() === 'APPROVED'
+        );
+        if (!approved) {
+          return res.status(400).json({
+            success: false,
+            error: `NDR template "${tplName}" must be approved on Meta before enabling rescue.`,
+          });
+        }
+      }
     }
 
-    const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
+    const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true })
+      .select('-shopifyAccessToken -emailAppPassword -whatsappToken -whatsappAccessToken -metaAccessToken');
     const { clearClientCache } = require('../middleware/apiCache');
     const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
     await clearClientCache(clientId);
     invalidateBootstrapCache(req.user?.id);
-    res.json({ success: true, client: updated });
+    res.json({
+      success: true,
+      rtoProtection: updated?.rtoProtection,
+      nicheData: updates['nicheData.orderStatusTemplates'] ? { orderStatusTemplates: updated?.nicheData?.orderStatusTemplates } : undefined,
+    });
   } catch (err) {
     console.error(`[Config Patch] Error for ${req.params.clientId}:`, err);
     res.status(500).json({ error: 'Failed to update configuration.' });
@@ -399,6 +423,22 @@ router.get('/commerce-automations/diagnostics', ...secure, async (req, res) => {
       (req.user.linkedClients && req.user.linkedClients.includes(clientId));
     if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
     const automations = await commerceAutomationService.listAutomations(req.clientConfig);
+    let cronHealth = { lastTickAt: null, stale: null };
+    try {
+      const { getAppRedis } = require('../utils/core/redisFactory');
+      const redis = getAppRedis();
+      if (redis && redis.status === 'ready') {
+        const last = await redis.get('cron:last_tick');
+        if (last) {
+          const ageMs = Date.now() - Number(last);
+          cronHealth = {
+            lastTickAt: new Date(Number(last)).toISOString(),
+            ageMinutes: Math.round(ageMs / 60000),
+            stale: ageMs > 10 * 60 * 1000,
+          };
+        }
+      }
+    } catch (_) { /* non-blocking */ }
     return res.json({
       success: true,
       migrated: (req.clientConfig.commerceAutomationVersion || 0) > 0,
@@ -406,6 +446,7 @@ router.get('/commerce-automations/diagnostics', ...secure, async (req, res) => {
       automationCount: automations.length,
       hasLegacySkuConfig: Array.isArray(req.clientConfig.skuAutomations) && req.clientConfig.skuAutomations.length > 0,
       hasLegacyStatusMap: !!Object.keys(req.clientConfig.nicheData?.orderStatusTemplates || {}).length,
+      cronHealth,
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -645,6 +686,16 @@ router.post('/orders/:orderId/send-status-whatsapp', ...secure, async (req, res)
   } catch (error) {
     console.error('Error sending order status WhatsApp:', error);
     res.status(500).json({ error: 'Failed to send' });
+  }
+});
+
+router.get('/messaging-activity/summary', ...secure, apiCache(45), async (req, res) => {
+  try {
+    const { buildMessagingActivitySummary } = require('../services/messagingActivityService');
+    const summary = await buildMessagingActivitySummary(req.clientConfig);
+    return res.json({ success: true, ...summary });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

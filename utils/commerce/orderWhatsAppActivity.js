@@ -17,6 +17,11 @@ async function appendOrderWhatsAppActivity(orderId, entry) {
     success: !!entry.success,
     reason: entry.reason ? String(entry.reason).slice(0, 240) : null,
     source: entry.source ? String(entry.source).slice(0, 120) : 'system',
+    metaCategory: entry.metaCategory ? String(entry.metaCategory).slice(0, 40) : null,
+    estCostInr:
+      entry.estCostInr != null && !Number.isNaN(Number(entry.estCostInr))
+        ? Math.round(Number(entry.estCostInr) * 100) / 100
+        : null,
   };
   await Order.updateOne(
     { _id: orderId },

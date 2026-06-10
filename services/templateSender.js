@@ -435,6 +435,31 @@ async function sendTemplatedMessage({
     logMeta: { ...logMeta, resolvedVariables: { ...context } },
   });
 
+  if (results.whatsapp?.sent) {
+    try {
+      const { persistAutomationOutbound } = require('../utils/messaging/persistAutomationOutbound');
+      let bodyPreview = `[Template: ${templateName || 'automation'}]`;
+      if (template?.body) {
+        bodyPreview = String(
+          await resolveTemplateVariables(template.body, context)
+        ).slice(0, 500);
+      }
+      await persistAutomationOutbound({
+        clientId,
+        phone,
+        templateName,
+        bodyPreview,
+        messageId: results.whatsapp.messageId,
+        metadata: {
+          automationSlotId: logMeta.automationSlotId || null,
+          contextType: logMeta.contextType || null,
+        },
+      });
+    } catch (persistErr) {
+      log.warn(`Inbox persist after template send failed: ${persistErr.message}`);
+    }
+  }
+
   if (template?._id && (results.whatsapp?.sent || results.email?.sent)) {
     await MetaTemplate.findByIdAndUpdate(template._id, {
       $inc: { totalSends: 1 },

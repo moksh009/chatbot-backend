@@ -21,10 +21,10 @@
     {
       "id": "order_status",
       "title": "Order status messages",
-      "description": "Paid, shipped, delivered, cancelled — map approved templates under Store engine → Order messages.",
+      "description": "Push and approve templates from Order messages — each rule has its own template.",
       "templateNames": ["eco_order_confirmed", "eco_shipping_update", "eco_delivered"],
       "pack": "eco-starters",
-      "configureRoute": "/shopify-automation-center?section=order-whatsapp"
+      "configureRoute": "/shopify-automation-center?section=automations"
     },
     {
       "id": "abandoned_cart_eco",
@@ -40,15 +40,15 @@
       "description": "Incentivise UPI/card after a COD order is placed.",
       "templateNames": ["eco_cod_prepaid_switch"],
       "pack": "eco-starters",
-      "configureRoute": "/commerce-hub?tab=dash"
+      "configureRoute": "/settings?tab=features"
     },
     {
       "id": "cart_recovery",
       "title": "Cart leads recovery",
-      "description": "High-intent cart follow-ups from the Cart leads workspace.",
-      "templateNames": ["cart_recovery"],
+      "description": "3-message follow-up sequence — push cart_recovery_1/2/3 from Order messages.",
+      "templateNames": ["cart_recovery_1", "cart_recovery_2", "cart_recovery_3"],
       "pack": "gate",
-      "configureRoute": "/cart-leads"
+      "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1"
     },
     {
       "id": "warranty",
@@ -64,7 +64,7 @@
       "description": "Default utility template name is rto_ndr_rescue unless you override it in RTO advanced settings.",
       "templateNames": ["rto_ndr_rescue"],
       "pack": "gate",
-      "configureRoute": "/orders?view=analytics"
+      "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_failure"
     }
   ],
   "ecoStandardNames": [
@@ -77,8 +77,8 @@
   "groups": [
     {
       "id": "order_status",
-      "label": "Order status (Shopify)",
-      "description": "Official utility templates for paid, shipped, and delivered. Map them under Store → Order messages — not the wizard pack names.",
+      "label": "Order message templates",
+      "description": "Pre-built templates for order updates. Configure and push from Store → Order messages — not here.",
       "slots": [
         {
           "id": "eco_order_confirmed",
@@ -87,7 +87,7 @@
           "canonicalMetaName": "eco_order_confirmed",
           "metaNames": ["eco_order_confirmed"],
           "usedIn": ["Order messages"],
-          "configureRoute": "/shopify-automation-center?section=order-whatsapp",
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_financial_paid",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
@@ -101,7 +101,7 @@
           "canonicalMetaName": "eco_shipping_update",
           "metaNames": ["eco_shipping_update"],
           "usedIn": ["Order messages", "Auto tracking"],
-          "configureRoute": "/shopify-automation-center?section=order-whatsapp",
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_fulfillment_fulfilled",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
@@ -111,11 +111,11 @@
         {
           "id": "eco_delivered",
           "title": "Delivered",
-          "description": "Delivery completed on Shopify.",
-          "canonicalMetaName": "eco_delivered",
-          "metaNames": ["eco_delivered"],
+          "description": "Courier confirmed delivery — same slot as shipment delivered rule.",
+          "canonicalMetaName": "order_delivered_update",
+          "metaNames": ["order_delivered_update", "eco_delivered"],
           "usedIn": ["Order messages"],
-          "configureRoute": "/shopify-automation-center?section=order-whatsapp",
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_delivered",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
@@ -257,16 +257,16 @@
         {
           "id": "eco_cod_prepaid",
           "title": "COD → prepaid nudge",
-          "description": "UPI/card incentive after COD orders.",
+          "description": "UPI/card incentive after COD orders — enable under Settings → Features.",
           "canonicalMetaName": "eco_cod_prepaid_switch",
           "metaNames": ["eco_cod_prepaid_switch"],
-          "usedIn": ["Commerce hub"],
-          "configureRoute": "/commerce-hub?tab=dash",
+          "usedIn": ["Order create webhook"],
+          "configureRoute": "/settings?tab=features",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
           "prebuiltKey": null,
-          "autoTrigger": null
+          "autoTrigger": "cod_prepaid"
         }
       ]
     },
@@ -278,11 +278,11 @@
         {
           "id": "gate_cart_recovery",
           "title": "Cart leads recovery",
-          "description": "High-intent cart follow-ups from Cart leads.",
-          "canonicalMetaName": "cart_recovery",
-          "metaNames": ["cart_recovery"],
-          "usedIn": ["Cart leads"],
-          "configureRoute": "/cart-leads",
+          "description": "3 WhatsApp nudges — configure templates in Order messages → Abandoned cart.",
+          "canonicalMetaName": "cart_recovery_1",
+          "metaNames": ["cart_recovery_1", "cart_recovery_2", "cart_recovery_3"],
+          "usedIn": ["Cart leads", "Order messages"],
+          "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1",
           "pack": "gate",
           "pushKind": "gate",
           "prebuiltKey": null,
@@ -294,8 +294,8 @@
           "description": "RTO / failed delivery rescue message.",
           "canonicalMetaName": "rto_ndr_rescue",
           "metaNames": ["rto_ndr_rescue"],
-          "usedIn": ["Orders analytics"],
-          "configureRoute": "/orders?view=analytics",
+          "usedIn": ["Order messages"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_failure",
           "pack": "gate",
           "pushKind": "gate",
           "prebuiltKey": null,

@@ -63,6 +63,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         const NotificationService = require('../core/notificationService');
         await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
+          conversationId: convo?._id,
           topic: "Human takeover requested (ESCALATE_HUMAN)",
           triggerSource: "Flow action",
         });

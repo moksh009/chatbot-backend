@@ -149,6 +149,44 @@ function isGreetingLikeText(text) {
   return GREETING_WORDS.has(first);
 }
 
+/** Explicit reset keywords — always allowed even for returning shoppers. */
+function isExplicitFlowResetText(text) {
+  const raw = String(text || "").toLowerCase().trim();
+  return raw === "menu" || raw === "start";
+}
+
+function isNewConversation(convo) {
+  return (
+    !convo ||
+    !convo.lastStepId ||
+    !convo.lastMessageAt ||
+    convo.status === "new" ||
+    convo.lastStepId === null ||
+    convo.lastStepId === ""
+  );
+}
+
+function isSessionStale(convo, hours = null) {
+  if (!convo?.lastMessageAt) return false;
+  const idleHours = Number(
+    hours ?? process.env.GREETING_RESET_IDLE_HOURS ?? 24
+  );
+  const ms = idleHours * 60 * 60 * 1000;
+  return Date.now() - new Date(convo.lastMessageAt).getTime() > ms;
+}
+
+/**
+ * Gate greeting keyword triggers so returning users saying "hi" don't get welcome again.
+ * Non-greeting keywords and explicit menu/start always pass.
+ */
+function shouldAllowGreetingKeywordTrigger(text, convo) {
+  if (isExplicitFlowResetText(text)) return true;
+  if (!isGreetingLikeText(text)) return true;
+  if (isNewConversation(convo)) return true;
+  if (isSessionStale(convo)) return true;
+  return false;
+}
+
 /**
  * Given an incoming message and a client's flows array,
  * returns which flow (if any) should be activated.
@@ -204,7 +242,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
       const matchMode = trigger.matchMode || "contains";
       return keywords.some((keyword) => checkKeywordMatch(text, keyword, matchMode));
     });
-    if (keywordFlow) {
+    if (keywordFlow && shouldAllowGreetingKeywordTrigger(text, convo)) {
       const nodes = getFlowNodes(keywordFlow);
       const edges = getFlowEdges(keywordFlow);
       keywordHit = {
@@ -217,9 +255,14 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   }
 
   if (keywordHit) {
-    timer.checkpoint("trigger matched: keyword", { flowId: keywordHit.flowId });
-    timer.finish("keyword_match");
-    return keywordHit;
+    if (!shouldAllowGreetingKeywordTrigger(text, convo)) {
+      timer.log("keyword greeting blocked for returning conversation");
+      keywordHit = null;
+    } else {
+      timer.checkpoint("trigger matched: keyword", { flowId: keywordHit.flowId });
+      timer.finish("keyword_match");
+      return keywordHit;
+    }
   }
 
   // ── PRIORITY 1.2: Check Meta Ad triggers ───────────────────────────────────
@@ -269,13 +312,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   }
 
   // ── PRIORITY 2: Check first_message triggers ────────────────────────────────
-  const isNewConversation = !convo
-    || !convo.lastStepId
-    || !convo.lastMessageAt
-    || convo.status === "new"
-    || (convo.lastStepId === null || convo.lastStepId === "");
-
-  if (isNewConversation) {
+  if (isNewConversation(convo)) {
     const welcomeFlow = flows.find((flow) => {
       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
       if (!trigger || (trigger.type !== "first_message" && trigger.type !== "FIRST_MESSAGE")) return false;
@@ -330,7 +367,7 @@ async function findGreetingFlowFast(client, convo, text, channel = "whatsapp") {
       flow.routingEdges || [],
       channel
     );
-    if (entry?.startNodeId) {
+    if (entry?.startNodeId && shouldAllowGreetingKeywordTrigger(trimmed, convo)) {
       return {
         flowId: flow.flowId || String(flow._id),
         startNodeId: entry.startNodeId,
@@ -342,15 +379,7 @@ async function findGreetingFlowFast(client, convo, text, channel = "whatsapp") {
 
   if (!isGreetingLikeText(trimmed)) return null;
 
-  const isNewConversation =
-    !convo ||
-    !convo.lastStepId ||
-    !convo.lastMessageAt ||
-    convo.status === "new" ||
-    convo.lastStepId === null ||
-    convo.lastStepId === "";
-
-  if (!isNewConversation) return null;
+  if (!isNewConversation(convo)) return null;
 
   for (const flow of flows) {
     const trigger =
@@ -713,6 +742,10 @@ function clearTriggerCache(clientId) {
 
 module.exports = {
   isGreetingLikeText,
+  isExplicitFlowResetText,
+  isNewConversation,
+  isSessionStale,
+  shouldAllowGreetingKeywordTrigger,
   findMatchingFlow,
   findGreetingFlowFast,
   loadSlimFlowsForClient,

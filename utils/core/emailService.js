@@ -960,6 +960,14 @@ function escapeHtml(text) {
 /**
  * Enterprise HTML for human-escalation / admin_alert emails (used by notificationService).
  */
+function formatTranscriptLine(msg) {
+    const dir = String(msg?.direction || '').toLowerCase();
+    const who = dir === 'incoming' ? 'Customer' : msg?.from === 'BOT' ? 'Bot' : 'Agent';
+    const text = String(msg?.content || msg?.body || '').trim().slice(0, 280);
+    if (!text) return '';
+    return `<li style="margin:0 0 8px;font-size:13px;line-height:1.45;color:#334155;"><strong style="color:#0f172a;">${escapeHtml(who)}:</strong> ${escapeHtml(text)}</li>`;
+}
+
 function buildAdminEscalationEmailHtml({
     brandName = 'Your store',
     topic = 'Support request',
@@ -967,12 +975,23 @@ function buildAdminEscalationEmailHtml({
     customerPhone = '',
     customerQuery = '',
     takeoverLink = '#',
+    recentMessages = [],
 }) {
     const q = String(customerQuery || '').trim();
     const queryBlock = q
         ? `<div style="margin-top:20px;padding:16px;background:#0f172a08;border-radius:12px;border:1px solid #e2e8f0;">
             <p style="margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Customer message</p>
             <p style="margin:0;font-size:14px;line-height:1.55;color:#0f172a;white-space:pre-wrap;">${escapeHtml(q)}</p>
+           </div>`
+        : '';
+
+    const transcriptLines = (Array.isArray(recentMessages) ? recentMessages : [])
+        .map(formatTranscriptLine)
+        .filter(Boolean);
+    const transcriptBlock = transcriptLines.length
+        ? `<div style="margin-top:20px;padding:16px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;">
+            <p style="margin:0 0 10px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Recent chat (last ${transcriptLines.length})</p>
+            <ul style="margin:0;padding-left:18px;">${transcriptLines.join('')}</ul>
            </div>`
         : '';
 
@@ -990,6 +1009,7 @@ function buildAdminEscalationEmailHtml({
                 <tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;">Customer WhatsApp</td><td style="padding:10px 0;text-align:right;color:#4f46e5;font-weight:800;font-family:ui-monospace,Menlo,monospace;">${escapeHtml(customerPhone)}</td></tr>
               </table>
               ${queryBlock}
+              ${transcriptBlock}
               <a href="${escapeHtml(takeoverLink)}" style="display:block;margin-top:28px;text-align:center;padding:16px 20px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#fff!important;text-decoration:none;border-radius:14px;font-weight:800;font-size:14px;letter-spacing:0.02em;">Open conversation in dashboard →</a>
               <p style="margin:24px 0 0;font-size:11px;color:#94a3b8;line-height:1.6;text-align:center;">If the button is blocked, copy this link: <span style="word-break:break-all;color:#64748b;">${escapeHtml(takeoverLink)}</span></p>
             </div>

@@ -5,7 +5,8 @@ const pendingBySession = new Map();
 
 const DEBOUNCE_MS = parseInt(process.env.INBOUND_QUEUE_DEBOUNCE_MS || '300', 10) || 300;
 const FIRST_MESSAGE_FLUSH_MS = parseInt(process.env.INBOUND_QUEUE_FIRST_FLUSH_MS || '0', 10) || 0;
-const MAX_RETRIES = 1;
+const LOCK_RETRY_MS = parseInt(process.env.INBOUND_LOCK_RETRY_MS || '1500', 10) || 1500;
+const MAX_RETRIES = parseInt(process.env.INBOUND_QUEUE_MAX_RETRIES || '3', 10) || 3;
 
 /**
  * Coalesce rapid WhatsApp events for the same customer into one engine run.
@@ -54,7 +55,7 @@ function scheduleFlush(key, entry, delayMs = DEBOUNCE_MS) {
         entry.client = client;
         entry.run = run;
         pendingBySession.set(key, entry);
-        scheduleFlush(key, entry, DEBOUNCE_MS);
+        scheduleFlush(key, entry, LOCK_RETRY_MS);
       }
     } catch (err) {
       log.error(`[InboundQueue] Processor failed for ${key}:`, err.message);

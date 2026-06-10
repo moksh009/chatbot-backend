@@ -24,6 +24,14 @@ async function buildOrderMessagesOverview(clientConfig) {
       ? clientConfig.wizardFeatures.toObject()
       : clientConfig.wizardFeatures || {};
 
+  let messagingActivity = null;
+  try {
+    const { buildMessagingActivitySummary } = require('../../services/messagingActivityService');
+    messagingActivity = await buildMessagingActivitySummary(clientConfig);
+  } catch (err) {
+    console.warn('[OrderMessagesOverview] messaging activity:', err.message);
+  }
+
   return {
     metrics: byStatus,
     failures: failures.slice(0, 80),
@@ -32,6 +40,7 @@ async function buildOrderMessagesOverview(clientConfig) {
       enableAutoShopifyShippedWhatsApp: wf.enableAutoShopifyShippedWhatsApp !== false,
     },
     orderTriggers: clientConfig.nicheData?.orderStatusTemplates || {},
+    messagingActivity,
   };
 }
 

@@ -123,6 +123,37 @@ router.get('/:clientId/cod-pipeline', protect, verifyTenantScope(), logPersonalD
   }
 });
 
+/** RTO Protection dashboard — month stats + toggles (Insights → Delivery & RTO). */
+router.get('/:clientId/rto-analytics', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { aggregateRtoProtectionStats } = require('../utils/commerce/rtoProtectionService');
+    const data = await aggregateRtoProtectionStats(clientId);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/** Order commerce waterfall + funnel inputs for RTO analytics charts. */
+router.get('/:clientId/commerce-insights', protect, verifyTenantScope(), logPersonalDataAccess, apiCache(60), async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { getOrdersCommerceInsights } = require('../utils/commerce/ordersCommerceInsights');
+    const range = String(req.query.range || '30d');
+    const data = await getOrdersCommerceInsights(clientId, range);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.post('/:clientId/bulk-action', protect, verifyTenantScope(), async (req, res) => {
   try {
     const { clientId } = req.params;

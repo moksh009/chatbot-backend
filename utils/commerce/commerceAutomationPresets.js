@@ -38,6 +38,39 @@ const FULFILLMENT_STATUS_RULES = [
   },
 ];
 
+/** Delivery tracking rules — driven by courier updates on Shopify fulfillments
+ *  (`fulfillments/create` + `fulfillments/update` webhooks, `shipment_status` field).
+ *  Third-party logistics partners (Shiprocket, Delhivery, etc.) push these into
+ *  Shopify, and we mirror them to WhatsApp. Mirror frontend
+ *  src/utils/commerceAutomationCatalog.js for label + tooltip parity. */
+const SHIPMENT_STATUS_RULES = [
+  {
+    status: 'in_transit',
+    label: 'In Transit',
+    tooltip: 'The courier has picked up the package and it is on the way',
+  },
+  {
+    status: 'out_for_delivery',
+    label: 'Out for Delivery',
+    tooltip: 'The package is with the delivery agent and will arrive today',
+  },
+  {
+    status: 'delivered',
+    label: 'Delivered',
+    tooltip: 'The courier confirmed the package was delivered to the customer',
+  },
+  {
+    status: 'attempted_delivery',
+    label: 'Delivery Attempt Failed',
+    tooltip: 'The courier tried to deliver but could not — ask the customer to confirm address or availability',
+  },
+  {
+    status: 'failure',
+    label: 'Delivery Failed',
+    tooltip: 'The courier marked the shipment as failed — rescue the order before it returns to origin (RTO)',
+  },
+];
+
 const PAYMENT_STATUS_RULES = [
   {
     status: 'pending',
@@ -123,6 +156,43 @@ function fulfillmentStatusRule({ status, label, tooltip }) {
       category: 'order_notification',
       group: 'fulfillment_status',
       systemSlot: `fulfillment_${status}`,
+      tooltip,
+      locked: true,
+    },
+  };
+}
+
+function shipmentStatusRule({ status, label, tooltip }) {
+  return {
+    id: `sys_shipment_${status}`,
+    name: label,
+    triggerType: 'order_status',
+    triggerStatusType: 'shipment',
+    triggerStatus: status,
+    event: status,
+    matchType: 'exact',
+    sku: '',
+    triggerScope: 'every_order',
+    targetProductIds: [],
+    productIds: [],
+    productId: '',
+    productTitle: '',
+    variantId: '',
+    actionType: 'send_template',
+    templateName: '',
+    sequenceId: '',
+    language: 'en',
+    delayMinutes: 0,
+    imageUrl: '',
+    isActive: false,
+    variableMappings: { body: {} },
+    customVariableValues: {},
+    isDeletable: false,
+    meta: {
+      system: true,
+      category: 'order_notification',
+      group: 'shipment_status',
+      systemSlot: `shipment_${status}`,
       tooltip,
       locked: true,
     },
@@ -215,6 +285,7 @@ function abandonedCartRule(slot, stepNum) {
 function buildSystemAutomations() {
   return [
     ...FULFILLMENT_STATUS_RULES.map(fulfillmentStatusRule),
+    ...SHIPMENT_STATUS_RULES.map(shipmentStatusRule),
     ...PAYMENT_STATUS_RULES.map(paymentStatusRule),
     ...ABANDONED_CART_SLOTS.map((slot, i) => abandonedCartRule(slot, i + 1)),
   ];
@@ -309,6 +380,7 @@ module.exports = {
   LEGACY_ORDER_NOTIFICATION_SLOTS,
   ABANDONED_CART_SLOTS,
   FULFILLMENT_STATUS_RULES,
+  SHIPMENT_STATUS_RULES,
   PAYMENT_STATUS_RULES,
   CART_FOLLOWUP_MIN_MINUTES,
   CART_FOLLOWUP_DEFAULT_MINUTES,

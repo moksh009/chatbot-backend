@@ -41,7 +41,12 @@ function registerCoordinatedCrons() {
 
   cron.schedule(
     "*/10 * * * *",
-    wrapCron("Coordinator/10min CSAT primary", async () => {
+    wrapCron("Coordinator/10min reconcile+CSAT primary", async () => {
+      try {
+        const reconcile = require("./orderStatusReconcileCron");
+        if (reconcile.runTick) await reconcile.runTick();
+      } catch (_) {}
+
       const scheduleCsat = require("./csatCron");
       if (scheduleCsat.runPrimaryTick) {
         await scheduleCsat.runPrimaryTick();
@@ -55,6 +60,11 @@ function registerCoordinatedCrons() {
       try {
         const scheduleCod = require("./codConfirmationCron");
         if (scheduleCod.runTick) await scheduleCod.runTick();
+      } catch (_) {}
+
+      try {
+        const codPrepaid = require("./codPrepaidNudgeCron");
+        if (codPrepaid.runTick) await codPrepaid.runTick();
       } catch (_) {}
 
       try {

@@ -56,6 +56,8 @@ function registerAllCrons() {
   // ── Legacy noop stubs (register runTick only; timers skipped when coordinator on) ──
   require("./abandonedCartScheduler")();
   require("./codConfirmationCron")();
+  require("./codPrepaidNudgeCron")();
+  require("./orderStatusReconcileCron")();
   require("./autoResumeBotCron")();
   require("./followUpSequenceCron")();
   require("./campaignProgressMonitorCron")();

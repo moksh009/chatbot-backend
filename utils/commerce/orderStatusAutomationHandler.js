@@ -54,6 +54,17 @@ const FINANCIAL_VALUES = new Set([
   'voided',
 ]);
 
+/** Courier tracking statuses surfaced as Delivery tracking rules. Shopify also
+ *  emits label_printed / label_purchased / ready_for_pickup / confirmed, but
+ *  those are internal logistics noise merchants don't message customers about. */
+const SHIPMENT_VALUES = new Set([
+  'in_transit',
+  'out_for_delivery',
+  'delivered',
+  'attempted_delivery',
+  'failure',
+]);
+
 function normalizeProductId(id) {
   const s = String(id || '').trim();
   if (!s) return '';
@@ -137,6 +148,31 @@ async function alreadySentForOrder({ clientId, orderId, statusKey }) {
   return !!existing;
 }
 
+async function recordRuleSendOutcome(clientId, ruleId, outcome = {}) {
+  if (!clientId || !ruleId) return;
+  const patch = {
+    lastSendAt: new Date(),
+    lastSendStatus: outcome.sent ? 'sent' : 'failed',
+    lastSendError: outcome.sent
+      ? null
+      : String(outcome.reason || outcome.error || 'send_failed').slice(0, 240),
+  };
+  try {
+    await Client.updateOne(
+      { clientId, 'commerceAutomations.id': String(ruleId) },
+      {
+        $set: {
+          'commerceAutomations.$.lastSendAt': patch.lastSendAt,
+          'commerceAutomations.$.lastSendStatus': patch.lastSendStatus,
+          'commerceAutomations.$.lastSendError': patch.lastSendError,
+        },
+      }
+    );
+  } catch (err) {
+    log.warn(`recordRuleSendOutcome failed for ${ruleId}: ${err.message}`);
+  }
+}
+
 async function recordSent({ clientId, orderId, statusKey, ruleId, phone }) {
   try {
     await OrderStatusSent.create({
@@ -195,7 +231,45 @@ function buildContextOrder(payload) {
   };
 }
 
-async function dispatchRule({ client, rule, statusKey, type, status, payload, phoneNorm }) {
+async function logRuleDispatchActivity({ client, payload, rule, status, result, source }) {
+  try {
+    const orderId = String(payload.id || payload.order_id || '');
+    if (!orderId) return;
+    const order = await Order.findOne({
+      clientId: client.clientId,
+      shopifyOrderId: orderId,
+    })
+      .select('_id')
+      .lean();
+    if (!order?._id) return;
+
+    const { appendOrderWhatsAppActivity } = require('./orderWhatsAppActivity');
+    const { resolveTemplateCategory } = require('../../services/messagingActivityService');
+    const { estimateCostInr } = require('../../constants/metaWhatsAppPricing');
+    const sent = !!result?.whatsapp?.sent;
+    const cat = resolveTemplateCategory(client, rule.templateName, {
+      contextType: 'order',
+      automationSlotId: rule.id,
+    });
+
+    await appendOrderWhatsAppActivity(order._id, {
+      event: status,
+      templateName: rule.templateName,
+      channel: 'template',
+      success: sent,
+      reason: sent
+        ? null
+        : String(result?.reason || result?.failureCode || 'send_failed').slice(0, 240),
+      source: source || 'order_automation',
+      metaCategory: cat,
+      estCostInr: sent ? estimateCostInr(cat, 1) : null,
+    });
+  } catch (err) {
+    log.warn(`activity log failed: ${err.message}`);
+  }
+}
+
+async function dispatchRule({ client, rule, statusKey, type, status, payload, phoneNorm, source }) {
   const orderId = String(payload.id || payload.order_id || '');
   if (!orderId) return { skipped: true, reason: 'missing_order_id' };
 
@@ -245,13 +319,36 @@ async function dispatchRule({ client, rule, statusKey, type, status, payload, ph
       ruleId: rule.id,
       phone: phoneNorm,
     });
+    await recordRuleSendOutcome(client.clientId, rule.id, { sent: true });
+    await logRuleDispatchActivity({
+      client,
+      payload,
+      rule,
+      status,
+      result,
+      source,
+    });
     return { sent: true, ruleId: rule.id };
   }
+
+  const failReason = result?.whatsapp?.reason || result?.failureCode || 'send_failed';
+  await recordRuleSendOutcome(client.clientId, rule.id, {
+    sent: false,
+    reason: failReason,
+  });
+  await logRuleDispatchActivity({
+    client,
+    payload,
+    rule,
+    status,
+    result: { whatsapp: { sent: false }, reason: failReason },
+    source,
+  });
 
   return {
     sent: false,
     ruleId: rule.id,
-    reason: result?.whatsapp?.reason || result?.failureCode || 'send_failed',
+    reason: failReason,
   };
 }
 
@@ -308,6 +405,7 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
           status,
           payload,
           phoneNorm,
+          source,
         });
         outcomes.push({ statusKey, ruleId: rule.id, ...outcome });
       } catch (err) {
@@ -328,10 +426,90 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
   return { processed: outcomes.length, outcomes };
 }
 
+/**
+ * Public entry: process a Shopify fulfillment webhook (`fulfillments/create`
+ * or `fulfillments/update`) through the Delivery tracking rules
+ * (`sys_shipment_*`). Courier apps (Shiprocket, Delhivery, AfterShip…) update
+ * `fulfillment.shipment_status`; we mirror the matching rule to WhatsApp.
+ *
+ * `orderPayload` is the full Shopify order (fetched by the webhook handler) —
+ * needed for the customer phone, line items, and template variables. The
+ * fulfillment's tracking info is merged on top so `tracking_url` resolves.
+ */
+async function processShipmentStatusAutomations({ client, fulfillment, orderPayload, source = 'unknown' }) {
+  if (!client || !fulfillment || !orderPayload) return { processed: 0, outcomes: [] };
+  const clientId = client.clientId;
+  if (!clientId) return { processed: 0, outcomes: [] };
+
+  const status = String(fulfillment.shipment_status || '').toLowerCase().trim();
+  if (!SHIPMENT_VALUES.has(status)) return { processed: 0, outcomes: [] };
+
+  let rules = Array.isArray(client.commerceAutomations) ? client.commerceAutomations : null;
+  if (!rules) {
+    const fresh = await Client.findOne({ clientId })
+      .select('commerceAutomations')
+      .lean();
+    rules = Array.isArray(fresh?.commerceAutomations) ? fresh.commerceAutomations : [];
+  }
+
+  const matching = rules.filter((r) => ruleMatchesStatus(r, 'shipment', status));
+  if (!matching.length) return { processed: 0, outcomes: [] };
+
+  /** Surface the fulfillment's tracking link ahead of older fulfillments. */
+  const trackingUrl = (Array.isArray(fulfillment.tracking_urls) && fulfillment.tracking_urls[0])
+    || fulfillment.tracking_url
+    || '';
+  const payload = {
+    ...orderPayload,
+    fulfillments: [
+      { tracking_url: trackingUrl, tracking_number: fulfillment.tracking_number || '' },
+      ...(orderPayload.fulfillments || []),
+    ],
+  };
+
+  const phoneRaw = payload.phone
+    || payload.customer?.phone
+    || payload.billing_address?.phone
+    || payload.shipping_address?.phone
+    || '';
+  const phoneNorm = normalizePhone(phoneRaw);
+
+  const statusKey = buildStatusKey('shipment', status);
+  const outcomes = [];
+  for (const rule of matching) {
+    try {
+      const outcome = await dispatchRule({
+        client,
+        rule,
+        statusKey,
+        type: 'shipment',
+        status,
+        payload,
+        phoneNorm,
+        source,
+      });
+      outcomes.push({ statusKey, ruleId: rule.id, ...outcome });
+    } catch (err) {
+      log.error(`[${source}] rule ${rule.id} (${statusKey}) failed: ${err.message}`);
+      outcomes.push({ statusKey, ruleId: rule.id, error: err.message });
+    }
+  }
+
+  if (outcomes.length) {
+    log.info(
+      `[${source}] ${clientId} order=${payload.id} shipment=${status} outcomes=${JSON.stringify(outcomes)}`
+    );
+  }
+
+  return { processed: outcomes.length, outcomes };
+}
+
 module.exports = {
   processOrderStatusAutomations,
+  processShipmentStatusAutomations,
   readStatusesFromPayload,
   buildStatusKey,
   FULFILLMENT_VALUES,
   FINANCIAL_VALUES,
+  SHIPMENT_VALUES,
 };

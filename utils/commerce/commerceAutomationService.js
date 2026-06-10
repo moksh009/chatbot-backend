@@ -98,6 +98,12 @@ const ECO_TEMPLATE_BODY_MAPPINGS = {
   eco_shipping_update: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
   eco_delivered: { 1: 'first_name', 2: 'order_id' },
   eco_abandoned_cart: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 4: 'checkout_url' },
+  /** Delivery tracking prebuilts (routes/templateGate.js blueprints). */
+  order_in_transit: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
+  order_out_for_delivery: { 1: 'first_name', 2: 'order_id' },
+  order_delivered_update: { 1: 'first_name', 2: 'order_id' },
+  delivery_attempt_failed: { 1: 'first_name', 2: 'order_id' },
+  rto_ndr_rescue: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
 };
 
 function seedEcoBodyMappings(templateName, mappings) {
@@ -761,7 +767,8 @@ async function upsertAutomation(clientId, automation = {}) {
   const isLegacyOrderRule =
     metaCategory === 'order_notification' &&
     metaGroup !== 'payment_status' &&
-    metaGroup !== 'fulfillment_status';
+    metaGroup !== 'fulfillment_status' &&
+    metaGroup !== 'shipment_status';
   if (isLegacyOrderRule) {
     const status = normalizeEvent(existing?.event || normalized?.event);
     if (status && ORDER_STATUS_EVENTS.includes(status)) {

@@ -21,7 +21,23 @@ function startPhase3Workers() {
   const inventoryPush = startInventoryShopifyPushWorker();
   const inventoryAmazonPush = startInventoryAmazonPushWorker();
   const amazonInventoryPull = startAmazonInventorySyncWorker();
-  return { campaign, sequence, maintenance, webhook, inventoryPush, inventoryAmazonPush, amazonInventoryPull };
+  let inboundEngine = null;
+  try {
+    const { startInboundEngineWorker } = require('../utils/messaging/inboundEngineQueue');
+    inboundEngine = startInboundEngineWorker();
+  } catch (e) {
+    log.warn(`Inbound engine worker: ${e.message}`);
+  }
+  return {
+    campaign,
+    sequence,
+    maintenance,
+    webhook,
+    inventoryPush,
+    inventoryAmazonPush,
+    amazonInventoryPull,
+    inboundEngine,
+  };
 }
 
 module.exports = { startPhase3Workers };

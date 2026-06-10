@@ -14,7 +14,7 @@ const { logActivity } = require('../utils/core/activityLogger');
 const { recalculateLeadScore } = require('../utils/core/scoringHelper');
 const log = require('../utils/core/logger')('ShopifyWebhook');
 const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
-const { processOrderStatusAutomations } = require('../utils/commerce/orderStatusAutomationHandler');
+const { processOrderStatusAutomations, processShipmentStatusAutomations } = require('../utils/commerce/orderStatusAutomationHandler');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 const {
     applyWarrantyVoidFromOrder,
@@ -361,6 +361,26 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                             }).catch((e) =>
                                 log.error(`OrderStatus automation ${topic} failed: ${e.message}`)
                             );
+                            /** Delivery tracking rules — skip when RTO NDR already handled
+                             *  failure / attempted_delivery (same webhook event). */
+                            const shipmentStatus = String(
+                                data.shipment_status || data.status || ''
+                            ).toLowerCase();
+                            const { rtoCfg, NDR_SHIPMENT_TRIGGERS } = require('../utils/commerce/rtoProtectionService');
+                            const ndrHandled =
+                                rtoCfg(client).enableNdrRescue &&
+                                NDR_SHIPMENT_TRIGGERS.has(shipmentStatus) &&
+                                (shipmentStatus === 'failure' || shipmentStatus === 'attempted_delivery');
+                            if (!ndrHandled) {
+                                await processShipmentStatusAutomations({
+                                    client,
+                                    fulfillment: data,
+                                    orderPayload: fullOrder,
+                                    source: `shopify_webhook:${topic}`,
+                                }).catch((e) =>
+                                    log.error(`Shipment automation ${topic} failed: ${e.message}`)
+                                );
+                            }
                         }
                     } catch (fulErr) {
                         log.warn(`[${topic}] order fetch for status automation failed: ${fulErr.message}`);
@@ -975,83 +995,21 @@ async function handleOrder(client, data, storeKey = '') {
 
     // --- SKU-to-Template Automation removed (replaced by SkuTriggerService in switch/case) ---
 
-    // --- COD to Prepaid Conversion ---
-    const codActive = (client.automationFlows || []).find(f => f.id === 'cod_to_prepaid')?.isActive;
-
-    if (codActive && isCODOrder) {
-        log.info(`Converting COD order ${data.name} to Prepaid for ${client.clientId}`);
-        const niche = client.nicheData || {};
-        const WhatsApp = require('../utils/meta/whatsapp');
-        
+    // --- COD → Prepaid nudge (wizardFeatures.enableCodToPrepaid) ---
+    if (isCODOrder) {
         try {
-            // Determine the Payment Gateway Strategy
-            let paymentLinkUrl = null;
-            let paymentGateway = client.activePaymentGateway || 'none';
-
-            if (paymentGateway === 'razorpay' && client.razorpayKeyId) {
-                const { createCODPaymentLink } = require('../utils/commerce/razorpay');
-                const link = await createCODPaymentLink(newOrder, client);
-                paymentLinkUrl = link.short_url;
-            } else if (paymentGateway === 'cashfree' && client.cashfreeAppId) {
-                const { createCashfreePaymentLink } = require('../utils/commerce/cashfree');
-                const link = await createCashfreePaymentLink(newOrder, client);
-                paymentLinkUrl = link.short_url;
-            } else {
-                // Fallback to Shopify Draft Order for Native Checkout
-                const draftOrder = await createDraftOrder(client, data, niche.cod_discount_code || niche.globalDiscountCode || 'PREPAID5');
-                paymentLinkUrl = draftOrder?.invoice_url;
+            const { maybeDispatchCodPrepaidNudge } = require('../utils/commerce/codPrepaidDispatch');
+            const codOut = await maybeDispatchCodPrepaidNudge({
+                client,
+                orderDoc: newOrder,
+                shopifyPayload: data,
+                phone: cleanPhone,
+            });
+            if (codOut?.ok || codOut?.scheduled) {
+                log.info(`[ShopifyWebhook] COD prepaid nudge ${codOut.ok ? 'sent' : 'scheduled'} for ${data.name}`);
             }
-            
-            if (paymentLinkUrl) {
-                // Prepare dynamic template dispatch
-                const firstItemImage = await getProductImageForOrder(data, client);
-                const orderId = data.name || data.id;
-                const total = data.total_price;
-                const customerName = data.customer?.first_name || 'Guest';
-
-                try {
-                    const { sendForAutomation } = require('../services/templateSender');
-                    const codResult = await sendForAutomation({
-                        clientId: client.clientId,
-                        phone: cleanPhone,
-                        slotId: 'eco_cod_prepaid',
-                        contextType: 'cod_prepaid',
-                        contextData: {
-                            order: data,
-                            extra: {
-                                payment_link: paymentLinkUrl,
-                                payment_gateway: paymentGateway,
-                                name: customerName,
-                            },
-                        },
-                    });
-                    if (codResult?.whatsapp?.sent) {
-                        log.info(
-                            `COD Payment link (${paymentGateway}) sent to ${cleanPhone} via ${codResult.metaName}`
-                        );
-                    } else {
-                        throw new Error(codResult?.failureCode || codResult?.whatsapp?.reason || 'cod_send_skipped');
-                    }
-                } catch (metaErr) {
-                    log.warn(`[ShopifyWebhook] COD prepaid template failed (${metaErr.message}). Falling back to interactive message.`);
-                    
-                    const fallbackBody = `Hi ${customerName}! 🎁 Want to save more on your order? Pay online securely now and get an extra discount!\n\n💳 Pay here: ${paymentLinkUrl}\n\n*Order:* #${orderId}\n*Amount:* ₹${total}`;
-                    const interactive = {
-                        type: 'button',
-                        header: { type: 'text', text: '💳 Convert to Prepaid' },
-                        body: { text: fallbackBody },
-                        footer: { text: client.businessName || 'Smart Store' },
-                        action: {
-                            buttons: [
-                                { type: 'reply', reply: { id: `cod_upi_${data.id}`, title: '✅ Confirmed' } }
-                            ]
-                        }
-                    };
-                    await WhatsApp.sendInteractive(client, cleanPhone, interactive, fallbackBody);
-                }
-            }
-        } catch (err) {
-            log.error(`COD Conversion failed: ${err.message}`);
+        } catch (codErr) {
+            log.error(`COD prepaid nudge failed: ${codErr.message}`);
         }
     }
 

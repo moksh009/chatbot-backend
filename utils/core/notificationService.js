@@ -3,7 +3,85 @@
 const WhatsApp = require('../meta/whatsapp');
 const { normalizePhone } = require('./helpers');
 const { sendSystemEmail, buildAdminEscalationEmailHtml, isWorkspaceEmailReady } = require('./emailService');
+const { getAppRedis } = require('./redisFactory');
 const log = require('./logger')('NotificationService');
+
+const ADMIN_ALERT_DEDUP_SEC = Number(process.env.ADMIN_ALERT_DEDUP_SEC || 900);
+
+async function logAdminAlertWhatsAppSend(clientId, {
+  templateName,
+  recipientPhone,
+  success,
+  errorMessage,
+  topic,
+  triggerSource,
+  usedTextFallback = false,
+}) {
+  try {
+    const TemplateSendLog = require('../../models/TemplateSendLog');
+    await TemplateSendLog.create({
+      clientId,
+      templateName: templateName || (usedTextFallback ? 'admin_alert_text' : 'admin_human_alert'),
+      automationSlotId: 'admin_alert',
+      contextType: 'admin_alert',
+      failureCode: success ? 'sent' : 'send_error',
+      channel: 'whatsapp',
+      recipientPhone: String(recipientPhone || ''),
+      contextData: { topic, triggerSource, usedTextFallback },
+      status: success ? 'sent' : 'failed',
+      errorMessage: errorMessage || null,
+    });
+  } catch (_) {
+    /* non-blocking */
+  }
+}
+
+function buildTakeoverLink({ baseUrl, conversationId, customerPhone }) {
+  const base = String(baseUrl || 'https://dash.topedgeai.com').replace(/\/$/, '');
+  if (conversationId) {
+    return `${base}/conversations/${conversationId}`;
+  }
+  const phone = encodeURIComponent(String(customerPhone || '').trim());
+  return phone ? `${base}/conversations?phone=${phone}` : `${base}/conversations`;
+}
+
+async function shouldSkipAdminAlertDedup(clientId, customerPhone, topic) {
+  const redis = getAppRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  const key = `admin_alert:${clientId}:${normalizePhone(customerPhone)}:${String(topic || 'alert').slice(0, 64)}`;
+  try {
+    const set = await redis.set(key, '1', 'EX', ADMIN_ALERT_DEDUP_SEC, 'NX');
+    return set === null;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function loadRecentChatTranscript(clientId, customerPhone, conversationId, limit = 5) {
+  try {
+    const Conversation = require('../../models/Conversation');
+    const Message = require('../../models/Message');
+    let convoId = conversationId;
+    if (!convoId && customerPhone) {
+      const convo = await Conversation.findOne({
+        clientId,
+        phone: normalizePhone(customerPhone),
+      })
+        .select('_id')
+        .lean();
+      convoId = convo?._id;
+    }
+    if (!convoId) return [];
+    const rows = await Message.find({ conversationId: convoId })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .select('direction content type timestamp from')
+      .lean();
+    return rows.reverse();
+  } catch (_) {
+    return [];
+  }
+}
 
 function resolveAdminAlertChannel(client, explicitChannel) {
   if (explicitChannel === 'whatsapp' || explicitChannel === 'email' || explicitChannel === 'both') {
@@ -78,6 +156,7 @@ const NotificationService = {
    */
   async sendAdminAlert(client, {
     customerPhone,
+    conversationId,
     topic,
     triggerSource,
     channel: channelParam,
@@ -85,6 +164,12 @@ const NotificationService = {
     customerQuery = '',
   }) {
     const channel = resolveAdminAlertChannel(client, channelParam);
+    const clientId = client?.clientId || String(client);
+
+    if (await shouldSkipAdminAlertDedup(clientId, customerPhone, topic)) {
+      log.info(`[sendAdminAlert] Dedup skip for ${clientId} ${customerPhone}`);
+      return { deduped: true, whatsapp: [], email: [] };
+    }
 
     const rawEmails = (client.adminAlertEmail || '').split(',').map((s) => s.trim()).filter(Boolean);
     const fallbackBiz = (client.adminEmail || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -100,10 +185,14 @@ const NotificationService = {
     }
     adminWhatsapps = [...new Set(adminWhatsapps)].slice(0, 5);
     
-    // Construct the Deep Link for Takeover
-    const baseUrl = process.env.DASHBOARD_URL || 'https://whatsappchatbot-6u7a.onrender.com';
-    const takeoverLink = `${baseUrl}/conversations/${customerPhone}`;
-    
+    const baseUrl = process.env.DASHBOARD_URL || 'https://dash.topedgeai.com';
+    const takeoverLink = buildTakeoverLink({ baseUrl, conversationId, customerPhone });
+    const recentMessages = await loadRecentChatTranscript(
+      clientId,
+      customerPhone,
+      conversationId
+    );
+
     const results = { whatsapp: [], email: [] };
 
     // 1. Parallel WhatsApp Alerts
@@ -148,15 +237,37 @@ const NotificationService = {
             components
           );
           results.whatsapp.push({ number, status: 'success', res, templateName });
+          await logAdminAlertWhatsAppSend(clientId, {
+            templateName,
+            recipientPhone: number,
+            success: true,
+            topic,
+            triggerSource,
+          });
         } catch (err) {
           log.error(`WhatsApp Admin Alert failed for ${number}, falling back to text`, { error: err.message });
           try {
              const textBody = `🚨 *Admin Alert*\n\n*Topic:* ${topic}\n*Triggered by:* ${triggerSource}\n*Customer:* ${customerPhone}\n\n👉 *Takeover Chat:* ${takeoverLink}`;
              const res = await WhatsApp.sendText(client, number, textBody);
              results.whatsapp.push({ number, status: 'success_fallback', res });
+             await logAdminAlertWhatsAppSend(clientId, {
+               templateName: 'admin_alert_text',
+               recipientPhone: number,
+               success: true,
+               topic,
+               triggerSource,
+               usedTextFallback: true,
+             });
           } catch (fallbackErr) {
              log.error(`WhatsApp Fallback failed for ${number}`, { error: fallbackErr.message });
              results.whatsapp.push({ number, status: 'failed', error: fallbackErr.message });
+             await logAdminAlertWhatsAppSend(clientId, {
+               recipientPhone: number,
+               success: false,
+               errorMessage: fallbackErr.message,
+               topic,
+               triggerSource,
+             });
           }
         }
       }));
@@ -196,6 +307,7 @@ const NotificationService = {
               customerPhone: customerPhone || '—',
               customerQuery,
               takeoverLink,
+              recentMessages,
             });
             const ok = await sendSystemEmail({
               to: email,

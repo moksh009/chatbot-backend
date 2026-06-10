@@ -247,7 +247,8 @@ async function handleCodConfirmationButton({ client, phone, buttonId }) {
   return true;
 }
 
-const NDR_SHIPMENT_TRIGGERS = new Set(['failure', 'attempted_delivery', 'delayed']);
+/** Courier statuses that trigger interactive NDR rescue (must have SAC template or RTO override). */
+const NDR_SHIPMENT_TRIGGERS = new Set(['failure', 'attempted_delivery']);
 
 async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
   const cfg = rtoCfg(client);
@@ -349,6 +350,19 @@ async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
       if (outcome !== 'sent' && outcome !== 'duplicate') {
         throw new Error(envOut.reason || 'ndr_not_sent');
       }
+      if (outcome === 'sent') {
+        try {
+          const { persistAutomationOutbound } = require('../messaging/persistAutomationOutbound');
+          await persistAutomationOutbound({
+            clientId: client.clientId,
+            phone: clean,
+            templateName: tpl,
+            bodyPreview: `[NDR rescue: ${orderLabel}]`,
+            messageId: envOut.messageId || '',
+            metadata: { source: 'automation', kind: 'ndr_rescue' },
+          });
+        } catch (_) { /* non-blocking */ }
+      }
     } else {
       const { sendForAutomation } = require('../../services/templateSender');
       const result = await sendForAutomation({
@@ -382,6 +396,22 @@ async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
     if (io && updated) {
       io.to(`client_${client.clientId}`).emit('order_updated', updated.toObject());
     }
+
+    const OrderStatusSent = require('../../models/OrderStatusSent');
+    const ndrStatusKey = `shipment_status_${shipmentStatus}`;
+    await OrderStatusSent.create({
+      clientId: client.clientId,
+      orderId: shopifyRef,
+      statusKey: ndrStatusKey,
+      ruleId: 'ndr_rescue',
+      phone: clean,
+      sentAt: new Date(),
+    }).catch((dedupErr) => {
+      if (dedupErr?.code !== 11000) {
+        console.warn('[RTOProtection] OrderStatusSent write failed:', dedupErr.message);
+      }
+    });
+
     await trackEcommerceEvent(client.clientId, { rtoNdrRescuesSent: 1 }).catch(() => {});
     return { ok: true };
   } catch (e) {

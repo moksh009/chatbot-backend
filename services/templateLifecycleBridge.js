@@ -171,6 +171,46 @@ async function patchClientSyncedTemplate(clientId, { name, id, status, component
 }
 
 /**
+ * Auto-activate commerce automation rules waiting on a template approval.
+ *
+ * When a merchant pushes a recommended prebuilt template from a rule in
+ * Order messages, the rule is saved with `meta.autoActivateOnApproval: true`.
+ * Once Meta approves the template (webhook or poll), we flip the rule live so
+ * the merchant never has to come back and re-check the status by hand.
+ */
+async function autoActivateRulesForApprovedTemplate(clientId, templateName) {
+  if (!clientId || !templateName) return { activated: 0 };
+  const client = await Client.findOne({ clientId }).select("commerceAutomations").lean();
+  const rules = Array.isArray(client?.commerceAutomations) ? client.commerceAutomations : [];
+
+  let activated = 0;
+  const next = rules.map((rule) => {
+    const waiting =
+      rule?.meta?.autoActivateOnApproval === true &&
+      String(rule.templateName || "") === String(templateName) &&
+      rule.isActive !== true;
+    if (!waiting) return rule;
+    activated += 1;
+    return {
+      ...rule,
+      isActive: true,
+      meta: { ...rule.meta, autoActivateOnApproval: false, autoActivatedAt: new Date() },
+    };
+  });
+
+  if (activated > 0) {
+    await Client.updateOne({ clientId }, { $set: { commerceAutomations: next } });
+    emitToClient(clientId, "commerceAutomationsChanged", {
+      reason: "template_approved",
+      templateName,
+      activated,
+    });
+    log.info(`[TemplateLifecycle] Auto-activated ${activated} rule(s) for approved template ${templateName} (${clientId})`);
+  }
+  return { activated };
+}
+
+/**
  * Reconcile full Meta sync list into MetaTemplate + catalog slot links.
  */
 async function reconcileSyncedTemplatesWithCatalog(clientId, syncedTemplates = []) {
@@ -325,6 +365,12 @@ async function pollPendingMetaTemplatesForClient(clientId) {
         components,
       });
 
+      if (submissionStatus === "approved") {
+        await autoActivateRulesForApprovedTemplate(clientId, template.name).catch((e) =>
+          log.warn(`auto-activate ${template.name} for ${clientId}: ${e.message}`)
+        );
+      }
+
       emitToClient(clientId, "templateStatusUpdated", {
         templateId: String(template._id),
         templateName: template.name,
@@ -396,6 +442,12 @@ async function handleMessageTemplateStatusWebhook(clientId, value = {}) {
 
   await reconcileSync(clientId);
 
+  if (submissionStatus === "approved") {
+    await autoActivateRulesForApprovedTemplate(clientId, templateName).catch((e) =>
+      log.warn(`auto-activate ${templateName} for ${clientId}: ${e.message}`)
+    );
+  }
+
   emitToClient(clientId, "templateStatusUpdated", {
     templateId: String(doc._id),
     templateName,
@@ -412,6 +464,7 @@ async function handleMessageTemplateStatusWebhook(clientId, value = {}) {
 module.exports = {
   recordTemplateSubmission,
   patchClientSyncedTemplate,
+  autoActivateRulesForApprovedTemplate,
   reconcileSyncedTemplatesWithCatalog,
   reconcileSync,
   handleMessageTemplateStatusWebhook,
