@@ -11,6 +11,10 @@ const {
   resolveCanonicalTemplateName,
 } = require("../constants/templateCatalog/catalog");
 const { PREBUILT_REQUIRED_TEMPLATES } = require("../constants/templateLifecycle");
+const {
+  parseMetaLastEdited,
+  normalizeMetaCategory,
+} = require("../utils/meta/metaTemplateSyncUtils");
 
 let _emitToClient = null;
 function emitToClient(clientId, event, data) {
@@ -176,25 +180,52 @@ async function reconcileSyncedTemplatesWithCatalog(clientId, syncedTemplates = [
     if (!tpl?.name) continue;
     const submissionStatus = mapMetaGraphStatus(tpl.status);
     const slot = getSlotByMetaName(tpl.name);
+    const canonical = resolveCanonicalTemplateName(tpl.name);
+    const metaLastEditedAt = parseMetaLastEdited(tpl.last_updated_time);
+    const metaCategory = normalizeMetaCategory(tpl.category);
+
+    const existing = await MetaTemplate.findOne({ clientId, name: canonical })
+      .select("approvedAt rejectedAt submittedAt category")
+      .lean();
+
+    const $set = {
+      clientId,
+      name: canonical,
+      catalogSlotId: slot?.id || null,
+      templateKey: slot?.prebuiltKey || slot?.canonicalMetaName || tpl.name,
+      language: tpl.language || "en",
+      submissionStatus,
+      metaTemplateId: tpl.id || null,
+      body:
+        tpl.components?.find((c) => c.type === "BODY")?.text ||
+        "Synced from Meta",
+      isActive: submissionStatus === "approved",
+    };
+
+    if (metaCategory) {
+      $set.category = metaCategory;
+    } else if (!existing?.category) {
+      $set.category = "MARKETING";
+    }
+
+    if (metaLastEditedAt) {
+      $set.metaLastEditedAt = metaLastEditedAt;
+    }
+
+    if (submissionStatus === "approved" && !existing?.approvedAt) {
+      $set.approvedAt = metaLastEditedAt || new Date();
+    }
+    if (submissionStatus === "rejected" && !existing?.rejectedAt) {
+      $set.rejectedAt = metaLastEditedAt || new Date();
+    }
+    if (submissionStatus === "pending_meta_review" && !existing?.submittedAt) {
+      $set.submittedAt = metaLastEditedAt || new Date();
+    }
+
     await MetaTemplate.findOneAndUpdate(
-      { clientId, name: resolveCanonicalTemplateName(tpl.name) },
+      { clientId, name: canonical },
       {
-        $set: {
-          clientId,
-          name: resolveCanonicalTemplateName(tpl.name),
-          catalogSlotId: slot?.id || null,
-          templateKey: slot?.prebuiltKey || slot?.canonicalMetaName || tpl.name,
-          category: tpl.category || "MARKETING",
-          language: tpl.language || "en",
-          submissionStatus,
-          metaTemplateId: tpl.id || null,
-          body:
-            tpl.components?.find((c) => c.type === "BODY")?.text ||
-            "Synced from Meta",
-          isActive: submissionStatus === "approved",
-          updatedAt: new Date(),
-          ...(submissionStatus === "approved" ? { approvedAt: new Date() } : {}),
-        },
+        $set,
         $setOnInsert: { createdAt: new Date(), source: "manual" },
       },
       { upsert: true }

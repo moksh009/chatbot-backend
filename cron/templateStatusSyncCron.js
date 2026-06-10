@@ -21,6 +21,7 @@ const axios = require("axios");
 const Client = require("../models/Client");
 const log = require('../utils/core/logger')("TemplateStatusSync");
 const { decrypt } = require('../utils/core/encryption');
+const { META_TEMPLATE_LIST_FIELDS } = require('../utils/meta/metaTemplateSyncUtils');
 
 const META_GRAPH_VERSION = "v21.0";
 const STAGGER_MS = 400; // delay between clients to avoid rate-limits
@@ -47,7 +48,7 @@ async function syncClientTemplates(client) {
 
     if (!token) return result;
 
-    const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${wabaId}/message_templates?fields=name,status,category,language,components&limit=250`;
+    const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${wabaId}/message_templates?fields=${META_TEMPLATE_LIST_FIELDS}&limit=250`;
     const response = await axios.get(url, {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 12000,

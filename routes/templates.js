@@ -41,6 +41,7 @@ const {
   pollPendingMetaTemplatesForClient,
 } = require('../services/templateLifecycleBridge');
 const { normalizePurpose } = require('../utils/meta/templateEligibility');
+const { META_TEMPLATE_LIST_FIELDS } = require('../utils/meta/metaTemplateSyncUtils');
 const { apiCache } = require('../middleware/apiCache');
 
 /** In-process list cache — avoids 40s+ stalls when Redis/Mongo is contended. */
@@ -93,7 +94,7 @@ router.get('/sync', protect, async (req, res) => {
 
         const client = await getClientCredentials(clientId, req.user.id);
 
-        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?fields=name,status,category,language,components`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?fields=${META_TEMPLATE_LIST_FIELDS}`;
         
         try {
             const response = await axios.get(url, {

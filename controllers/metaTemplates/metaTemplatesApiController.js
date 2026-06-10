@@ -5,6 +5,11 @@ const { tenantClientId } = require('../../utils/core/queryHelpers');
 const { extractVariablesRaw, resolveClientForTenant } = require('./templateSubmitController');
 const { validateUsageTagsForClient } = require('../../utils/meta/templateUsageTags');
 const CustomUsageTag = require('../../models/CustomUsageTag');
+const Client = require('../../models/Client');
+const {
+  parseMetaLastEdited,
+  normalizeMetaCategory,
+} = require('../../utils/meta/metaTemplateSyncUtils');
 
 const META_GRAPH_VERSION = 'v19.0';
 
@@ -217,20 +222,38 @@ async function listTemplates(req, res) {
       }
     }
 
-    const [total, rows, workspaceTagRows] = await Promise.all([
+    const [total, rows, workspaceTagRows, clientRow] = await Promise.all([
       MetaTemplate.countDocuments(q),
       MetaTemplate.find(q)
-        .sort({ updatedAt: -1 })
+        .sort({ metaLastEditedAt: -1, updatedAt: -1, createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
       CustomUsageTag.find({ clientId }).sort({ name: 1 }).lean(),
+      Client.findOne({ clientId }).select('syncedMetaTemplates').lean(),
     ]);
+
+    const syncedByName = new Map(
+      (Array.isArray(clientRow?.syncedMetaTemplates) ? clientRow.syncedMetaTemplates : [])
+        .filter((t) => t?.name)
+        .map((t) => [String(t.name).toLowerCase(), t])
+    );
 
     const normalized = rows.map((row) => {
       const fallback = formatInternalNameFromMetaName(row?.name);
+      const synced = syncedByName.get(String(row?.name || '').toLowerCase());
+      const syncedCategory = normalizeMetaCategory(synced?.category);
+      const syncedEdited = parseMetaLastEdited(synced?.last_updated_time);
+      const rowEdited = row?.metaLastEditedAt ? new Date(row.metaLastEditedAt) : null;
+      const metaLastEditedAt =
+        rowEdited && !Number.isNaN(rowEdited.getTime())
+          ? rowEdited
+          : syncedEdited;
+
       return {
         ...row,
+        category: syncedCategory || normalizeMetaCategory(row?.category) || row?.category || null,
+        metaLastEditedAt: metaLastEditedAt || row?.metaLastEditedAt || null,
         internalName: String(row?.internalName || '').trim() || fallback || null,
       };
     });
@@ -296,6 +319,17 @@ async function patchTemplate(req, res) {
     }
 
     const updates = req.body || {};
+    const nextCategory = updates.category != null ? String(updates.category).toUpperCase() : null;
+    if (
+      nextCategory &&
+      nextCategory !== doc.category &&
+      doc.metaTemplateId &&
+      ['approved', 'pending_meta_review', 'rejected'].includes(doc.submissionStatus)
+    ) {
+      return res.status(400).json({
+        error: 'Category is set by Meta and cannot be changed here. Edit in Meta WhatsApp Manager if needed.',
+      });
+    }
     const flatKeys = [
       'internalName',
       'name',

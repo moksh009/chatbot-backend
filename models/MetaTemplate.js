@@ -115,6 +115,8 @@ const MetaTemplateSchema = new mongoose.Schema({
   submittedAt: { type: Date, default: null },
   approvedAt: { type: Date, default: null },
   rejectedAt: { type: Date, default: null },
+  /** Last edited timestamp from Meta (message_templates.last_updated_time). */
+  metaLastEditedAt: { type: Date, default: null, index: true },
   lastPolledAt: { type: Date, default: null },
   metaRetryCount: { type: Number, default: 0 },
 
