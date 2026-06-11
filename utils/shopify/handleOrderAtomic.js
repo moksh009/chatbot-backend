@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const AdLead = require('../../models/AdLead');
 const { attributeOrderToRecoveryAttempt } = require('../commerce/cartRecoveryAttemptService');
+const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const { getAppRedis } = require('../core/redisFactory');
 const {
   applyMongoCancellations,
@@ -122,17 +123,20 @@ async function handleOrderAtomic(client, data, cleanPhone) {
         {
           $set: {
             isOrderPlaced: true,
-            cartStatus: 'purchased',
+            cartStatus: recoveryAttempt?.recoveredViaWhatsapp ? 'recovered' : 'purchased',
             lastOrderAt: orderDate,
             lastOrderId,
             isRtoRisk: false,
             recoveredAt: orderDate,
+            abandonedCartRecoveredAt: orderDate,
             recoveredOrderId: String(data.id || data.name || ''),
             recoveredViaWhatsApp,
             ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
             ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
             ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
           },
+          $pull: { tags: ABANDONED_CART_TAG },
+          $addToSet: { tags: RECOVERED_CART_TAG },
           $inc: { ordersCount: 1 },
         },
         { new: true, session, upsert: !existingLead }

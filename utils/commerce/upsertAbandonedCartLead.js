@@ -7,6 +7,7 @@ const { logActivity } = require('../core/activityLogger');
 const { recalculateLeadScore } = require('../core/scoringHelper');
 const { normalizeIndianPhone, indianPhoneLookupVariants, indianPhoneDigits } = require('../core/normalizeIndianPhone');
 const { contactPhoneKey, ensureCartRecoveryAttempt } = require('./cartRecoveryAttemptService');
+const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
@@ -210,6 +211,15 @@ async function upsertAbandonedCartLead(client, data = {}) {
     $setOnInsert.checkoutInitiatedAt = now;
   }
 
+  const tagOps = isPurchased
+    ? {
+        $pull: { tags: ABANDONED_CART_TAG },
+        $addToSet: { tags: RECOVERED_CART_TAG },
+      }
+    : phoneE164
+      ? { $addToSet: { tags: ABANDONED_CART_TAG } }
+      : {};
+
   const lead = await AdLead.findOneAndUpdate(
     leadQuery,
     {
@@ -219,6 +229,7 @@ async function upsertAbandonedCartLead(client, data = {}) {
         checkoutInitiatedCount: 1,
       },
       $setOnInsert,
+      ...tagOps,
     },
     { upsert: true, new: true }
   );
@@ -311,6 +322,8 @@ async function markCartLeadPurchased(clientId, { phone, checkoutToken, cartToken
         recoveredAt: now,
         recoveredOrderId: orderId ? String(orderId) : undefined,
       },
+      $pull: { tags: ABANDONED_CART_TAG },
+      $addToSet: { tags: RECOVERED_CART_TAG },
     },
     { new: true }
   );

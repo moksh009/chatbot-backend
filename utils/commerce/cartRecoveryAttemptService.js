@@ -471,6 +471,81 @@ async function loadLatestAttemptsByPhone(clientId, phones = []) {
   return map;
 }
 
+async function recordCartRecoveryClick({
+  clientId,
+  phone,
+  followupNumber,
+  clickType = 'link',
+  attemptId = null,
+  messageId = null,
+}) {
+  if (!clientId) return null;
+  const contactPhone = contactPhoneKey(phone);
+  const now = new Date();
+
+  let attempt = null;
+  if (attemptId) {
+    attempt = await CartRecoveryAttempt.findOne({ _id: attemptId, clientId });
+  }
+  if (!attempt && contactPhone) {
+    attempt = await CartRecoveryAttempt.findOne({
+      clientId,
+      contactPhone,
+    }).sort({ updatedAt: -1 });
+  }
+  if (!attempt) return null;
+
+  const sent = Array.isArray(attempt.whatsappTemplatesSent) ? attempt.whatsappTemplatesSent : [];
+  let idx = -1;
+  if (followupNumber) {
+    idx = sent.findIndex((t) => Number(t.followupNumber) === Number(followupNumber));
+  }
+  if (idx < 0 && messageId) {
+    idx = sent.findIndex((t) => String(t.messageId) === String(messageId));
+  }
+  if (idx < 0) {
+    for (let i = sent.length - 1; i >= 0; i -= 1) {
+      if (!sent[i]?.clickedAt) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  if (idx < 0) return null;
+
+  const path = `whatsappTemplatesSent.${idx}`;
+  return CartRecoveryAttempt.findByIdAndUpdate(
+    attempt._id,
+    {
+      $set: {
+        [`${path}.clickedAt`]: now,
+        [`${path}.clickType`]: clickType === 'button' ? 'button' : 'link',
+        updatedAt: now,
+      },
+    },
+    { new: true }
+  );
+}
+
+async function recordCartRecoveryLinkClickFromShortCode(shortCode) {
+  const CheckoutLink = require('../../models/CheckoutLink');
+  const doc = await CheckoutLink.findOne({ shortCode: String(shortCode) }).lean();
+  if (!doc || doc.source !== 'cart_recovery') return null;
+
+  await CheckoutLink.updateOne(
+    { _id: doc._id },
+    { $set: { clicked: true, clickedAt: new Date() } }
+  );
+
+  return recordCartRecoveryClick({
+    clientId: doc.clientId,
+    phone: doc.phone,
+    followupNumber: doc.followupNumber,
+    clickType: 'link',
+    attemptId: doc.cartRecoveryAttemptId,
+  });
+}
+
 function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
   const sentByNum = new Map();
   for (const t of attempt?.whatsappTemplatesSent || []) {
@@ -487,7 +562,8 @@ function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoverySte
     const tpl = sentByNum.get(stepNum);
     const failStep = Number(attempt?.lastSendFailure?.step || 0);
     let status = 'pending';
-    if (tpl?.readAt) status = 'read';
+    if (tpl?.clickedAt) status = 'clicked';
+    else if (tpl?.readAt) status = 'read';
     else if (tpl?.deliveredAt) status = 'delivered';
     else if (tpl || Number(leadRecoveryStep) >= stepNum) status = 'sent';
     else if (failStep === stepNum) status = 'failed';
@@ -499,8 +575,22 @@ function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoverySte
       sentAt: tpl?.sentAt || null,
       deliveredAt: tpl?.deliveredAt || null,
       readAt: tpl?.readAt || null,
+      clickedAt: tpl?.clickedAt || null,
+      clickType: tpl?.clickType || null,
     };
   });
+}
+
+function summarizeMessageEngagement(attempt) {
+  const sent = Array.isArray(attempt?.whatsappTemplatesSent) ? attempt.whatsappTemplatesSent : [];
+  let linkClicks = 0;
+  let buttonClicks = 0;
+  for (const row of sent) {
+    if (!row?.clickedAt) continue;
+    if (row.clickType === 'button') buttonClicks += 1;
+    else linkClicks += 1;
+  }
+  return { linkClicks, buttonClicks, messagesSent: sent.length };
 }
 
 function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
@@ -696,6 +786,8 @@ module.exports = {
   getCartFollowupConfig,
   recordWhatsappTemplateSent,
   recordCartRecoverySendFailure,
+  recordCartRecoveryClick,
+  recordCartRecoveryLinkClickFromShortCode,
   attributeOrderToRecoveryAttempt,
   updateCartRecoveryMessageStatus,
   getWhatsappRecoveryMetrics,
@@ -703,6 +795,8 @@ module.exports = {
   loadLatestAttemptsByPhone,
   buildWhatsappFollowupDisplay,
   buildFollowupSteps,
+  summarizeMessageEngagement,
   recoveryStatusFromAttempt,
   buildRecoveryTimeline,
+  findPendingAttemptForSend,
 };

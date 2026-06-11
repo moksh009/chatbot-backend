@@ -105,7 +105,9 @@ async function createCheckoutLinkRecord({
   productItems = [],
   totalValue = 0,
   currency = "INR",
-  source = "whatsapp_cart"
+  source = "whatsapp_cart",
+  followupNumber = null,
+  cartRecoveryAttemptId = null,
 }) {
   if (!fullUrl) {
     return { shortUrl: "", fullUrl: "", shortCode: "", totalValue, currency };
@@ -127,6 +129,8 @@ async function createCheckoutLinkRecord({
     totalValue,
     currency,
     source,
+    followupNumber: followupNumber != null ? Number(followupNumber) : null,
+    cartRecoveryAttemptId: cartRecoveryAttemptId || null,
     sent: true
   });
 

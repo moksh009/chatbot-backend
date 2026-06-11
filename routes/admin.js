@@ -2989,6 +2989,102 @@ router.delete('/dead-letters/:id', protect, authorize('SUPER_ADMIN'), async (req
   }
 });
 
+router.get('/telemetry/usage-summary', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const clientId = String(req.query.clientId || '').trim();
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'clientId query required' });
+    }
+    const days = parseInt(req.query.days, 10) || 7;
+    const { getProductUsageSummary } = require('../services/observability/telemetryIngestService');
+    const { getSessionStatsForClient } = require('../services/observability/dashboardSessionService');
+    const summary = await getProductUsageSummary(clientId, { days });
+    const sessionStats = await getSessionStatsForClient(clientId, { days });
+    res.json({
+      success: true,
+      clientId,
+      sessionStats,
+      adminOnly: true,
+      ...summary,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/reliability/summary', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getPlatformReliabilitySummary } = require('../services/observability/reliabilityService');
+    const days = parseInt(req.query.days, 10) || 7;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const data = await getPlatformReliabilitySummary({ days, limit });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/reliability/:clientId/send-log', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getFailedTemplateSendLogs } = require('../services/observability/reliabilityService');
+    const days = parseInt(req.query.days, 10) || 7;
+    const since = new Date(Date.now() - Math.min(Math.max(days, 1), 30) * 24 * 3600 * 1000);
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 40;
+    const data = await getFailedTemplateSendLogs(req.params.clientId, { since, page, limit });
+    res.json({ success: true, clientId: req.params.clientId, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/reliability/:clientId', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getClientReliabilityDetail } = require('../services/observability/reliabilityService');
+    const days = parseInt(req.query.days, 10) || 7;
+    const data = await getClientReliabilityDetail(req.params.clientId, { days });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/telemetry/sessions', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getAdminSessionSummary } = require('../services/observability/dashboardSessionService');
+    const hours = parseInt(req.query.hours, 10) || 24;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const rows = await getAdminSessionSummary({ hours, limit });
+    res.json({ success: true, hours, rows, at: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/telemetry/client-health', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getClientHealthSummary } = require('../services/observability/telemetryIngestService');
+    const hours = parseInt(req.query.hours, 10) || 24;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const rows = await getClientHealthSummary({ hours, limit });
+    res.json({ success: true, hours, rows, at: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/telemetry/client-health/:clientId/events', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const { getClientTelemetryEvents } = require('../services/observability/telemetryIngestService');
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const hours = parseInt(req.query.hours, 10) || 72;
+    const rows = await getClientTelemetryEvents(req.params.clientId, { limit, hours });
+    res.json({ success: true, clientId: req.params.clientId, rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 router.get('/tenant-economics', protect, authorize('SUPER_ADMIN'), async (req, res) => {
   try {
     const DailyTenantUsageCost = require('../models/DailyTenantUsageCost');

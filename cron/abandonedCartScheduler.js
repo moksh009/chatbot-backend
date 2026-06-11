@@ -218,9 +218,36 @@ async function sendRichNudge(client, lead, text, options = {}) {
         // 2. If Meta Template is configured, use envelope or sendForAutomation
         if (!successfullySent && templateName) {
             log.info(`[Nudge] Sending template ${templateName} to ${phone || lead.email}`);
+            let trackedRecoveryUrl = checkoutUrl;
+            if (checkoutUrl && hasRealPhone(phone)) {
+              try {
+                const { createCheckoutLinkRecord } = require('../utils/commerce/commerceCheckoutService');
+                const { findPendingAttemptForSend } = require('../utils/commerce/cartRecoveryAttemptService');
+                const pendingAttempt = await findPendingAttemptForSend({
+                  clientId: client.clientId,
+                  phone,
+                  leadId: lead._id,
+                  checkoutToken,
+                });
+                const link = await createCheckoutLinkRecord({
+                  clientId: client.clientId,
+                  phone,
+                  fullUrl: checkoutUrl,
+                  totalValue: Number(lead.cartValue || lead.cartSnapshot?.total_price || 0) || 0,
+                  currency: lead.cartSnapshot?.currency || 'INR',
+                  source: 'cart_recovery',
+                  followupNumber: stepNum,
+                  cartRecoveryAttemptId: pendingAttempt?._id || null,
+                });
+                if (link?.shortUrl) trackedRecoveryUrl = link.shortUrl;
+              } catch (linkErr) {
+                log.warn(`[Nudge] Tracked recovery URL skipped: ${linkErr.message}`);
+              }
+            }
             const { components } = buildCartRecoveryComponents(lead, client, stepNum, {
               includeHeaderImage: stepNum !== 2,
               discountCode: lead.lastDiscountCode || lead.discountCode,
+              recoveryUrl: trackedRecoveryUrl,
             });
             templateOut = await cronEnvelopeSend({
                 client,

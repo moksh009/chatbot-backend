@@ -70,6 +70,7 @@ function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
  */
 function buildCartRecoveryComponents(lead, client, stepNum = 1, opts = {}) {
   const ctx = resolveCartRecoveryContext(lead, client, stepNum);
+  if (opts.recoveryUrl) ctx.recoveryUrl = String(opts.recoveryUrl).slice(0, 2000);
   const discountCode = opts.discountCode || ctx.discountCode || '';
   const includeImage = opts.includeHeaderImage !== false && stepNum !== 2;
   const components = [];

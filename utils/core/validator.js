@@ -300,33 +300,125 @@ function validateFlowNode(node, client) {
     }
 
     case 'interactive': {
+      const isList = node.data?.interactiveType === 'list';
       const buttons = node.data?.buttonsList || node.data?.buttons || [];
-      if (buttons.length === 0) {
-        errors.push({
-          code:    'NODE_NO_BUTTONS',
-          nodeId:  node.id,
-          message: 'Interactive node has no buttons.',
-          fix:     'Add at least 1 button to this interactive node.'
-        });
-      }
-      if (buttons.length > 3) {
-        errors.push({
-          code:    'NODE_TOO_MANY_BUTTONS',
-          nodeId:  node.id,
-          message: `Interactive node has ${buttons.length} buttons. WhatsApp allows max 3.`,
-          fix:     'Remove buttons until you have 3 or fewer. Use a List node for more options.'
-        });
-      }
-      buttons.forEach((btn, i) => {
-        if ((btn.title || btn.label || '').length > 20) {
-          warnings.push({
-            code:    'BUTTON_TEXT_TOO_LONG',
+      const sections = Array.isArray(node.data?.sections) ? node.data.sections : [];
+
+      if (!isList) {
+        if (buttons.length === 0) {
+          errors.push({
+            code:    'NODE_NO_BUTTONS',
             nodeId:  node.id,
-            message: `Button ${i + 1} text is over 20 characters. Meta may truncate it.`,
-            fix:     'Shorten the button label to 20 characters or less.'
+            message: 'Interactive node has no buttons.',
+            fix:     'Add at least 1 button to this interactive node.'
           });
         }
-      });
+        if (buttons.length > 3) {
+          errors.push({
+            code:    'NODE_TOO_MANY_BUTTONS',
+            nodeId:  node.id,
+            message: `Interactive node has ${buttons.length} buttons. WhatsApp allows max 3.`,
+            fix:     'Remove buttons until you have 3 or fewer. Use List mode for more options.'
+          });
+        }
+        buttons.forEach((btn, i) => {
+          const label = String(btn.title || btn.label || '');
+          if (label.length > 20) {
+            errors.push({
+              code:    'BUTTON_TEXT_TOO_LONG',
+              nodeId:  node.id,
+              message: `Button ${i + 1} label is ${label.length} characters (max 20).`,
+              fix:     'Shorten the button label to 20 characters or less.'
+            });
+          }
+          if (!label.trim()) {
+            errors.push({
+              code:    'BUTTON_LABEL_EMPTY',
+              nodeId:  node.id,
+              message: `Button ${i + 1} has no label.`,
+              fix:     'Add a label for each button.'
+            });
+          }
+        });
+      } else {
+        const menuLabel = String(node.data?.menuButtonLabel ?? node.data?.buttonText ?? '').trim();
+        if (!menuLabel) {
+          errors.push({
+            code:    'LIST_MENU_BUTTON_REQUIRED',
+            nodeId:  node.id,
+            message: 'List interactive node is missing the menu button label.',
+            fix:     'Set Menu Button Label (e.g. View options).'
+          });
+        } else if (menuLabel.length > 20) {
+          errors.push({
+            code:    'LIST_MENU_BUTTON_TOO_LONG',
+            nodeId:  node.id,
+            message: `Menu button label is ${menuLabel.length} characters (max 20).`,
+            fix:     'Shorten the menu button label to 20 characters or less.'
+          });
+        }
+
+        let totalRows = 0;
+        sections.forEach((sec) => {
+          totalRows += (sec.rows || []).length;
+        });
+        if (!node.data?.dynamicSections && totalRows === 0) {
+          errors.push({
+            code:    'LIST_NO_ROWS',
+            nodeId:  node.id,
+            message: 'List interactive node has no rows.',
+            fix:     'Add at least one list row.'
+          });
+        }
+        if (totalRows > 10) {
+          errors.push({
+            code:    'LIST_TOO_MANY_ROWS',
+            nodeId:  node.id,
+            message: `List has ${totalRows} rows. WhatsApp allows max 10 total across all sections.`,
+            fix:     'Remove rows until you have 10 or fewer.'
+          });
+        }
+
+        sections.forEach((sec, sIdx) => {
+          const secTitle = String(sec?.title || '');
+          if (secTitle.length > 24) {
+            errors.push({
+              code:    'LIST_SECTION_TITLE_TOO_LONG',
+              nodeId:  node.id,
+              message: `Section ${sIdx + 1} title is ${secTitle.length} characters (max 24).`,
+              fix:     'Shorten the section title.'
+            });
+          }
+          (sec.rows || []).forEach((row, rIdx) => {
+            const rowTitle = String(row?.title || '');
+            const rowDesc = String(row?.description || '');
+            if (rowTitle.length > 24) {
+              errors.push({
+                code:    'LIST_ROW_TITLE_TOO_LONG',
+                nodeId:  node.id,
+                message: `List row ${rIdx + 1} title is ${rowTitle.length} characters (max 24).`,
+                fix:     'Shorten the row title.'
+              });
+            }
+            if (rowDesc.length > 72) {
+              errors.push({
+                code:    'LIST_ROW_DESC_TOO_LONG',
+                nodeId:  node.id,
+                message: `List row ${rIdx + 1} description is ${rowDesc.length} characters (max 72).`,
+                fix:     'Shorten the row description.'
+              });
+            }
+            if (!rowTitle.trim()) {
+              errors.push({
+                code:    'LIST_ROW_TITLE_EMPTY',
+                nodeId:  node.id,
+                message: `List row ${rIdx + 1} in section ${sIdx + 1} has no title.`,
+                fix:     'Add a title for each list row.'
+              });
+            }
+          });
+        });
+      }
       break;
     }
 

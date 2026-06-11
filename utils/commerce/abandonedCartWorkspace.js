@@ -15,7 +15,9 @@ const {
   buildWhatsappFollowupDisplay,
   recoveryStatusFromAttempt,
   buildRecoveryTimeline,
+  summarizeMessageEngagement,
 } = require('./cartRecoveryAttemptService');
+const { ABANDONED_CART_TAG } = require('../../constants/cartRecoveryTags');
 
 /** WS-3 defaults — keep aligned with
  *  `cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS` so the merchant-facing
@@ -382,7 +384,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     ],
   })
     .select(
-      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt'
+      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags'
     )
     .limit(8000)
     .lean();
@@ -410,6 +412,8 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     revenueRecoveredFromWhatsapp: 0,
     organicRecovered: 0,
     organicRevenue: 0,
+    linkClicks: 0,
+    buttonClicks: 0,
     averageAbandonedCartValue: 0,
   };
 
@@ -478,6 +482,19 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
         metrics.activeAbandoned += 1;
         metrics.recoverableRevenue += totals.cartValue;
       }
+    } else {
+      metrics.recoveredCarts += 1;
+      const recoveredValue =
+        Number(attempt?.recoveredOrderValue || attempt?.recoveredOrderAmount || 0) ||
+        totals.cartValue;
+      metrics.revenueRecovered += recoveredValue;
+      if (attempt?.recoveredViaWhatsapp || isWaRecoveredLead(lead)) {
+        metrics.recoveredFromWhatsapp += 1;
+        metrics.revenueRecoveredFromWhatsapp += recoveredValue;
+      } else {
+        metrics.organicRecovered += 1;
+        metrics.organicRevenue += recoveredValue;
+      }
     }
 
     const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
@@ -489,12 +506,22 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     );
     const recovery = recoveryStatusFromAttempt(attempt, lead);
 
+    const engagement = summarizeMessageEngagement(attempt);
+    metrics.linkClicks += engagement.linkClicks;
+    metrics.buttonClicks += engagement.buttonClicks;
+    const leadTags = Array.isArray(lead.tags) ? lead.tags : [];
+
     rows.push({
       id: String(lead._id),
       customer: {
         name: lead.name || 'Guest',
         phone: lead.phoneNumber,
         phoneDisplay: lead.phoneNumber,
+        tags: leadTags.includes(ABANDONED_CART_TAG)
+          ? leadTags
+          : !recovered && !nonRecoverable
+            ? [...leadTags, ABANDONED_CART_TAG]
+            : leadTags,
       },
       cart: {
         items,
@@ -507,6 +534,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       abandonedAt: abandonDate(lead),
       recoveryStatus: recovery,
       whatsappFollowup: followup,
+      engagement,
       cartRecoveryAttempt: attempt
         ? {
             status: attempt.status,
@@ -538,16 +566,23 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       ? Math.round((valueSum / metrics.totalAbandoned) * 100) / 100
       : 0;
 
-  metrics.recoveredCarts = recoveryTotals.recoveredCarts;
-  metrics.revenueRecovered = recoveryTotals.revenueRecovered;
-  metrics.organicRecovered = recoveryTotals.organicRecovered || 0;
-  metrics.organicRevenue = recoveryTotals.organicRevenue || 0;
-  metrics.recoveredFromWhatsapp = whatsappMetrics.configured
-    ? whatsappMetrics.recoveredViaWhatsapp
-    : null;
-  metrics.revenueRecoveredFromWhatsapp = whatsappMetrics.configured
-    ? whatsappMetrics.waRevenueRecovered
-    : null;
+  if (recoveryTotals.recoveredCarts > metrics.recoveredCarts) {
+    metrics.recoveredCarts = recoveryTotals.recoveredCarts;
+    metrics.revenueRecovered = recoveryTotals.revenueRecovered;
+    metrics.organicRecovered = recoveryTotals.organicRecovered || 0;
+    metrics.organicRevenue = recoveryTotals.organicRevenue || 0;
+  }
+  if (whatsappMetrics.configured) {
+    if (whatsappMetrics.recoveredViaWhatsapp > metrics.recoveredFromWhatsapp) {
+      metrics.recoveredFromWhatsapp = whatsappMetrics.recoveredViaWhatsapp;
+    }
+    if (whatsappMetrics.waRevenueRecovered > metrics.revenueRecoveredFromWhatsapp) {
+      metrics.revenueRecoveredFromWhatsapp = whatsappMetrics.waRevenueRecovered;
+    }
+  } else {
+    metrics.recoveredFromWhatsapp = metrics.recoveredFromWhatsapp || 0;
+    metrics.revenueRecoveredFromWhatsapp = metrics.revenueRecoveredFromWhatsapp || 0;
+  }
   metrics.whatsappRecovery = whatsappMetrics;
 
   metrics.unknownPhoneCount = unknownPhoneCount;

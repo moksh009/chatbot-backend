@@ -58,6 +58,13 @@ const UserSchema = new mongoose.Schema({
     acceptedAt: { type: Date },
     docsVersion: { type: String, default: '' }
   },
+  /** Dashboard telemetry: '' | essential | analytics (synced with browser localStorage) */
+  telemetryConsent: {
+    type: String,
+    enum: ['', 'essential', 'analytics'],
+    default: '',
+  },
+  telemetryConsentUpdatedAt: { type: Date, default: null },
   failedLoginAttempts: {
     count: { type: Number, default: 0 },
     firstAttemptAt: { type: Date, default: null },

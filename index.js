@@ -317,6 +317,7 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 // (Instagram now handled inside dynamicClientRouter)
 
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
+app.use('/api/telemetry', require('./routes/telemetry'));
 app.use('/api/templates', templatesRoutes);
 app.use('/api/meta-templates', require('./routes/metaTemplates'));
 app.use('/api/custom-tags', require('./routes/customTags'));
@@ -602,6 +603,8 @@ connectDB()
 // Global Error Handler
 app.use((err, req, res, next) => {
   log.error(`Global Error: ${req.method} ${req.url}`, { error: err.message, stack: err.stack });
+  const { recordServerError } = require('./services/observability/telemetryIngestService');
+  recordServerError(req, err).catch(() => {});
   res.status(err.status || 500).json({
     success: false,
     error: err.message || "Internal Server Error"

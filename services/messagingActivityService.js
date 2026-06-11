@@ -191,4 +191,5 @@ module.exports = {
   buildMessagingActivitySummary,
   resolveTemplateCategory,
   bucketLabel,
+  getCronHealth,
 };

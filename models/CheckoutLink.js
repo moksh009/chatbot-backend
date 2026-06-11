@@ -19,9 +19,11 @@ const CheckoutLinkSchema = new mongoose.Schema(
     currency: { type: String, default: "INR" },
     source: {
       type: String,
-      enum: ["whatsapp_cart", "bot_recommendation", "campaign", "agent"],
+      enum: ["whatsapp_cart", "bot_recommendation", "campaign", "agent", "cart_recovery"],
       default: "whatsapp_cart"
     },
+    followupNumber: { type: Number, default: null },
+    cartRecoveryAttemptId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sent: { type: Boolean, default: true },
     clicked: { type: Boolean, default: false },
     clickedAt: { type: Date },

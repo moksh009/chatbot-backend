@@ -277,6 +277,8 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
         leadScore: lead.leadScore,
         scoreLabel: lead.scoreLabel,
         leadTags: lead.tags,
+        cartStatus: lead.cartStatus,
+        isOrderPlaced: lead.isOrderPlaced,
       };
     }
     return base;

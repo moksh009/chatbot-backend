@@ -101,6 +101,8 @@ async function buildAuthSessionPayload(user, client) {
     subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client?.tier || lean?.tier || 'v1'),
     plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client?.plan || lean?.plan || 'CX Agent (V1)'),
     hasCompletedTour: user.hasCompletedTour,
+    telemetryConsent: user.telemetryConsent || '',
+    telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
     trialActive: client?.trialActive ?? lean?.trialActive ?? true,
     trialEndsAt: client?.trialEndsAt ?? lean?.trialEndsAt ?? null,
     manuallySuspended: access.manuallySuspended,
@@ -270,7 +272,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const payload = await getBootstrapPayload(String(req.user.id), { refresh }, async () => {
     timer.checkpoint('bootstrap_cache_miss');
     let user = await User.findById(req.user.id).select(
-      'name email role clientId isLifetimeAdmin hasCompletedTour'
+      'name email role clientId isLifetimeAdmin hasCompletedTour telemetryConsent telemetryConsentUpdatedAt'
     );
     if (!user) {
       const err = new Error('User not found');
@@ -307,6 +309,8 @@ router.get('/bootstrap', protect, async (req, res) => {
         clientId: user.clientId,
         isLifetimeAdmin: user.isLifetimeAdmin,
         hasCompletedTour: user.hasCompletedTour,
+        telemetryConsent: user.telemetryConsent || '',
+        telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
         business_type: 'ecommerce',
         manuallySuspended: access.manuallySuspended,
         trialWindowActive: access.trialWindowActive,
@@ -338,16 +342,33 @@ router.get('/bootstrap', protect, async (req, res) => {
 
 router.patch('/me', protect, async (req, res) => {
   try {
-    const { hasCompletedTour } = req.body;
+    const { hasCompletedTour, telemetryConsent } = req.body;
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     if (hasCompletedTour !== undefined) {
       user.hasCompletedTour = hasCompletedTour;
     }
+
+    if (telemetryConsent !== undefined) {
+      const allowed = ['', 'essential', 'analytics'];
+      if (!allowed.includes(telemetryConsent)) {
+        return res.status(400).json({ success: false, message: 'Invalid telemetry consent value' });
+      }
+      user.telemetryConsent = telemetryConsent;
+      user.telemetryConsentUpdatedAt = new Date();
+    }
     
     await user.save();
-    res.json({ success: true, user });
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        hasCompletedTour: user.hasCompletedTour,
+        telemetryConsent: user.telemetryConsent || '',
+        telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt,
+      },
+    });
   } catch (error) {
     console.error('Update user error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });

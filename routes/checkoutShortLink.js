@@ -12,10 +12,12 @@ router.get("/:shortCode", async (req, res) => {
     if (!doc?.fullUrl) {
       return res.status(404).type("text/plain").send("Link not found or expired");
     }
-    await CheckoutLink.updateOne(
-      { _id: doc._id },
-      { $set: { clicked: true, clickedAt: new Date() } }
-    );
+    try {
+      const { recordCartRecoveryLinkClickFromShortCode } = require('../utils/commerce/cartRecoveryAttemptService');
+      await recordCartRecoveryLinkClickFromShortCode(shortCode);
+    } catch (clickErr) {
+      log.warn(`Cart recovery click tracking failed: ${clickErr.message}`);
+    }
     return res.redirect(302, doc.fullUrl);
   } catch (err) {
     log.error(err.message);

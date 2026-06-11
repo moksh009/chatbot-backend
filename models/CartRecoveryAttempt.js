@@ -9,6 +9,7 @@ const WhatsappTemplateSentSchema = new mongoose.Schema(
     deliveredAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
     clickedAt: { type: Date, default: null },
+    clickType: { type: String, enum: ['link', 'button', null], default: null },
   },
   { _id: false }
 );

@@ -1541,6 +1541,18 @@ async function runDualBrainEngine(parsedMessage, client) {
       await rtoProtectionService.handleNdrRescueButton({ client, phone, buttonId: rtoBid });
       return true;
     }
+    if (rtoBid.startsWith('cart_btn_') || /^cart_recovery/i.test(rtoBid)) {
+      try {
+        const { recordCartRecoveryClick } = require('./cartRecoveryAttemptService');
+        await recordCartRecoveryClick({
+          clientId: client.clientId,
+          phone,
+          clickType: 'button',
+        });
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
   }
 
   // Legacy Reputation Hub early-exit removed: Review routing is now handled natively
@@ -4630,7 +4642,9 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         let interactive = {
           type: 'list',
           action: {
-            button: (data.buttonText || 'Open Menu').substring(0, 20),
+            button: String(
+              data.menuButtonLabel || data.buttonText || 'View options'
+            ).trim().substring(0, 20) || 'View options',
             sections
           }
         };
