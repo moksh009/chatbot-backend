@@ -4,10 +4,6 @@ const WarrantyBatch = require('../../models/WarrantyBatch');
 const WarrantyRecord = require('../../models/WarrantyRecord');
 const log = require('../core/logger')('WarrantyService');
 const WhatsApp = require('../meta/whatsapp');
-const {
-  canonicalWarrantyOrderId,
-  findExistingWarrantyRecord,
-} = require('./warrantyOrderRef');
 
 /**
  * Assigns warranties for a phone + order payload.
@@ -55,17 +51,8 @@ async function assignWarranty(client, phoneNumber, orderData) {
 
       // 2. Calculate Expiry
       const expiryDate = calculateExpiry(now, durationStr);
-      const shopifyOrderId = canonicalWarrantyOrderId(orderData);
-      const productId = String(item.product_id || item.variant_id || item.sku || item.id || item.title || 'product');
-
-      const existing = await findExistingWarrantyRecord(WarrantyRecord, {
-        clientId: client.clientId,
-        orderInput: orderData,
-        productId,
-        productName: item.title,
-      });
-      if (existing) continue;
-
+      
+      const shopifyOrderId = String(orderData.name || orderData.id || `order-${Date.now()}`);
       const serialNumber = `SN-${orderData.id}-${item.variant_id}-${Math.floor(Math.random() * 1000)}`;
       const legacyRecord = {
         orderId: shopifyOrderId,
@@ -78,6 +65,7 @@ async function assignWarranty(client, phoneNumber, orderData) {
         registeredAt: now
       };
       
+      const productId = String(item.product_id || item.variant_id || item.sku || item.id || item.title || 'product');
       const warrantyRecord = await WarrantyRecord.create({
         clientId: client.clientId,
         customerId: contact._id,
@@ -222,16 +210,7 @@ async function manualRegister(client, phoneNumber, data) {
     const purchaseDate = data.purchaseDate ? new Date(data.purchaseDate) : now;
     const expiryDate = calculateExpiry(purchaseDate, data.duration || "1 Year");
     const serialNumber = data.serialNumber || `SN-REG-${Date.now()}`;
-    const shopifyOrderId = canonicalWarrantyOrderId({ shopifyOrderId: data.orderId, orderId: data.orderId });
-
-    const productId = String(data.productId || serialNumber || data.productName || 'manual-product');
-    const existing = await findExistingWarrantyRecord(WarrantyRecord, {
-      clientId: client.clientId,
-      orderInput: { shopifyOrderId: data.orderId, orderId: data.orderId },
-      productId,
-      productName: data.productName,
-    });
-    if (existing) return existing;
+    const shopifyOrderId = data.orderId || 'MANUAL';
 
     let batch = await WarrantyBatch.findOne({ clientId: client.clientId, status: 'active' }).sort({ createdAt: -1 });
     if (!batch) {
@@ -248,8 +227,8 @@ async function manualRegister(client, phoneNumber, data) {
     const warrantyRecord = await WarrantyRecord.create({
       clientId: client.clientId,
       customerId: contact._id,
-      shopifyOrderId: String(shopifyOrderId || 'MANUAL'),
-      productId,
+      shopifyOrderId: String(shopifyOrderId),
+      productId: String(data.productId || serialNumber || data.productName || 'manual-product'),
       productName: data.productName || 'General Product',
       purchaseDate,
       expiryDate,
