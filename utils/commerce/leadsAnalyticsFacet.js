@@ -1,6 +1,7 @@
 'use strict';
 
 const AdLead = require('../../models/AdLead');
+const { normalizeLeadForDisplay } = require('./leadDisplayNormalize');
 
 const LEAD_LIST_PROJECTION = {
   name: 1,
@@ -30,6 +31,9 @@ const LEAD_LIST_PROJECTION = {
   optInSource: 1,
   optStatus: 1,
   inboundMessageCount: 1,
+  importBatchId: 1,
+  channelConsent: 1,
+  lastOrderAt: 1,
 };
 
 function escapeRegex(str) {
@@ -250,7 +254,7 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     },
   ]).allowDiskUse(true);
 
-  const leads = facetOut?.page || [];
+  const leads = (facetOut?.page || []).map((row) => normalizeLeadForDisplay(row));
   const total = facetOut?.pageTotal?.[0]?.n ?? 0;
   const summaryRow = facetOut?.summary?.[0] || {};
   const totalPages = Math.max(1, Math.ceil(total / limitNum));

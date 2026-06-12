@@ -124,7 +124,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
           $set: {
             isOrderPlaced: true,
             cartStatus: recoveryAttempt?.recoveredViaWhatsapp ? 'recovered' : 'purchased',
-            lastOrderAt: orderDate,
+            lastPurchaseDate: orderDate,
             lastOrderId,
             isRtoRisk: false,
             recoveredAt: orderDate,
@@ -137,7 +137,11 @@ async function handleOrderAtomic(client, data, cleanPhone) {
           },
           $pull: { tags: ABANDONED_CART_TAG },
           $addToSet: { tags: RECOVERED_CART_TAG },
-          $inc: { ordersCount: 1 },
+          $inc: {
+            ordersCount: 1,
+            totalSpent: orderValue,
+            lifetimeValue: orderValue,
+          },
         },
         { new: true, session, upsert: !existingLead }
       );

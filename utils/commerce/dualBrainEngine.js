@@ -670,7 +670,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           $setOnInsert: {
             phoneNumber: phone,
             clientId: client.clientId,
-            source: parsedMessage.referral ? "Meta Ad" : "Direct",
+            source: parsedMessage.referral ? 'meta_ad' : 'whatsapp',
           },
           $set: {
             lastInteraction: new Date(),
@@ -4533,15 +4533,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'MessageNode':
     case 'livechat': {
       if (data.isAiResponse && String(convo?.metadata?.ai_needs_human || "") === "true") {
-        return true;
-      }
-      if (data.sendWarrantyPdf) {
-        try {
-          const { handleNodeAction } = require('../flow/nodeActions');
-          await handleNodeAction("SEND_WARRANTY_PDF", node, client, phone, convo, lead);
-        } catch (wpErr) {
-          log.warn(`[sendNodeContent] warranty PDF: ${wpErr.message}`);
-        }
         return true;
       }
       let body = data.handoffMessage || data.text || data.body || (type === 'livechat' ? '👋 Connecting you to our team…\nA support agent will be with you shortly.' : '');

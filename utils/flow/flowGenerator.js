@@ -235,7 +235,7 @@ function buildMainMenuRows(F) {
     rows.push({ id: "mnu_help", title: "🤝 Help With My Order", description: "Delivery, returns, setup" });
   }
   if (F.enableWarranty) {
-    rows.push({ id: "mnu_warranty", title: "🛡️ Warranty Details", description: "Coverage & certificate" });
+    rows.push({ id: "mnu_warranty", title: "🛡️ Warranty Details", description: "Coverage & claims" });
   }
   if (F.enableAIFallback) {
     rows.push({ id: "mnu_ai", title: "🆘 Need Help?", description: "Ask us anything" });
@@ -1759,7 +1759,6 @@ function buildWarrantyBranch(ctx, IDS, content) {
   const { F, adminPhone, client } = ctx;
   const nodes = [];
   const edges = [];
-  const generatePdf = F.warrantyGeneratePdf !== false;
 
   nodes.push(
     {
@@ -1797,21 +1796,9 @@ function buildWarrantyBranch(ctx, IDS, content) {
         text:
           "✅ *Your warranty is active!*\n\n📦 Product: *{{_warranty_product_name|your product}}*\n📅 Purchased: {{_warranty_purchase_date|N/A}}\n⏳ Expires: *{{_warranty_expires_display|N/A}}*\n🔖 Order: {{_warranty_order_ref|-}}",
         buttonsList: [
-          ...(generatePdf ? [{ id: "war_pdf", title: "📄 Get certificate" }] : []),
           { id: "war_claim", title: "🔧 Raise a claim" },
           { id: "war_menu", title: "🏠 Main menu" },
         ],
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_pdf,
-      type: "message",
-      position: flowPos(8, 10),
-      data: {
-        label: "Send warranty PDF",
-        text: "📄 Generating your warranty certificate…",
-        sendWarrantyPdf: true,
         heatmapCount: 0,
       },
     },
@@ -1884,10 +1871,8 @@ function buildWarrantyBranch(ctx, IDS, content) {
     { id: `e_${IDS.war_engine}_a`, source: IDS.war_engine, target: IDS.war_active_hub, sourceHandle: "active" },
     { id: `e_${IDS.war_engine}_x`, source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
     { id: `e_${IDS.war_engine}_n`, source: IDS.war_engine, target: IDS.war_none, sourceHandle: "none" },
-    { id: `e_${IDS.war_active_hub}_pdf`, source: IDS.war_active_hub, target: IDS.war_pdf, sourceHandle: "war_pdf" },
     { id: `e_${IDS.war_active_hub}_cl`, source: IDS.war_active_hub, target: IDS.war_claim_cap, sourceHandle: "war_claim" },
     { id: `e_${IDS.war_active_hub}_mm`, source: IDS.war_active_hub, target: IDS.main_menu, sourceHandle: "war_menu" },
-    { id: `e_${IDS.war_pdf}_mm`, source: IDS.war_pdf, target: IDS.main_menu },
     { id: `e_${IDS.war_claim_cap}_al`, source: IDS.war_claim_cap, target: IDS.war_claim_alert },
     { id: `e_${IDS.war_claim_alert}_dn`, source: IDS.war_claim_alert, target: IDS.war_claim_done },
     { id: `e_${IDS.war_claim_done}_mm`, source: IDS.war_claim_done, target: IDS.main_menu },

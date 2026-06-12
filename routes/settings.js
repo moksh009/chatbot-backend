@@ -19,6 +19,19 @@ router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, 
   }
 });
 
+router.get('/:clientId/quick-replies', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId }).select('quickReplies');
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    res.json({ success: true, quickReplies: client.quickReplies || [] });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.put('/:clientId/quick-replies', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;

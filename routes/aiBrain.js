@@ -5,18 +5,10 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const Client = require('../models/Client');
-const { normalizePersonaTone, buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaAcrossSystem, resolveQuickFaqReply, buildQuickFaqDirective } = require('../utils/core/personaEngine');
+const { buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaAcrossSystem, resolveQuickFaqReply, buildQuickFaqDirective } = require('../utils/core/personaEngine');
 const { callAI } = require('../utils/core/aiGateway');
 const { retrieveKnowledge, notifyRagFailure, isRagUnavailableError, getActiveKnowledgeHealth } = require('../utils/core/ragEngine');
 const { sendAiError } = require('../utils/core/aiProviderErrors');
-
-const TONE_OPTIONS = [
-  'Professional & Helpful',
-  'Casual & Friendly',
-  'Luxury & Exclusive',
-  'Direct & Technical',
-  'Enthusiastic & Salesy',
-];
 
 router.get('/persona', protect, async (req, res) => {
   try {
@@ -29,7 +21,6 @@ router.get('/persona', protect, async (req, res) => {
     res.json({
       persona: client.ai?.persona || {},
       quickFaqs: client.knowledgeBase?.faqs || [],
-      toneOptions: TONE_OPTIONS,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -41,14 +32,10 @@ router.put('/persona', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const { name, tone, description, quickFaqs } = req.body || {};
+    const { name, description, quickFaqs } = req.body || {};
     const updates = {};
 
     if (name !== undefined) updates['ai.persona.name'] = String(name).slice(0, 120);
-    if (tone !== undefined) {
-      const normalized = normalizePersonaTone(tone);
-      if (normalized) updates['ai.persona.tone'] = normalized;
-    }
     if (description !== undefined) {
       updates['ai.persona.description'] = String(description).slice(0, 4000);
     }
@@ -65,7 +52,6 @@ router.put('/persona', protect, async (req, res) => {
     await Client.updateOne({ clientId }, { $set: updates });
     await syncPersonaAcrossSystem(clientId, {
       ...(name !== undefined ? { name: String(name).slice(0, 120) } : {}),
-      ...(tone !== undefined && normalizePersonaTone(tone) ? { tone: normalizePersonaTone(tone) } : {}),
       ...(description !== undefined ? { description: String(description).slice(0, 4000) } : {}),
     });
 
@@ -103,7 +89,7 @@ router.post('/persona/preview', protect, async (req, res) => {
       return res.json({
         reply: faqResolved.reply,
         usage: null,
-        tone: client.ai?.persona?.tone || null,
+        tone: null,
         chunks: [],
         retrievalMode: 'none',
         matchedFaq: { question: faqResolved.faqMatch.question, direct: true },
@@ -149,7 +135,7 @@ router.post('/persona/preview', protect, async (req, res) => {
       clientId,
       feature: 'persona_preview',
       systemPrompt,
-      prompt: `Customer message: "${message.trim()}"${buildQuickFaqDirective(faqMatch)}\n\nReply in character using the tone above. Under 80 words. If a FAQ was matched, keep those facts exactly. If knowledge was provided, answer from it only; otherwise be honest that you need more store details.`,
+      prompt: `Customer message: "${message.trim()}"${buildQuickFaqDirective(faqMatch)}\n\nReply in character using the instructions above. Under 80 words. If a FAQ was matched, keep those facts exactly. If knowledge was provided, answer from it only; otherwise be honest that you need more store details.`,
       maxTokens: 200,
       temperature: 0.55,
     });
@@ -159,7 +145,7 @@ router.post('/persona/preview', protect, async (req, res) => {
     res.json({
       reply,
       usage: result.usage,
-      tone: client.ai?.persona?.tone || null,
+      tone: null,
       chunks: ragChunks,
       retrievalMode: ragChunks.some((c) => c.mode === 'vector') ? 'hybrid' : ragChunks.length ? 'keyword' : 'none',
       matchedFaq: faqMatch ? { question: faqMatch.question } : null,

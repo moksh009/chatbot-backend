@@ -70,6 +70,149 @@ function buildPhoneVariants(phone = '') {
     return [...variants];
 }
 
+async function fetchWarrantyStatsBundle(clientId) {
+    const [statusCounts, customerIds] = await Promise.all([
+        WarrantyRecord.aggregate([
+            { $match: { clientId } },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+        ]),
+        WarrantyRecord.distinct('customerId', { clientId }),
+    ]);
+    const byStatus = statusCounts.reduce((acc, row) => {
+        acc[String(row._id || '').toLowerCase()] = Number(row.count || 0);
+        return acc;
+    }, {});
+    return {
+        totalCustomerRecords: customerIds.length,
+        activeCoverage: byStatus.active || 0,
+        expiredWarranty: byStatus.expired || 0,
+        terminatedWarranty: byStatus.terminated || 0,
+        voidRefunded: byStatus.void || 0,
+    };
+}
+
+async function fetchUnassignedOrdersBundle(clientId) {
+    const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();
+    const assignedOrderIds = new Set(
+        records.map((r) => String(r.shopifyOrderId || '').trim()).filter(Boolean)
+    );
+    const orders = await Order.find({ clientId }).sort({ createdAt: -1 }).limit(60).lean();
+    return orders
+        .filter((o) => {
+            const oid = String(o.shopifyOrderId || o.orderId || '').trim();
+            return oid && !assignedOrderIds.has(oid);
+        })
+        .slice(0, 20)
+        .map((o) => ({
+            _id: o._id,
+            name: o.customerName || o.name || 'Customer',
+            phoneNumber: o.customerPhone || o.phone || '',
+            lastInteraction: o.createdAt || new Date(),
+            lastOrderId: o.shopifyOrderId || o.orderId || '',
+            activityLog: [{ action: 'order_placed', at: o.createdAt || new Date() }],
+        }));
+}
+
+async function fetchWarrantyRecordsBundle(clientId) {
+    const records = await WarrantyRecord.find({ clientId })
+        .populate('customerId', 'name phoneNumber email')
+        .populate('batchId', 'batchName productRules durationMonths')
+        .sort({ createdAt: -1 })
+        .lean();
+
+    const orderKeys = [
+        ...new Set(records.map((r) => String(r.shopifyOrderId || '').trim()).filter(Boolean)),
+    ];
+    const phones = [
+        ...new Set(
+            records.map((r) => normalizePhone(r.customerId?.phoneNumber || '')).filter(Boolean)
+        ),
+    ];
+
+    const [orders, leads] = await Promise.all([
+        orderKeys.length
+            ? Order.find({
+                  clientId,
+                  $or: [
+                      { shopifyOrderId: { $in: orderKeys } },
+                      { orderId: { $in: orderKeys } },
+                      { name: { $in: orderKeys } },
+                  ],
+              })
+                  .select(
+                      'shopifyOrderId orderId name createdAt financialStatus fulfillmentStatus totalPrice currency lineItems customerName customerPhone customerEmail'
+                  )
+                  .lean()
+            : [],
+        phones.length
+            ? AdLead.find({ clientId, phoneNumber: { $in: phones } })
+                  .select('_id phoneNumber name')
+                  .lean()
+            : [],
+    ]);
+
+    const orderByKey = new Map();
+    for (const o of orders) {
+        for (const k of [o.shopifyOrderId, o.orderId, o.name].filter(Boolean)) {
+            orderByKey.set(String(k).trim(), o);
+        }
+    }
+    const leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
+
+    return records.map((r) => {
+        const phone = normalizePhone(r.customerId?.phoneNumber || '');
+        const order = orderByKey.get(String(r.shopifyOrderId || '').trim()) || null;
+        const lead = phone ? leadByPhone.get(phone) : null;
+        const lineItems = (order?.lineItems || []).map((li) => ({
+            title: li.title || li.name,
+            quantity: li.quantity,
+            price: li.price,
+            sku: li.sku,
+            productId: li.product_id || li.productId,
+        }));
+        return {
+            ...r,
+            customerName: r.customerId?.name || order?.customerName || 'Customer',
+            customerPhone: r.customerId?.phoneNumber || order?.customerPhone || '',
+            customerEmail: r.customerId?.email || order?.customerEmail || '',
+            leadId: lead?._id || null,
+            orderDetails: order
+                ? {
+                      shopifyOrderId: order.shopifyOrderId || order.orderId || order.name,
+                      orderName: order.name || order.shopifyOrderId,
+                      placedAt: order.createdAt,
+                      financialStatus: order.financialStatus,
+                      fulfillmentStatus: order.fulfillmentStatus,
+                      totalPrice: order.totalPrice,
+                      currency: order.currency,
+                      lineItemCount: lineItems.length,
+                      lineItems,
+                  }
+                : { shopifyOrderId: r.shopifyOrderId, lineItems: [] },
+        };
+    });
+}
+
+/**
+ * @route   GET /api/warranty/workspace
+ * @desc    BFF — batches + stats + unassigned orders + records in one round trip
+ */
+router.get('/workspace', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+        const [batches, stats, leads, records] = await Promise.all([
+            WarrantyBatch.find({ clientId }).sort({ createdAt: -1 }).lean(),
+            fetchWarrantyStatsBundle(clientId),
+            fetchUnassignedOrdersBundle(clientId),
+            fetchWarrantyRecordsBundle(clientId),
+        ]);
+        res.json({ success: true, batches, stats, leads, records });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 /**
  * @route   GET /api/warranty/batches
  * @desc    Fetch all warranty batches for a client
@@ -233,90 +376,7 @@ router.get('/records', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const records = await WarrantyRecord.find({ clientId })
-            .populate('customerId', 'name phoneNumber email')
-            .populate('batchId', 'batchName productRules durationMonths')
-            .sort({ createdAt: -1 })
-            .lean();
-
-        const orderKeys = [
-            ...new Set(
-                records
-                    .map((r) => String(r.shopifyOrderId || '').trim())
-                    .filter(Boolean)
-            ),
-        ];
-        const phones = [
-            ...new Set(
-                records
-                    .map((r) => normalizePhone(r.customerId?.phoneNumber || ''))
-                    .filter(Boolean)
-            ),
-        ];
-
-        const [orders, leads] = await Promise.all([
-            orderKeys.length
-                ? Order.find({
-                      clientId,
-                      $or: [
-                          { shopifyOrderId: { $in: orderKeys } },
-                          { orderId: { $in: orderKeys } },
-                          { name: { $in: orderKeys } },
-                      ],
-                  })
-                      .select(
-                          'shopifyOrderId orderId name createdAt financialStatus fulfillmentStatus totalPrice currency lineItems customerName customerPhone customerEmail'
-                      )
-                      .lean()
-                : [],
-            phones.length
-                ? AdLead.find({ clientId, phoneNumber: { $in: phones } })
-                      .select('_id phoneNumber name')
-                      .lean()
-                : [],
-        ]);
-
-        const orderByKey = new Map();
-        for (const o of orders) {
-            for (const k of [o.shopifyOrderId, o.orderId, o.name].filter(Boolean)) {
-                orderByKey.set(String(k).trim(), o);
-            }
-        }
-        const leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
-
-        const enriched = records.map((r) => {
-            const phone = normalizePhone(r.customerId?.phoneNumber || '');
-            const order = orderByKey.get(String(r.shopifyOrderId || '').trim()) || null;
-            const lead = phone ? leadByPhone.get(phone) : null;
-            const lineItems = (order?.lineItems || []).map((li) => ({
-                title: li.title || li.name,
-                quantity: li.quantity,
-                price: li.price,
-                sku: li.sku,
-                productId: li.product_id || li.productId,
-            }));
-            return {
-                ...r,
-                customerName: r.customerId?.name || order?.customerName || 'Customer',
-                customerPhone: r.customerId?.phoneNumber || order?.customerPhone || '',
-                customerEmail: r.customerId?.email || order?.customerEmail || '',
-                leadId: lead?._id || null,
-                orderDetails: order
-                    ? {
-                          shopifyOrderId: order.shopifyOrderId || order.orderId || order.name,
-                          orderName: order.name || order.shopifyOrderId,
-                          placedAt: order.createdAt,
-                          financialStatus: order.financialStatus,
-                          fulfillmentStatus: order.fulfillmentStatus,
-                          totalPrice: order.totalPrice,
-                          currency: order.currency,
-                          lineItemCount: lineItems.length,
-                          lineItems,
-                      }
-                    : { shopifyOrderId: r.shopifyOrderId, lineItems: [] },
-            };
-        });
-
+        const enriched = await fetchWarrantyRecordsBundle(clientId);
         res.json({ success: true, records: enriched });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -331,29 +391,8 @@ router.get('/stats', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const [statusCounts, customerIds] = await Promise.all([
-            WarrantyRecord.aggregate([
-                { $match: { clientId } },
-                { $group: { _id: '$status', count: { $sum: 1 } } },
-            ]),
-            WarrantyRecord.distinct('customerId', { clientId }),
-        ]);
-
-        const byStatus = statusCounts.reduce((acc, row) => {
-            acc[String(row._id || '').toLowerCase()] = Number(row.count || 0);
-            return acc;
-        }, {});
-
-        return res.json({
-            success: true,
-            stats: {
-                totalCustomerRecords: customerIds.length,
-                activeCoverage: byStatus.active || 0,
-                expiredWarranty: byStatus.expired || 0,
-                terminatedWarranty: byStatus.terminated || 0,
-                voidRefunded: byStatus.void || 0,
-            },
-        });
+        const stats = await fetchWarrantyStatsBundle(clientId);
+        return res.json({ success: true, stats });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
     }
@@ -667,30 +706,8 @@ router.get('/unassigned-orders', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();
-        const assignedOrderIds = new Set(
-            records
-                .map((r) => String(r.shopifyOrderId || '').trim())
-                .filter(Boolean)
-        );
-
-        const orders = await Order.find({ clientId }).sort({ createdAt: -1 }).limit(60).lean();
-        const leads = orders
-            .filter((o) => {
-                const oid = String(o.shopifyOrderId || o.orderId || '').trim();
-                return oid && !assignedOrderIds.has(oid);
-            })
-            .slice(0, 20)
-            .map((o) => ({
-                _id: o._id,
-                name: o.customerName || o.name || 'Customer',
-                phoneNumber: o.customerPhone || o.phone || '',
-                lastInteraction: o.createdAt || new Date(),
-                lastOrderId: o.shopifyOrderId || o.orderId || '',
-                activityLog: [{ action: 'order_placed', at: o.createdAt || new Date() }]
-            }));
-
-        res.json({ success: true, leads }); // Keeping "leads" key for frontend compatibility during transition
+        const leads = await fetchUnassignedOrdersBundle(clientId);
+        res.json({ success: true, leads });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
@@ -795,54 +812,6 @@ router.get('/check', async (req, res) => {
                 batchName: record.batchId?.batchName
             }
         });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-/**
- * @route   POST /api/warranty/resend-notification
- * @desc    Resend warranty certificate via WhatsApp
- */
-router.post('/resend-notification', protect, featureWarranty, async (req, res) => {
-    try {
-        const { recordId } = req.body;
-        const clientId = tenantClientId(req);
-        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-
-        const record = await WarrantyRecord.findOne({ _id: recordId, clientId }).populate('customerId');
-        if (!record || !record.customerId) {
-            return res.status(404).json({ success: false, message: 'Record or customer not found' });
-        }
-
-        const client = await Client.findOne({ clientId });
-        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-        const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
-        
-        try {
-            await sendWhatsAppTemplate({
-                phoneNumberId: client.phoneNumberId,
-                to: record.customerId.phoneNumber,
-                templateName: 'warranty_certificate',
-                languageCode: 'en',
-                components: [
-                    {
-                        type: "body",
-                        parameters: [
-                            { type: "text", text: record.customerId.name || "Customer" },
-                            { type: "text", text: new Date(record.expiryDate).toLocaleDateString() }
-                        ]
-                    }
-                ],
-                token: client.whatsappToken,
-                clientId: client.clientId
-            });
-            res.json({ success: true, message: 'Notification sent' });
-        } catch (err) {
-            console.error('[Warranty] Failed to send WhatsApp notification:', err.message);
-            res.status(500).json({ success: false, message: 'Failed to send WhatsApp notification: ' + err.message });
-        }
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

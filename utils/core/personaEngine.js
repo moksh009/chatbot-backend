@@ -36,15 +36,13 @@ function buildPersonaSystemPrompt(client, baseSystemPrompt = "") {
   const hasPersona = !!(
     String(persona.name || "").trim()
     || String(persona.description || "").trim()
-    || String(persona.tone || "").trim()
   );
 
   if (!hasPersona) return baseSystemPrompt || "";
 
   const displayName = String(persona.name || "").trim() || "Assistant";
-  const displayTone = persona.tone || "Friendly, professional, and helpful.";
   const displayDescription = String(persona.description || "").trim()
-    || `You represent ${client.businessName || "the business"} on WhatsApp. Be helpful, concise, and match the tone below.`;
+    || `You represent ${client.businessName || "the business"} on WhatsApp. Be helpful, concise, and professional.`;
   const emojiLevel = client.ai?.persona?.emojiLevel || "moderate";
   const formality = client.ai?.persona?.formality || "semi-formal";
   const sentenceLength = client.ai?.persona?.sentenceLength || "medium";
@@ -120,9 +118,6 @@ You are ${displayName}, ${persona.role || "a customer support specialist"} at ${
 
 PERSONA:
   ${displayDescription}
-
-PERSONALITY & TONE:
-  ${displayTone}
 
 SPEAKING STYLE:
   - ${formalityGuide}

@@ -77,18 +77,6 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
     
-    case "SEND_WARRANTY_PDF": {
-      const meta = convo?.metadata || {};
-      await WhatsApp.sendText(
-        client,
-        phone,
-        `📄 *Warranty certificate*\n\nProduct: ${meta._warranty_product_name || "your product"}\nOrder: ${meta._warranty_order_ref || "—"}\nValid until: ${meta._warranty_expires_display || "—"}`
-      ).catch((err) => {
-        console.error("[NodeActions] SEND_WARRANTY_PDF error:", err.message);
-      });
-      break;
-    }
-
     case "WARRANTY_CHECK": {
       try {
         const { normalizePhone } = require('../core/helpers');
@@ -223,7 +211,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           branch === "none"
             ? "We could not find a warranty on file for this number. Share your order ID and we will help you."
             : branch === "active"
-              ? `Your warranty${productName ? ` for ${productName}` : ""} is active${expiresDisplay ? ` until ${expiresDisplay}` : ""}. Ask here if you need your certificate resent on WhatsApp.`
+              ? `Your warranty${productName ? ` for ${productName}` : ""} is active${expiresDisplay ? ` until ${expiresDisplay}` : ""}. Reply here to raise a claim or ask for help.`
               : `Your warranty${productName ? ` for ${productName}` : ""} has ended${expiresDisplay ? ` (expired ${expiresDisplay})` : ""}.`;
 
         await Conversation.findByIdAndUpdate(convo._id, {

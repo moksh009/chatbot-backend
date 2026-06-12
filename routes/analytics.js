@@ -655,6 +655,25 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
         updateData.city = latestOrder.city;
         updatedNeeded = true;
       }
+      if (!lead.lastPurchaseDate && (latestOrder.createdAt || latestOrder.orderDate)) {
+        lead.lastPurchaseDate = latestOrder.createdAt || latestOrder.orderDate;
+        updateData.lastPurchaseDate = lead.lastPurchaseDate;
+        updatedNeeded = true;
+      }
+      const orderSum = sortedOrders.reduce((sum, o) => {
+        const v = parseFloat(o.totalPrice ?? o.amount ?? o.total ?? 0);
+        return sum + (Number.isFinite(v) ? v : 0);
+      }, 0);
+      if ((!lead.totalSpent || lead.totalSpent === 0) && orderSum > 0) {
+        lead.totalSpent = orderSum;
+        updateData.totalSpent = orderSum;
+        updatedNeeded = true;
+      }
+      if ((!lead.ordersCount || lead.ordersCount === 0) && sortedOrders.length > 0) {
+        lead.ordersCount = sortedOrders.length;
+        updateData.ordersCount = sortedOrders.length;
+        updatedNeeded = true;
+      }
     }
 
     // --- Phase 25: Shopify Deep Search Fallback (If still missing) ---
@@ -702,9 +721,11 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
 
     const { buildLiveLeadPanels } = require('../services/customer360/liveLeadProfile');
     const livePanels = await buildLiveLeadPanels(lead);
+    const { normalizeLeadForDisplay } = require('../utils/commerce/leadDisplayNormalize');
+    const displayLead = normalizeLeadForDisplay(lead, { orders });
 
     res.json({
-      lead,
+      lead: displayLead,
       orders,
       appointments,
       conversation,
@@ -1368,7 +1389,7 @@ router.get('/abandoned-products', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const days = parseInt(req.query.days) || 30;
-    const { istDateRangeStrings } = require('../utils/core/queryHelpers');
+    const { istDateRangeStrings, startOfDayForDateStrIST } = require('../utils/core/queryHelpers');
     const { start: startDateStr } = istDateRangeStrings(days);
 
     const stats = await DailyStat.find({
@@ -1387,6 +1408,39 @@ router.get('/abandoned-products', protect, async (req, res) => {
           : Object.entries(typeof abandoned === 'object' ? abandoned : {});
       for (const [product, count] of entries) {
         productMap[product] = (productMap[product] || 0) + Number(count) || 0;
+      }
+    }
+
+    // Fallback: aggregate product names from abandoned cart leads when DailyStat is empty
+    if (Object.keys(productMap).length === 0) {
+      const rangeStart = startOfDayForDateStrIST(startDateStr);
+      const AdLead = require('../models/AdLead');
+      const leads = await AdLead.find({
+        clientId,
+        cartStatus: { $in: ['abandoned', 'active'] },
+        updatedAt: { $gte: rangeStart },
+      })
+        .select('cartItems lineItems')
+        .limit(500)
+        .lean();
+
+      for (const lead of leads) {
+        const items = Array.isArray(lead.cartItems)
+          ? lead.cartItems
+          : Array.isArray(lead.lineItems)
+            ? lead.lineItems
+            : [];
+        for (const item of items) {
+          const name =
+            item?.title ||
+            item?.name ||
+            item?.product_title ||
+            item?.productTitle ||
+            null;
+          if (!name) continue;
+          const qty = Number(item?.quantity) || 1;
+          productMap[name] = (productMap[name] || 0) + qty;
+        }
       }
     }
 

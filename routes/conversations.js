@@ -540,7 +540,13 @@ async function findLeadForConversationPhone(tenantId, phone, selectFields) {
 }
 
 /** Fast path: messages + lead only (Live Chat first paint). */
-async function loadConversationLiteContext({ id, user, timer, tenantId: scopedClientId }) {
+async function loadConversationLiteContext({
+  id,
+  user,
+  timer,
+  tenantId: scopedClientId,
+  includeSidebar = false,
+}) {
   const conversation = await timer.time('Conversation.findOne', () =>
     Conversation.findOne(conversationAccessQuery(id, user, scopedClientId))
       .select(
@@ -565,6 +571,54 @@ async function loadConversationLiteContext({ id, user, timer, tenantId: scopedCl
 
   const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
   const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+
+  const sidebarFetches = includeSidebar
+    ? [
+        (async () => {
+          if (!phoneSuffix) return null;
+          try {
+            const FollowUpSequence = require('../models/FollowUpSequence');
+            return FollowUpSequence.findOne({
+              clientId: tenantId,
+              phone,
+              status: { $in: ['active', 'pending', 'ACTIVE', 'PENDING'] },
+            })
+              .select('name status steps')
+              .lean();
+          } catch {
+            return null;
+          }
+        })(),
+        (async () => {
+          try {
+            const ConversationNote = require('../models/ConversationNote');
+            const rows = await ConversationNote.find({ conversationId: id })
+              .sort({ createdAt: -1 })
+              .limit(40)
+              .lean();
+            return rows.reverse();
+          } catch {
+            return [];
+          }
+        })(),
+        (async () => {
+          try {
+            const pn = normalizePhone(phone);
+            if (!pn) return null;
+            return CheckoutLinkModel.findOne({
+              clientId: tenantId,
+              converted: false,
+              phone: pn,
+            })
+              .sort({ createdAt: -1 })
+              .select('shortCode fullUrl cartRecoverySent createdAt totalValue currency')
+              .lean();
+          } catch {
+            return null;
+          }
+        })(),
+      ]
+    : [];
 
   const parallel = await timer.time('lite_context_parallel', () =>
     Promise.all([
@@ -620,12 +674,16 @@ async function loadConversationLiteContext({ id, user, timer, tenantId: scopedCl
           .lean()
           .catch(() => []);
       })(),
+      ...sidebarFetches,
     ])
   );
 
   const messages = parallel[0];
   const lead = parallel[1];
   const orders = parallel[2];
+  const activeSequence = includeSidebar ? parallel[3] : undefined;
+  const notes = includeSidebar ? parallel[4] : undefined;
+  const latestCheckoutLink = includeSidebar ? parallel[5] : undefined;
   const leadScore = lead?.leadScore ?? 0;
   let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
   if (phone) {
@@ -652,6 +710,9 @@ async function loadConversationLiteContext({ id, user, timer, tenantId: scopedCl
     stageName,
     ltv,
     orders,
+    ...(includeSidebar
+      ? { activeSequence: activeSequence || null, notes: notes || [], latestCheckoutLink: latestCheckoutLink ?? null }
+      : {}),
   };
 }
 
@@ -790,8 +851,18 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
 
   try {
     if (req.query.lite === '1' || req.query.lite === 'true') {
-      const litePayload = await dedupeAsync(`lite-ctx:${tenantId || ''}:${id}`, () =>
-        loadConversationLiteContext({ id, user: req.user, timer, tenantId })
+      const includeSidebar =
+        req.query.includeSidebar === '1' || req.query.includeSidebar === 'true';
+      const litePayload = await dedupeAsync(
+        `lite-ctx:${tenantId || ''}:${id}:${includeSidebar ? 'side' : 'base'}`,
+        () =>
+          loadConversationLiteContext({
+            id,
+            user: req.user,
+            timer,
+            tenantId,
+            includeSidebar,
+          })
       );
       res.json(litePayload);
       timer.finish('200 ok lite');

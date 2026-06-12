@@ -10,6 +10,8 @@ const AdLead = require("../../models/AdLead");
 const Order = require("../../models/Order");
 const Conversation = require("../../models/Conversation");
 const TrainingCase = require("../../models/TrainingCase");
+const IntentRule = require("../../models/IntentRule");
+const KnowledgeDocument = require("../../models/KnowledgeDocument");
 const Competitor = require("../../models/Competitor");
 
 const REPORT_DAYS = 30;
@@ -51,6 +53,8 @@ async function gatherIntelligenceReportData(clientId) {
     dropoffs,
     competitors,
     topProducts,
+    activeIntents,
+    activeKnowledgeDocs,
   ] = await Promise.all([
     AdLead.countDocuments({ clientId, createdAt: { $gte: startDate } }),
     Order.aggregate([
@@ -92,6 +96,8 @@ async function gatherIntelligenceReportData(clientId) {
       { $sort: { count: -1 } },
       { $limit: 5 },
     ]),
+    IntentRule.countDocuments({ clientId, isActive: true }),
+    KnowledgeDocument.countDocuments({ clientId, status: "active" }),
   ]);
 
   const revenue = ordersAgg30[0]?.total || 0;
@@ -178,6 +184,10 @@ async function gatherIntelligenceReportData(clientId) {
       .join("; ");
     insights.push(`Top ordered line items (by units, ${REPORT_DAYS}d): ${line}.`);
   }
+
+  insights.push(
+    `AI Brain: ${activeIntents} active intent rule(s), ${activeKnowledgeDocs} active knowledge document(s).`
+  );
 
   return {
     stats_grid: {

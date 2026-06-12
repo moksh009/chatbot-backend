@@ -203,7 +203,7 @@ router.post('/order-webhook', verifyShopifyTrackingWebhook, async (req, res) => 
                 phone,
                 clientId,
                 { ordersCount: 1, totalSpent: amount },
-                { cartStatus: "purchased", lastOrderAt: new Date() }
+                { cartStatus: 'purchased', lastPurchaseDate: new Date() }
             );
 
             if (lead && io) {

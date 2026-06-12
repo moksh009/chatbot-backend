@@ -250,6 +250,87 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
   }
 });
 
+// ─── GET /api/catalog/:clientId/workspace — status + products + orders (BFF) ─
+router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) => {
+  const { createTimer } = require("../utils/core/perfLogger");
+  const timer = createTimer("GET /api/catalog/:clientId/workspace", req.params.clientId || "");
+  try {
+    const cid = req.params.clientId;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
+    const search = String(req.query.search || "").trim();
+
+    const client = await getCachedClient(
+      cid,
+      "waCatalogId facebookCatalogId catalogEnabled catalogProductCount shopifyProductCount catalogSyncedAt shopifyLastProductSync shopDomain shopifyAccessToken"
+    );
+    if (!client) {
+      timer.finish("404");
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    const since = new Date(Date.now() - 86400000);
+    const queryFilter = { clientId: cid };
+    if (search) {
+      queryFilter.$or = [
+        { title: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+        { shopifyVariantId: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+      ];
+    }
+
+    const [cachedCount, waOrdersToday, waRevenueAgg, products, orders] = await Promise.all([
+      ShopifyProduct.countDocuments({ clientId: cid }),
+      AdLead.countDocuments({
+        clientId: cid,
+        cartStatus: "whatsapp_order_placed",
+        lastInteraction: { $gte: since },
+      }),
+      AdLead.aggregate([
+        { $match: { clientId: cid, cartStatus: "whatsapp_order_placed" } },
+        { $group: { _id: null, total: { $sum: "$cartSnapshot.total_price" } } },
+      ]),
+      ShopifyProduct.find(queryFilter)
+        .select(
+          "shopifyProductId shopifyVariantId title price currency imageUrl productUrl inStock collectionTitles clientId"
+        )
+        .sort({ title: 1 })
+        .limit(limit)
+        .maxTimeMS(CATALOG_PRODUCTS_MAX_MS)
+        .lean(),
+      AdLead.find({
+        clientId: cid,
+        cartStatus: "whatsapp_order_placed",
+      })
+        .select("phoneNumber name cartSnapshot lastInteraction leadScore")
+        .sort({ lastInteraction: -1 })
+        .limit(20)
+        .hint({ clientId: 1, cartStatus: 1 })
+        .lean(),
+    ]);
+
+    const catalogId = resolveCatalogId(client);
+
+    timer.finish("200 ok");
+    res.json({
+      success: true,
+      status: {
+        catalogId: catalogId || null,
+        catalogEnabled: client.catalogEnabled || !!catalogId,
+        productCount: cachedCount || client.catalogProductCount || client.shopifyProductCount || 0,
+        catalogSyncedAt: client.catalogSyncedAt || client.shopifyLastProductSync || null,
+        shopifyConnected: !!(client.shopDomain && client.shopifyAccessToken),
+        waOrdersToday,
+        waRevenue: waRevenueAgg[0]?.total || 0,
+      },
+      products,
+      orders,
+      productsSource: "cache",
+    });
+  } catch (err) {
+    timer.finish(`500 ${err.message}`);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── GET /api/catalog/:clientId/orders — list WA catalog orders ─────────────
 router.get("/:clientId/orders", verifyToken, apiCache(60), async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');

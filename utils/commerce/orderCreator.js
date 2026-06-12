@@ -113,7 +113,7 @@ async function executeNativeOrder(client, phone, items, addressData, paymentMeth
         { _id: lead._id },
         { 
           $inc: { ordersCount: 1, totalSpent: totalAmount },
-          $set: { isOrderPlaced: true, lastInteraction: new Date() },
+          $set: { isOrderPlaced: true, lastInteraction: new Date(), lastPurchaseDate: new Date() },
           $push: { 
             activityLog: { 
               action: 'order_placed', 
