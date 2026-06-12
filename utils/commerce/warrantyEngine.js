@@ -4,6 +4,10 @@ const Contact = require('../../models/Contact');
 const { normalizePhone } = require('../core/helpers');
 const { sendNotifications } = require('./warrantyService');
 const { isWarrantyEnabled } = require('../core/featureFlags');
+const {
+    canonicalWarrantyOrderId,
+    findExistingWarrantyRecord,
+} = require('./warrantyOrderRef');
 const log = require('../core/logger')('WarrantyEngine');
 
 function durationMonthsForProduct(batch, productId) {
@@ -73,11 +77,11 @@ async function processWarrantyAutoAssignment(client, data) {
             const batch = activeBatches.find(b => b.shopifyProductIds.includes(productId));
 
             if (batch) {
-                // Check if a record already exists for this order + product combo to prevent duplicates
-                const existing = await WarrantyRecord.findOne({
+                const existing = await findExistingWarrantyRecord(WarrantyRecord, {
                     clientId: client.clientId,
-                    shopifyOrderId: data.name || `#${data.id}`,
-                    productId: productId
+                    orderInput: data,
+                    productId,
+                    productName: item.title,
                 });
 
                 if (existing) {
@@ -88,11 +92,12 @@ async function processWarrantyAutoAssignment(client, data) {
                 const months = durationMonthsForProduct(batch, productId);
                 const expiryDate = new Date(orderDate);
                 expiryDate.setMonth(expiryDate.getMonth() + months);
+                const canonicalOrderId = canonicalWarrantyOrderId(data);
 
                 const record = await WarrantyRecord.create({
                     clientId: client.clientId,
                     customerId: contact._id,
-                    shopifyOrderId: data.name || `#${data.id}`,
+                    shopifyOrderId: canonicalOrderId,
                     productId: productId,
                     productName: item.title,
                     purchaseDate: orderDate,

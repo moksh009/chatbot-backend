@@ -12,6 +12,13 @@ const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 const { normalizePhone } = require('../utils/core/helpers');
 const { tenantClientId } = require('../utils/core/queryHelpers');
+const {
+    canonicalWarrantyOrderId,
+    orderRefAliases,
+    indexOrdersByAlias,
+    dedupeWarrantyRecords,
+    findExistingWarrantyRecord,
+} = require('../utils/commerce/warrantyOrderRef');
 
 function normalizeProductRules(body = {}) {
     const { productRules, shopifyProductIds, durationMonths } = body;
@@ -48,6 +55,75 @@ function durationMonthsForProduct(batch, productId) {
     const rule = (batch.productRules || []).find((r) => String(r.shopifyProductId) === id);
     if (rule?.durationMonths) return Number(rule.durationMonths);
     return Number(batch.durationMonths) || 12;
+}
+
+function resolveOrderLineItems(order) {
+    const raw = Array.isArray(order?.items)
+        ? order.items
+        : Array.isArray(order?.lineItems)
+          ? order.lineItems
+          : [];
+    return raw
+        .map((item) => ({
+            productId: String(item.productId || item.product_id || '').trim(),
+            title: String(item.name || item.title || 'Product').trim(),
+            quantity: Math.max(1, Number(item.quantity) || 1),
+            sku: String(item.sku || '').trim(),
+            image: String(item.image || item.image_url || '').trim(),
+        }))
+        .filter((item) => item.productId || item.title);
+}
+
+function buildAssignedProductKeys(records, orderIndex = new Map()) {
+    const keys = new Set();
+    for (const r of records) {
+        const linkedOrder = orderIndex.get(String(r.shopifyOrderId || '').trim()) || null;
+        const canonical = linkedOrder
+            ? canonicalWarrantyOrderId(linkedOrder)
+            : canonicalWarrantyOrderId({ shopifyOrderId: r.shopifyOrderId });
+        const pid = String(r.productId || '').trim();
+        if (!canonical || !pid) continue;
+        keys.add(`${canonical}:${pid}`);
+        for (const alias of orderRefAliases(linkedOrder || { shopifyOrderId: r.shopifyOrderId })) {
+            keys.add(`${alias}:${pid}`);
+        }
+    }
+    return keys;
+}
+
+function batchMatchesOrderDate(batch, orderDate) {
+    const placed = new Date(orderDate);
+    if (Number.isNaN(placed.getTime())) return false;
+    const from = batch.validFrom ? new Date(batch.validFrom) : null;
+    const until = batch.validUntil ? new Date(batch.validUntil) : null;
+    if (from && placed < from) return false;
+    if (until && placed > until) return false;
+    return true;
+}
+
+function findActiveBatchForProduct(batches, productId, orderDate) {
+    const pid = String(productId);
+    return batches.find(
+        (b) =>
+            b.status === 'active' &&
+            (b.shopifyProductIds || []).includes(pid) &&
+            batchMatchesOrderDate(b, orderDate)
+    );
+}
+
+async function ensureFallbackBatch(clientId, months = 12) {
+    let batch = await WarrantyBatch.findOne({ clientId, status: 'active' }).sort({ createdAt: -1 });
+    if (!batch) {
+        batch = await WarrantyBatch.create({
+            clientId,
+            batchName: 'Manual Registrations',
+            shopifyProductIds: [],
+            durationMonths: months,
+            validFrom: new Date(),
+            status: 'active',
+        });
+    }
+    return batch;
 }
 
 const parseDurationMonths = (raw) => {
@@ -92,25 +168,75 @@ async function fetchWarrantyStatsBundle(clientId) {
 }
 
 async function fetchUnassignedOrdersBundle(clientId) {
-    const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();
-    const assignedOrderIds = new Set(
-        records.map((r) => String(r.shopifyOrderId || '').trim()).filter(Boolean)
-    );
-    const orders = await Order.find({ clientId }).sort({ createdAt: -1 }).limit(60).lean();
-    return orders
-        .filter((o) => {
-            const oid = String(o.shopifyOrderId || o.orderId || '').trim();
-            return oid && !assignedOrderIds.has(oid);
-        })
-        .slice(0, 20)
-        .map((o) => ({
-            _id: o._id,
-            name: o.customerName || o.name || 'Customer',
-            phoneNumber: o.customerPhone || o.phone || '',
-            lastInteraction: o.createdAt || new Date(),
-            lastOrderId: o.shopifyOrderId || o.orderId || '',
-            activityLog: [{ action: 'order_placed', at: o.createdAt || new Date() }],
-        }));
+    const [records, orders, activeBatches] = await Promise.all([
+        WarrantyRecord.find({ clientId }).select('shopifyOrderId productId').lean(),
+        Order.find({ clientId })
+            .sort({ createdAt: -1 })
+            .limit(120)
+            .select(
+                'shopifyOrderId orderId orderNumber name customerName customerPhone phone items createdAt totalPrice currency'
+            )
+            .lean(),
+        WarrantyBatch.find({ clientId, status: 'active' }).lean(),
+    ]);
+
+    const orderIndex = indexOrdersByAlias(orders);
+    const assignedKeys = buildAssignedProductKeys(records, orderIndex);
+    const pending = [];
+
+    for (const order of orders) {
+        const canonicalOrderId = canonicalWarrantyOrderId(order);
+        if (!canonicalOrderId) continue;
+
+        const lineItemsRaw = resolveOrderLineItems(order);
+        if (!lineItemsRaw.length) continue;
+
+        const orderDate = order.createdAt || new Date();
+        const phone = normalizePhone(order.customerPhone || order.phone || '');
+        const customerName = String(order.customerName || order.name || 'Customer').trim();
+        const displayOrderName = order.orderId || order.name || order.orderNumber || canonicalOrderId;
+
+        const lineItems = lineItemsRaw.map((item) => {
+            const alreadyAssigned =
+                assignedKeys.has(`${canonicalOrderId}:${item.productId}`) ||
+                orderRefAliases(order).some((alias) => assignedKeys.has(`${alias}:${item.productId}`));
+            const batch = item.productId
+                ? findActiveBatchForProduct(activeBatches, item.productId, orderDate)
+                : null;
+            const durationMonths = batch ? durationMonthsForProduct(batch, item.productId) : 12;
+            return {
+                ...item,
+                alreadyAssigned,
+                eligible: !!batch,
+                batchId: batch?._id ? String(batch._id) : '',
+                batchName: batch?.batchName || '',
+                durationMonths,
+            };
+        });
+
+        const unassignedItems = lineItems.filter((i) => !i.alreadyAssigned);
+        if (!unassignedItems.length) continue;
+
+        pending.push({
+            _id: order._id,
+            shopifyOrderId: canonicalOrderId,
+            orderName: displayOrderName,
+            customerName,
+            name: customerName,
+            phoneNumber: phone,
+            placedAt: orderDate,
+            lastInteraction: orderDate,
+            lastOrderId: canonicalOrderId,
+            totalPrice: order.totalPrice,
+            currency: order.currency || 'INR',
+            lineItems,
+            unassignedProductCount: unassignedItems.length,
+            productCount: lineItems.length,
+            unassignedPreview: unassignedItems.map((i) => i.title).slice(0, 3).join(', '),
+        });
+    }
+
+    return pending.slice(0, 50);
 }
 
 async function fetchWarrantyRecordsBundle(clientId) {
@@ -129,18 +255,19 @@ async function fetchWarrantyRecordsBundle(clientId) {
         ),
     ];
 
+    const orderLookupOr = [{ shopifyOrderId: { $in: orderKeys } }, { orderId: { $in: orderKeys } }, { name: { $in: orderKeys } }];
+    for (const key of orderKeys) {
+        const stripped = String(key).replace(/^#/, '');
+        if (stripped && stripped !== key) {
+            orderLookupOr.push({ orderId: stripped }, { shopifyOrderId: stripped });
+        }
+    }
+
     const [orders, leads] = await Promise.all([
         orderKeys.length
-            ? Order.find({
-                  clientId,
-                  $or: [
-                      { shopifyOrderId: { $in: orderKeys } },
-                      { orderId: { $in: orderKeys } },
-                      { name: { $in: orderKeys } },
-                  ],
-              })
+            ? Order.find({ clientId, $or: orderLookupOr })
                   .select(
-                      'shopifyOrderId orderId name createdAt financialStatus fulfillmentStatus totalPrice currency lineItems customerName customerPhone customerEmail'
+                      'shopifyOrderId orderId orderNumber name createdAt financialStatus fulfillmentStatus totalPrice currency items customerName customerPhone customerEmail'
                   )
                   .lean()
             : [],
@@ -151,35 +278,36 @@ async function fetchWarrantyRecordsBundle(clientId) {
             : [],
     ]);
 
-    const orderByKey = new Map();
-    for (const o of orders) {
-        for (const k of [o.shopifyOrderId, o.orderId, o.name].filter(Boolean)) {
-            orderByKey.set(String(k).trim(), o);
-        }
-    }
+    const orderIndex = indexOrdersByAlias(orders);
+    const dedupedRecords = dedupeWarrantyRecords(records, orderIndex);
     const leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
 
-    return records.map((r) => {
+    return dedupedRecords.map((r) => {
         const phone = normalizePhone(r.customerId?.phoneNumber || '');
-        const order = orderByKey.get(String(r.shopifyOrderId || '').trim()) || null;
+        const order = orderIndex.get(String(r.shopifyOrderId || '').trim()) || null;
         const lead = phone ? leadByPhone.get(phone) : null;
-        const lineItems = (order?.lineItems || []).map((li) => ({
-            title: li.title || li.name,
+        const canonicalOrderId = order
+            ? canonicalWarrantyOrderId(order)
+            : canonicalWarrantyOrderId({ shopifyOrderId: r.shopifyOrderId });
+        const displayOrderName = order?.orderId || order?.name || order?.orderNumber || canonicalOrderId;
+        const lineItems = resolveOrderLineItems(order).map((li) => ({
+            title: li.title,
             quantity: li.quantity,
             price: li.price,
             sku: li.sku,
-            productId: li.product_id || li.productId,
+            productId: li.productId,
         }));
         return {
             ...r,
+            shopifyOrderId: canonicalOrderId,
             customerName: r.customerId?.name || order?.customerName || 'Customer',
             customerPhone: r.customerId?.phoneNumber || order?.customerPhone || '',
             customerEmail: r.customerId?.email || order?.customerEmail || '',
             leadId: lead?._id || null,
             orderDetails: order
                 ? {
-                      shopifyOrderId: order.shopifyOrderId || order.orderId || order.name,
-                      orderName: order.name || order.shopifyOrderId,
+                      shopifyOrderId: canonicalOrderId,
+                      orderName: displayOrderName,
                       placedAt: order.createdAt,
                       financialStatus: order.financialStatus,
                       fulfillmentStatus: order.fulfillmentStatus,
@@ -188,7 +316,7 @@ async function fetchWarrantyRecordsBundle(clientId) {
                       lineItemCount: lineItems.length,
                       lineItems,
                   }
-                : { shopifyOrderId: r.shopifyOrderId, lineItems: [] },
+                : { shopifyOrderId: canonicalOrderId, orderName: displayOrderName, lineItems: [] },
         };
     });
 }
@@ -439,11 +567,19 @@ router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
             .lean();
 
         const warrantyByOrderProduct = new Map();
+        const orderIndex = indexOrdersByAlias(orders);
         for (const wr of warrantyRecords) {
-            const orderKey = String(wr.shopifyOrderId || '').trim();
+            const linkedOrder = orderIndex.get(String(wr.shopifyOrderId || '').trim()) || null;
+            const canonical = linkedOrder
+                ? canonicalWarrantyOrderId(linkedOrder)
+                : canonicalWarrantyOrderId({ shopifyOrderId: wr.shopifyOrderId });
             const productKey = String(wr.productId || wr.productName || '').trim();
-            warrantyByOrderProduct.set(`${orderKey}::${productKey}`, wr);
-            warrantyByOrderProduct.set(`${orderKey}::${String(wr.productName || '').trim()}`, wr);
+            warrantyByOrderProduct.set(`${canonical}::${productKey}`, wr);
+            warrantyByOrderProduct.set(`${canonical}::${String(wr.productName || '').trim()}`, wr);
+            for (const alias of orderRefAliases(linkedOrder || { shopifyOrderId: wr.shopifyOrderId })) {
+                warrantyByOrderProduct.set(`${alias}::${productKey}`, wr);
+                warrantyByOrderProduct.set(`${alias}::${String(wr.productName || '').trim()}`, wr);
+            }
         }
 
         const now = new Date();
@@ -452,7 +588,7 @@ router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
         let expiredCount = 0;
 
         const enrichedOrders = orders.map((order) => {
-            const orderKey = String(order.shopifyOrderId || order.orderId || order.name || '').trim();
+            const orderKey = canonicalWarrantyOrderId(order);
             const rawItems = order.lineItems?.length ? order.lineItems : order.items || [];
             const lineItems = rawItems.map((li) => {
                 const productId = String(li.product_id || li.productId || li.sku || '').trim();
@@ -626,12 +762,25 @@ router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
         const safeExpiry = expiryDate ? new Date(expiryDate) : new Date(safePurchase);
         if (!expiryDate) safeExpiry.setMonth(safeExpiry.getMonth() + 12);
 
+        let linkedOrder = await Order.findOne({
+            clientId,
+            $or: [
+                { shopifyOrderId: String(shopifyOrderId) },
+                { orderId: String(shopifyOrderId) },
+                { name: String(shopifyOrderId) },
+                { orderNumber: String(shopifyOrderId) },
+            ],
+        }).lean();
+        const canonicalOrderId = linkedOrder
+            ? canonicalWarrantyOrderId(linkedOrder)
+            : canonicalWarrantyOrderId({ shopifyOrderId });
+
         const filter = recordId
             ? { _id: recordId, clientId }
             : {
                   clientId,
                   customerId: contact._id,
-                  shopifyOrderId: String(shopifyOrderId),
+                  shopifyOrderId: canonicalOrderId,
                   productId: String(productId || productName),
               };
 
@@ -641,7 +790,7 @@ router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
                 $set: {
                     clientId,
                     customerId: contact._id,
-                    shopifyOrderId: String(shopifyOrderId),
+                    shopifyOrderId: canonicalOrderId,
                     productId: String(productId || productName),
                     productName: String(productName),
                     purchaseDate: safePurchase,
@@ -761,11 +910,38 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
             });
         }
 
+        const productId = String(req.body.shopifyProductId || productName);
+        let linkedOrder = null;
+        if (orderId) {
+            const oid = String(orderId).trim();
+            linkedOrder = await Order.findOne({
+                clientId,
+                $or: [{ shopifyOrderId: oid }, { orderId: oid }, { name: oid }, { orderNumber: oid }],
+            }).lean();
+        }
+        const canonicalOrderId = linkedOrder
+            ? canonicalWarrantyOrderId(linkedOrder)
+            : canonicalWarrantyOrderId({ shopifyOrderId: orderId || `manual-${Date.now()}` });
+
+        const existing = await findExistingWarrantyRecord(WarrantyRecord, {
+            clientId,
+            orderInput: linkedOrder || { shopifyOrderId: canonicalOrderId, orderId },
+            productId,
+            productName,
+        });
+        if (existing) {
+            return res.status(409).json({
+                success: false,
+                message: 'Warranty already exists for this order and product.',
+                record: existing,
+            });
+        }
+
         const record = await WarrantyRecord.create({
             clientId,
             customerId: contact._id,
-            shopifyOrderId: String(orderId || `manual-${Date.now()}`),
-            productId: String(req.body.shopifyProductId || productName),
+            shopifyOrderId: canonicalOrderId,
+            productId,
             productName: String(productName),
             purchaseDate: purchase,
             expiryDate: expiry,
@@ -774,6 +950,142 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
         });
 
         return res.status(201).json({ success: true, record });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   POST /api/warranty/assign-order
+ * @desc    Assign warranty for one or more line items from a synced Shopify order
+ */
+router.post('/assign-order', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+        const { orderMongoId, shopifyOrderId, phoneNumber, purchaseDate, lineItems } = req.body || {};
+        const selectedItems = Array.isArray(lineItems)
+            ? lineItems.filter((i) => i && (i.productId || i.productName || i.title))
+            : [];
+        if (!selectedItems.length) {
+            return res.status(400).json({ success: false, message: 'Select at least one product to assign.' });
+        }
+
+        let order = null;
+        if (orderMongoId) {
+            order = await Order.findOne({ _id: orderMongoId, clientId }).lean();
+        } else if (shopifyOrderId) {
+            const oid = String(shopifyOrderId).trim();
+            order = await Order.findOne({
+                clientId,
+                $or: [{ shopifyOrderId: oid }, { orderId: oid }, { name: oid }, { orderNumber: oid }],
+            }).lean();
+        }
+
+        const canonicalOrderId = order
+            ? canonicalWarrantyOrderId(order)
+            : canonicalWarrantyOrderId({ shopifyOrderId });
+        if (!canonicalOrderId) {
+            return res.status(400).json({ success: false, message: 'Order reference is required.' });
+        }
+
+        const phoneRaw = phoneNumber || order?.customerPhone || order?.phone;
+        if (!phoneRaw) {
+            return res.status(400).json({ success: false, message: 'Customer phone is required.' });
+        }
+
+        const normalizedPhone = normalizePhone(phoneRaw);
+        const purchase = purchaseDate
+            ? new Date(purchaseDate)
+            : order?.createdAt
+              ? new Date(order.createdAt)
+              : new Date();
+        const customerName = String(order?.customerName || order?.name || 'Customer').trim();
+
+        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        if (!contact) {
+            contact = await Contact.create({
+                clientId,
+                phoneNumber: normalizedPhone,
+                name: customerName,
+            });
+        } else if (customerName && customerName !== 'Customer' && contact.name !== customerName) {
+            contact.name = customerName;
+            await contact.save();
+        }
+
+        const activeBatches = await WarrantyBatch.find({ clientId, status: 'active' }).lean();
+        const created = [];
+        const skipped = [];
+
+        for (const item of selectedItems) {
+            const productId = String(item.productId || '').trim();
+            const productName = String(item.productName || item.title || 'Product').trim();
+            if (!productId && !productName) continue;
+
+            const existing = await findExistingWarrantyRecord(WarrantyRecord, {
+                clientId,
+                orderInput: order || { shopifyOrderId: canonicalOrderId, orderId: shopifyOrderId },
+                productId,
+                productName,
+            });
+            if (existing) {
+                skipped.push({ productId: productId || productName, reason: 'already_assigned' });
+                continue;
+            }
+
+            let batch = null;
+            if (item.batchId) {
+                batch = await WarrantyBatch.findOne({ _id: item.batchId, clientId, status: 'active' });
+            }
+            if (!batch && productId) {
+                batch = findActiveBatchForProduct(activeBatches, productId, purchase);
+            }
+            if (!batch) {
+                batch = await ensureFallbackBatch(
+                    clientId,
+                    Math.max(1, Math.min(120, Number(item.durationMonths) || 12))
+                );
+            }
+
+            const months = Math.max(
+                1,
+                Math.min(
+                    120,
+                    Number(item.durationMonths) ||
+                        (productId ? durationMonthsForProduct(batch, productId) : batch.durationMonths) ||
+                        12
+                )
+            );
+            const expiry = new Date(purchase);
+            expiry.setMonth(expiry.getMonth() + months);
+
+            const record = await WarrantyRecord.create({
+                clientId,
+                customerId: contact._id,
+                shopifyOrderId: canonicalOrderId,
+                productId: productId || productName,
+                productName,
+                purchaseDate: purchase,
+                expiryDate: expiry,
+                batchId: batch._id,
+                status: 'active',
+            });
+            created.push(record);
+        }
+
+        if (!created.length) {
+            return res.status(409).json({
+                success: false,
+                message: skipped.length
+                    ? 'All selected products already have warranty coverage for this order.'
+                    : 'Nothing to assign.',
+                skipped,
+            });
+        }
+
+        return res.status(201).json({ success: true, records: created, skipped, count: created.length });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
     }
