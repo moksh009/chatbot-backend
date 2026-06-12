@@ -7,7 +7,7 @@ const IntentAnalytics = require('../models/IntentAnalytics');
 const Conversation = require('../models/Conversation');
 const path = require('path');
 const fs = require('fs');
-const { CONFIDENCE_THRESHOLD, MAX_CACHED_MODELS } = require('../utils/core/nlpConfig');
+const { CONFIDENCE_THRESHOLD, MAX_CACHED_MODELS, TRAINING_LOCK_TIMEOUT } = require('../utils/core/nlpConfig');
 
 /**
  * NlpEngineService
@@ -159,19 +159,30 @@ class NlpEngineService {
    * Get or initialize the NLP manager for a client.
    */
   async getManager(clientId) {
-    let manager = this.managers.get(clientId.toString());
+    const key = clientId.toString();
+    let manager = this.managers.get(key);
     if (manager) {
-      this.lastAccessed.set(clientId.toString(), Date.now());
+      this.lastAccessed.set(key, Date.now());
       return manager;
     }
 
-    // Try loading from disk first (BUG 5 FIX)
+    if (this.trainingLocks.has(key)) {
+      const deadline = Date.now() + TRAINING_LOCK_TIMEOUT;
+      while (this.trainingLocks.has(key) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        manager = this.managers.get(key);
+        if (manager) {
+          this.lastAccessed.set(key, Date.now());
+          return manager;
+        }
+      }
+    }
+
     manager = await this.loadFromDisk(clientId);
     if (manager) return manager;
 
-    // Train from scratch
     await this.trainClientModel(clientId);
-    return this.managers.get(clientId.toString());
+    return this.managers.get(key) || null;
   }
 
   /**
@@ -201,7 +212,19 @@ class NlpEngineService {
    */
   async simulate(clientId, text) {
     const manager = await this.getManager(clientId);
-    return await manager.process(text);
+    if (!manager) {
+      return { intent: 'None', score: 0 };
+    }
+    try {
+      const result = await manager.process(String(text || '').trim());
+      return {
+        intent: result?.intent || 'None',
+        score: typeof result?.score === 'number' ? result.score : 0,
+      };
+    } catch (err) {
+      console.error('[NLPEngine] simulate error:', err.message);
+      return { intent: 'None', score: 0 };
+    }
   }
 
   /**

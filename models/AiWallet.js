@@ -40,10 +40,13 @@ const aiWalletSchema = new mongoose.Schema(
     byoModelSelected: { type: String, default: null },
     byoKeyValidatedAt: { type: Date, default: null },
     byoKeyIsValid: { type: Boolean, default: false },
+    /** Masked preview e.g. AIza…x7K2 — safe for dashboard display */
+    byoKeyPreview: { type: String, default: null },
     byoOpenaiApiKeyEncrypted: { type: String, default: null, select: false },
     byoOpenaiModelSelected: { type: String, default: 'gpt-4o-mini' },
     byoOpenaiKeyValidatedAt: { type: Date, default: null },
     byoOpenaiKeyIsValid: { type: Boolean, default: false },
+    byoOpenaiKeyPreview: { type: String, default: null },
     totalTokensUsed: { type: Number, default: 0 },
     totalInputTokens: { type: Number, default: 0 },
     totalOutputTokens: { type: Number, default: 0 },

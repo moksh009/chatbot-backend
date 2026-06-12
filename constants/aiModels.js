@@ -1,31 +1,11 @@
 'use strict';
 
-/** Curated defaults — merged with live API lists on key validation. */
-const GEMINI_MODELS = [
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-  'gemini-1.5-pro',
-];
-
-const OPENAI_MODELS = [
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4.1-nano',
-  'gpt-4o',
-  'gpt-4o-mini',
-  'gpt-4o-2024-08-06',
-  'gpt-4-turbo',
-  'gpt-4',
-  'gpt-3.5-turbo',
-  'o1',
-  'o1-mini',
-  'o3-mini',
-];
+const {
+  GEMINI_MODELS,
+  OPENAI_MODELS,
+  filterToCuratedModels,
+  defaultModelForProvider,
+} = require('./aiModelCatalog');
 
 const OPENAI_EMBEDDING_MODELS = ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'];
 
@@ -42,6 +22,16 @@ function mergeModelLists(defaults, fetched) {
     out.push(id);
   }
   return out;
+}
+
+function curatedModelsForProvider(provider, fetched) {
+  const defaults = provider === 'openai' ? OPENAI_MODELS : GEMINI_MODELS;
+  if (provider === 'openai') {
+    const openaiMerged = mergeModelLists(defaults, filterOpenAiModelsFromApi(fetched));
+    return filterToCuratedModels('openai', openaiMerged);
+  }
+  const geminiMerged = mergeModelLists(defaults, filterGeminiModelsFromApi(fetched));
+  return filterToCuratedModels('gemini', geminiMerged);
 }
 
 function filterGeminiModelsFromApi(models) {
@@ -70,10 +60,12 @@ function filterOpenAiModelsFromApi(models) {
 function isAllowedModel(provider, model, availableList) {
   const m = String(model || '').trim();
   if (!m) return false;
-  if (Array.isArray(availableList) && availableList.includes(m)) return true;
-  if (provider === 'gemini') return /^gemini-/.test(m);
-  if (provider === 'openai') return /^(gpt-|o\d|chatgpt-)/.test(m);
-  return false;
+  const allowed = provider === 'openai' ? OPENAI_MODELS : GEMINI_MODELS;
+  if (!allowed.includes(m)) return false;
+  if (Array.isArray(availableList) && availableList.length) {
+    return availableList.includes(m);
+  }
+  return true;
 }
 
 module.exports = {
@@ -82,6 +74,9 @@ module.exports = {
   OPENAI_EMBEDDING_MODELS,
   CUSTOMER_INQUIRY_FEATURES,
   mergeModelLists,
+  curatedModelsForProvider,
+  filterToCuratedModels,
+  defaultModelForProvider,
   filterGeminiModelsFromApi,
   filterOpenAiModelsFromApi,
   isAllowedModel,

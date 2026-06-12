@@ -322,8 +322,24 @@ exports.simulateIntent = async (req, res) => {
     }
 
     console.log(`[IntentSimulator] Running sandbox test for ${clientId}: "${text}"`);
-    
-    // 1. Pass text to NLP Engine manager process
+
+    const trainedCount = await IntentRule.countDocuments({
+      clientId,
+      isActive: true,
+      'trainingPhrases.0': { $exists: true },
+    });
+
+    if (trainedCount === 0) {
+      return res.status(200).json({
+        success: true,
+        originalText: text,
+        detectedIntent: 'None',
+        confidenceScore: 0,
+        simulatedActions: [],
+        hint: 'no_intents',
+      });
+    }
+
     const simulationResult = await NlpEngineService.simulate(clientId, text);
     const { intent, score } = simulationResult;
 
@@ -397,23 +413,43 @@ Expected Structure:
     try {
       const result = await callAIJSON({
         clientId,
-        feature: 'other',
+        feature: 'intent_generation',
         prompt,
-        maxTokens: 1500,
-        temperature: 0.8,
+        maxTokens: 2048,
+        temperature: 0.55,
         fast: true,
+        bypassWalletTokenCap: true,
+        timeoutMs: 45000,
       });
       generatedData = result.data;
     } catch (aiErr) {
       if (aiErr.code === 'AI_NOT_CONFIGURED') {
         return res.status(403).json({
           success: false,
-          message: 'Configure your Gemini API key in AI Brain → AI Setup.',
+          message: 'Configure your Gemini or OpenAI API key in AI Brain → API key.',
         });
       }
-      return res.status(504).json({
+      if (aiErr.code === 'AI_TIMEOUT') {
+        return res.status(504).json({
+          success: false,
+          error: aiErr.userMessage || 'The AI provider took too long. Try again with a shorter description.',
+        });
+      }
+      if (aiErr.code === 'AI_QUOTA_EXCEEDED' || aiErr.code === 'AI_BILLING_REQUIRED') {
+        return res.status(402).json({
+          success: false,
+          error: aiErr.userMessage,
+        });
+      }
+      if (aiErr.code === 'AI_INVALID_KEY') {
+        return res.status(401).json({
+          success: false,
+          error: aiErr.userMessage,
+        });
+      }
+      return res.status(502).json({
         success: false,
-        error: 'The AI service is currently unresponsive or timed out. Please try again in a few moments.',
+        error: aiErr.userMessage || 'Could not generate training phrases. Try again.',
       });
     }
 

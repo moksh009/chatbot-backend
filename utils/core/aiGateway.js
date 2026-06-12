@@ -65,14 +65,19 @@ async function callAI({
   model = null,
   jsonMode = false,
   provider = null,
+  /** Intent gen / template batch jobs need more tokens than WhatsApp reply cap */
+  bypassWalletTokenCap = false,
+  timeoutMs = null,
 }) {
   const resolved = await resolveApiKeyForClient(clientId, { provider: provider || null });
   if (!resolved.configured) {
     throw new AiProviderError('AI_NOT_CONFIGURED', { provider: provider || resolved.provider || null });
   }
 
-  const walletMaxTokens = await getMaxOutputTokens(clientId);
-  const effectiveMaxTokens = maxTokens ? Math.min(maxTokens, walletMaxTokens) : walletMaxTokens;
+  const walletMaxTokens = bypassWalletTokenCap ? null : await getMaxOutputTokens(clientId);
+  const effectiveMaxTokens = bypassWalletTokenCap
+    ? (maxTokens || 2048)
+    : (maxTokens ? Math.min(maxTokens, walletMaxTokens) : walletMaxTokens);
 
   const activeProvider = resolved.provider;
   const activeModel = model || resolved.model;
@@ -87,6 +92,7 @@ async function callAI({
         temperature,
         model: activeModel,
         responseMimeType: jsonMode ? 'application/json' : undefined,
+        timeout: timeoutMs || undefined,
       });
     } else {
       result = await geminiGenerate(prompt, apiKey, {
@@ -97,6 +103,7 @@ async function callAI({
         model: activeModel,
         systemInstruction: systemPrompt || undefined,
         responseMimeType: jsonMode ? 'application/json' : undefined,
+        timeout: timeoutMs || undefined,
       });
     }
   } catch (err) {
@@ -180,9 +187,11 @@ async function callAIJSON(options) {
   });
   const parsed = parseJsonContent(result.content);
   if (!parsed) {
-    const err = new Error('AI_JSON_PARSE_FAILED');
-    err.code = 'AI_JSON_PARSE_FAILED';
-    throw err;
+    throw new AiProviderError('AI_EMPTY_RESPONSE', {
+      userMessage: 'The AI returned an incomplete response. Try a shorter description or try again.',
+      provider: result.provider,
+      operation: 'json_parse',
+    });
   }
   return { data: parsed, usage: result.usage, model: result.model, provider: result.provider };
 }

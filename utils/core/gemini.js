@@ -130,7 +130,7 @@ async function generateText(prompt, apiKey, options = {}) {
     const {
         maxTokens   = 1024,
         temperature = 0.7,
-        timeout     = options.fast ? AI_BOT_TIMEOUT_MS : AI_BATCH_TIMEOUT_MS,
+        timeout     = options.timeout ?? (options.fast ? AI_BOT_TIMEOUT_MS : AI_BATCH_TIMEOUT_MS),
         maxRetries  = 2,
         isPlatform  = false,
         noEnvFallback = false,
@@ -396,7 +396,7 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
     const {
         maxTokens   = 1024,
         temperature = 0.7,
-        timeout     = options.fast ? AI_BOT_TIMEOUT_MS : AI_BATCH_TIMEOUT_MS,
+        timeout     = options.timeout ?? (options.fast ? AI_BOT_TIMEOUT_MS : AI_BATCH_TIMEOUT_MS),
         maxRetries  = 2,
         isPlatform  = false,
         noEnvFallback = false,

@@ -11,9 +11,17 @@ const {
   GEMINI_MODELS,
   OPENAI_MODELS,
   CUSTOMER_INQUIRY_FEATURES,
-  mergeModelLists,
+  curatedModelsForProvider,
+  defaultModelForProvider,
   isAllowedModel,
 } = require('../../constants/aiModels');
+
+function maskApiKeyPreview(plain) {
+  const s = String(plain || '').trim();
+  if (!s || s === '••••••••') return null;
+  if (s.length <= 8) return '••••••••';
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
 
 function detectProviderFromKey(apiKey) {
   const k = String(apiKey || '').trim();
@@ -33,9 +41,9 @@ function computeMode(activeProvider, geminiOk, openaiOk) {
 
 function modelsForWallet(wallet, provider) {
   if (provider === 'openai') {
-    return mergeModelLists(OPENAI_MODELS, wallet?.cachedOpenaiModels || []);
+    return curatedModelsForProvider('openai', wallet?.cachedOpenaiModels || []);
   }
-  return mergeModelLists(GEMINI_MODELS, wallet?.cachedGeminiModels || []);
+  return curatedModelsForProvider('gemini', wallet?.cachedGeminiModels || []);
 }
 
 function sanitizeWallet(doc) {
@@ -77,6 +85,12 @@ function sanitizeWallet(doc) {
     availableOpenaiModels: openaiModels,
     availableModels: activeProvider === 'openai' ? openaiModels : geminiModels,
     selectedModel: activeProvider === 'openai' ? o.byoOpenaiModelSelected : o.byoModelSelected,
+    activeKeyPreview:
+      activeProvider === 'openai'
+        ? o.byoOpenaiKeyPreview || null
+        : o.byoKeyPreview || null,
+    geminiKeyPreview: o.byoKeyPreview || null,
+    openaiKeyPreview: o.byoOpenaiKeyPreview || null,
     updatedAt: o.updatedAt,
   };
 }
@@ -116,14 +130,16 @@ async function syncLegacyKey(clientId) {
     updates.byoApiKeyEncrypted = encrypt(legacyGemini);
     updates.byoKeyIsValid = true;
     updates.byoKeyValidatedAt = new Date();
-    updates.byoModelSelected = wallet.byoModelSelected || process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite';
+    updates.byoKeyPreview = maskApiKeyPreview(legacyGemini);
+    updates.byoModelSelected = wallet.byoModelSelected || defaultModelForProvider('gemini');
     updates.activeProvider = 'gemini';
     updates.byoProvider = 'gemini';
   } else if (legacyOpenai && !wallet.byoOpenaiKeyIsValid) {
     updates.byoOpenaiApiKeyEncrypted = encrypt(legacyOpenai);
     updates.byoOpenaiKeyIsValid = true;
     updates.byoOpenaiKeyValidatedAt = new Date();
-    updates.byoOpenaiModelSelected = wallet.byoOpenaiModelSelected || 'gpt-4o-mini';
+    updates.byoOpenaiKeyPreview = maskApiKeyPreview(legacyOpenai);
+    updates.byoOpenaiModelSelected = wallet.byoOpenaiModelSelected || defaultModelForProvider('openai');
     updates.activeProvider = 'openai';
     updates.byoProvider = 'openai';
   }
@@ -217,18 +233,18 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini', fe
 
   const key = String(apiKey).trim();
   const enc = encrypt(key);
-  const available = mergeModelLists(
-    normalizedProvider === 'openai' ? OPENAI_MODELS : GEMINI_MODELS,
-    fetchedModels
-  );
-  const defaultModel = normalizedProvider === 'openai' ? 'gpt-4o-mini' : (process.env.GEMINI_BOT_MODEL || 'gemini-2.5-flash-lite');
+  const available = curatedModelsForProvider(normalizedProvider, fetchedModels);
+  const defaultModel = defaultModelForProvider(normalizedProvider);
   const selectedModel = model && isAllowedModel(normalizedProvider, model, available) ? model : defaultModel;
+  const keyPreview = maskApiKeyPreview(key);
 
   const clearOther = {
     byoKeyIsValid: false,
     byoOpenaiKeyIsValid: false,
     byoApiKeyEncrypted: null,
     byoOpenaiApiKeyEncrypted: null,
+    byoKeyPreview: null,
+    byoOpenaiKeyPreview: null,
   };
 
   if (normalizedProvider === 'openai') {
@@ -243,6 +259,7 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini', fe
           byoOpenaiModelSelected: selectedModel,
           byoOpenaiKeyIsValid: true,
           byoOpenaiKeyValidatedAt: new Date(),
+          byoOpenaiKeyPreview: keyPreview,
           cachedOpenaiModels: available,
           mode: 'byo_openai',
           preferredProvider: 'openai',
@@ -270,6 +287,7 @@ async function saveValidatedKey(clientId, apiKey, model, provider = 'gemini', fe
           byoModelSelected: selectedModel,
           byoKeyIsValid: true,
           byoKeyValidatedAt: new Date(),
+          byoKeyPreview: keyPreview,
           cachedGeminiModels: available,
           mode: 'byo_gemini',
           preferredProvider: 'gemini',
@@ -302,6 +320,8 @@ async function removeApiKey(clientId) {
         byoOpenaiKeyIsValid: false,
         byoApiKeyEncrypted: null,
         byoOpenaiApiKeyEncrypted: null,
+        byoKeyPreview: null,
+        byoOpenaiKeyPreview: null,
         preferredProvider: 'auto',
       },
     }
@@ -364,9 +384,38 @@ async function getUsageBreakdown(clientId) {
   };
 }
 
+async function backfillKeyPreviewsIfNeeded(wallet) {
+  if (!wallet?.clientId) return wallet;
+  const needsGemini = wallet.byoKeyIsValid && !wallet.byoKeyPreview;
+  const needsOpenai = wallet.byoOpenaiKeyIsValid && !wallet.byoOpenaiKeyPreview;
+  if (!needsGemini && !needsOpenai) return wallet;
+
+  const w = await AiWallet.findOne({ clientId: wallet.clientId })
+    .select('+byoApiKeyEncrypted +byoOpenaiApiKeyEncrypted');
+  if (!w) return wallet;
+
+  const patch = {};
+  if (needsGemini && w.byoApiKeyEncrypted) {
+    try {
+      patch.byoKeyPreview = maskApiKeyPreview(decrypt(w.byoApiKeyEncrypted));
+    } catch (_) { /* noop */ }
+  }
+  if (needsOpenai && w.byoOpenaiApiKeyEncrypted) {
+    try {
+      patch.byoOpenaiKeyPreview = maskApiKeyPreview(decrypt(w.byoOpenaiApiKeyEncrypted));
+    } catch (_) { /* noop */ }
+  }
+  if (Object.keys(patch).length) {
+    await AiWallet.updateOne({ clientId: wallet.clientId }, { $set: patch });
+    return AiWallet.findOne({ clientId: wallet.clientId });
+  }
+  return wallet;
+}
+
 async function getWalletStatus(clientId) {
   await syncLegacyKey(clientId);
-  const wallet = await AiWallet.findOne({ clientId });
+  let wallet = await AiWallet.findOne({ clientId });
+  wallet = await backfillKeyPreviewsIfNeeded(wallet);
   const sanitized = sanitizeWallet(wallet);
   const usage = await getUsageBreakdown(clientId);
   return { ...sanitized, usage };
