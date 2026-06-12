@@ -98,6 +98,9 @@ function registerAllCrons() {
   const { registerShopifyTokenRefreshCron } = require('./shopifyTokenRefreshCron');
   registerShopifyTokenRefreshCron();
 
+  const { registerAdminIssueNotificationsCron } = require('./adminIssueNotificationsCron');
+  registerAdminIssueNotificationsCron();
+
   const scheduleAutoResolutionCron = require("./autoResolutionCron");
   if (typeof scheduleAutoResolutionCron === "function") scheduleAutoResolutionCron();
 

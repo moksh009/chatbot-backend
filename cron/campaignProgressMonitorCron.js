@@ -12,9 +12,33 @@ const {
 
 const STALE_TIMEOUT_HOURS = 2;
 
+async function resolveHotLeadsAudience(campaign) {
+  const AdLead = require('../models/AdLead');
+  const optQ = audienceOptQueryForCampaign(campaign);
+  const limit = Math.max(1, Number(campaign.audienceCount) || 50);
+  const leads = await AdLead.find({
+    clientId: campaign.clientId,
+    leadScore: { $gte: 60 },
+    phoneNumber: { $exists: true, $ne: '' },
+    ...optQ,
+  })
+    .sort({ leadScore: -1 })
+    .limit(limit)
+    .lean();
+  return leads.map((l) => ({
+    phone: l.phoneNumber,
+    email: l.email || '',
+    name: l.name || 'Customer',
+    _id: l._id,
+  }));
+}
+
 async function resolveAudience(campaign) {
   let phones = campaign.audience || [];
   if (phones.length) return phones;
+  if (campaign.isSmartSend) {
+    return resolveHotLeadsAudience(campaign);
+  }
   if (campaign.segmentId) {
     const Segment = require('../models/Segment');
     const AdLead = require('../models/AdLead');

@@ -28,6 +28,9 @@ const supportChatSchema = new mongoose.Schema({
     text: { type: String, default: '' },
     createdAt: { type: Date, default: Date.now },
   }],
+  rating: { type: Number, min: 1, max: 5, default: null },
+  ratingComment: { type: String, default: '' },
+  ratedAt: { type: Date, default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('SupportChat', supportChatSchema);

@@ -790,16 +790,18 @@ router.get('/:clientId/stats', protect, apiCache(60), async (req, res) => {
         timer.finish('ok');
         res.json({
             success: true,
-            globalReadRate: readRate || 32, // Weighted fallback
-            globalRevenue: revenue || 0,
-            deliveryRate: deliveryRate || 98,
+            globalReadRate: readRate,
+            globalRevenue: revenue,
+            deliveryRate: deliveryRate,
             totalSent,
             activeTemplates: (client?.syncedMetaTemplates || []).length,
-            attribution: {
-                direct: Math.round(revenue * 0.45), // 45% estimated from templates
-                organic: Math.round(revenue * 0.55),
-                roi: totalSent > 0 ? ((revenue / (totalSent * 0.8)) * 100).toFixed(1) : "0.0"
-            }
+            attribution: totalSent > 0
+              ? {
+                  direct: Math.round(revenue * 0.45),
+                  organic: Math.round(revenue * 0.55),
+                  roi: ((revenue / (totalSent * 0.8)) * 100).toFixed(1),
+                }
+              : null,
         });
 
     } catch (error) {

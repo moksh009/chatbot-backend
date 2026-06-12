@@ -96,6 +96,7 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     search,
     isImported,
     importBatchId: importBatchIdRaw,
+    inboxFilter: inboxFilterRaw,
     page: pageRaw,
     limit: limitRaw,
   } = queryParams;
@@ -136,6 +137,30 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     date.setDate(date.getDate() - parseInt(days, 10));
     query.lastMessageAt = { $gte: date };
   }
+
+  const inboxFilter = inboxFilterRaw ? String(inboxFilterRaw).trim() : '';
+  if (inboxFilter === 'assigned_to_me' && user?._id) {
+    query.assignedTo = user._id;
+  } else if (inboxFilter === 'needs_help') {
+    const helpOr = [
+      { requiresAttention: true },
+      { botStatus: 'paused' },
+      { isBotPaused: true },
+      { status: { $in: ['HUMAN_SUPPORT', 'HUMAN_TAKEOVER'] } },
+    ];
+    if (query.$or) {
+      query.$and = [{ $or: query.$or }, { $or: helpOr }];
+      delete query.$or;
+    } else {
+      query.$or = helpOr;
+    }
+  } else if (inboxFilter === 'open') {
+    query.status = { $nin: ['CLOSED', 'OPTED_OUT'] };
+  } else if (inboxFilter.startsWith('agent_')) {
+    const agentId = inboxFilter.slice('agent_'.length);
+    if (agentId) query.assignedTo = agentId;
+  }
+
   timer.checkpoint('query_built');
 
   const importBatchId =
@@ -1724,8 +1749,7 @@ router.post('/:id/upload-media', protect, upload.single('file'), async (req, res
 router.patch('/:id/labels', protect, async (req, res) => {
   try {
     const { labels } = req.body; // array of strings
-    const query = { _id: req.params.id };
-    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+    const query = conversationAccessQuery(req.params.id, req.user, tenantClientId(req));
 
     const conversation = await Conversation.findOneAndUpdate(query, { $set: { labels } }, { new: true });
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
@@ -2955,9 +2979,13 @@ router.post('/:id/resolve', protect, async (req, res) => {
             );
         } catch (err) {}
 
+        const { triggerCSAT } = require('../utils/core/csatService');
+        await triggerCSAT(conversation);
+
         const io = req.app.get('socketio');
         if (io) {
             const payload = conversation.toObject ? conversation.toObject() : conversation;
+            io.to(`client_${conversation.clientId}`).emit('conversation_resolved', payload);
             io.to(`client_${conversation.clientId}`).emit('conversation_update', payload);
             io.to(`client_${conversation.clientId}`).emit('conversationUpdated', {
                 conversationId: conversation._id,

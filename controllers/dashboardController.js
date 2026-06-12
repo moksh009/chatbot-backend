@@ -123,10 +123,12 @@ exports.getSummary = async (req, res) => {
     timer.checkpoint('summary_parallel_complete');
 
     const byKey = {};
+    const failedSections = [];
     summaryTasks.forEach((task, i) => {
       const result = settled[i];
       if (result.status === 'rejected') {
         logger.warn(`[Dashboard Summary] ${task.key} failed:`, result.reason?.message || result.reason);
+        failedSections.push(task.key);
         byKey[task.key] = null;
       } else {
         byKey[task.key] = result.value;
@@ -170,6 +172,7 @@ exports.getSummary = async (req, res) => {
         days: requestedDays,
         ...(hasCustomRange ? { start: startQuery, end: endQuery } : {}),
         generatedAt: new Date().toISOString(),
+        ...(failedSections.length ? { failedSections, partial: true } : {}),
       },
     };
     });
@@ -230,11 +233,19 @@ exports.getCartRecoveryChart = async (req, res) => {
 /**
  * Handle batch data fetching for multiple widgets in one request
  */
+function normalizeWidgetTypes(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((w) => (typeof w === 'string' ? w : w?.type))
+    .filter(Boolean);
+}
+
 exports.getBatchData = async (req, res) => {
   try {
-    const { widgets = [], days = 30 } = req.body;
-    const clientIdSlug = req.user.clientId; 
-    
+    const widgets = normalizeWidgetTypes(req.body?.widgets);
+    const days = Number(req.body?.days) || 30;
+    const clientIdSlug = tenantClientId(req) || req.user?.clientId;
+
     // Resolve actual Client document first to support both slug and ObjectId models
     const clientDoc = await Client.findOne({ clientId: clientIdSlug }).select('_id clientId').lean();
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client context lost" });

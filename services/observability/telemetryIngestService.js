@@ -38,6 +38,15 @@ function eventFingerprint(payload = {}) {
   return crypto.createHash('sha256').update(base).digest('hex').slice(0, 24);
 }
 
+function classifyErrorSeverity(kind, httpStatus) {
+  if (kind === 'error' && !httpStatus) return 'high';
+  if (httpStatus >= 500) return 'high';
+  if (httpStatus === 429) return 'medium';
+  if (kind === 'api_error') return 'low';
+  if (httpStatus >= 400) return 'low';
+  return 'medium';
+}
+
 function parseBrowser(userAgent = '') {
   const ua = String(userAgent);
   if (/Safari/i.test(ua) && !/Chrome|Chromium|CriOS/i.test(ua)) return 'safari';
@@ -83,7 +92,13 @@ async function persistEvent(raw = {}) {
     apiPath: raw.apiPath ? String(raw.apiPath).slice(0, 300) : undefined,
     userAgent: raw.userAgent ? String(raw.userAgent).slice(0, 400) : undefined,
     browser: parseBrowser(raw.userAgent),
-    metadata: raw.metadata,
+    metadata: {
+      ...(raw.metadata || {}),
+      severity: classifyErrorSeverity(raw.kind, raw.httpStatus),
+      ...(raw.kind === 'feature_click' && raw.metadata?.action
+        ? { action: String(raw.metadata.action).slice(0, 80) }
+        : {}),
+    },
     fingerprint,
   };
 
@@ -172,6 +187,24 @@ async function ingestAnalyticsEvents(user, events = [], req = {}) {
       userAgent,
       metadata: ev.metadata,
     });
+    if (kind === 'feature_click' && result.inserted) {
+      try {
+        const DailyTenantUsageCost = require('../../models/DailyTenantUsageCost');
+        const feature = ev.feature || 'dashboard';
+        const action = ev.metadata?.action || 'feature_click';
+        const dateKey = new Date().toISOString().split('T')[0];
+        await DailyTenantUsageCost.findOneAndUpdate(
+          { clientId: user.clientId, date: dateKey },
+          {
+            $inc: { [`usage.${feature}.${action}`]: 1, [`usage.${feature}._total`]: 1 },
+            $set: { lastEventAt: new Date() },
+          },
+          { upsert: true }
+        );
+      } catch {
+        /* non-fatal */
+      }
+    }
     accepted.push({ kind, ...result });
   }
 
@@ -297,6 +330,9 @@ async function getProductUsageSummary(clientId, { days = 7 } = {}) {
 
   const hasAnalyticsData = usageAgg.length > 0;
 
+  const completedCount = funnelSteps.filter((s) => s.completed).length;
+  const totalSteps = ONBOARDING_FUNNEL_STEPS.length;
+
   return {
     days: windowDays,
     hasAnalyticsData,
@@ -305,9 +341,20 @@ async function getProductUsageSummary(clientId, { days = 7 } = {}) {
     funnel: {
       steps: funnelSteps,
       dropOffStep,
-      completedCount: funnelSteps.filter((s) => s.completed).length,
-      totalSteps: ONBOARDING_FUNNEL_STEPS.length,
+      completedCount,
+      totalSteps,
+      completionRate: totalSteps ? Math.round((completedCount / totalSteps) * 100) : 0,
     },
+    errorsByKind: await ClientTelemetryEvent.aggregate([
+      {
+        $match: {
+          clientId,
+          createdAt: { $gte: since },
+          kind: { $in: ['error', 'api_failure', 'api_error', 'server_error'] },
+        },
+      },
+      { $group: { _id: '$kind', count: { $sum: 1 } } },
+    ]).then((agg) => Object.fromEntries(agg.map((r) => [r._id, r.count]))),
   };
 }
 
@@ -352,7 +399,7 @@ async function getClientHealthSummary({ hours = 24, limit = 50 } = {}) {
   const since = new Date(Date.now() - Math.min(Math.max(Number(hours) || 24, 1), 168) * 3600 * 1000);
   const match = {
     createdAt: { $gte: since },
-    kind: { $in: ['error', 'api_failure', 'server_error'] },
+    kind: { $in: ['error', 'api_failure', 'api_error', 'server_error'] },
   };
 
   const rows = await ClientTelemetryEvent.aggregate([
@@ -379,12 +426,25 @@ async function getClientHealthSummary({ hours = 24, limit = 50 } = {}) {
     .lean();
   const clientMap = Object.fromEntries(clients.map((c) => [c.clientId, c]));
 
+  const kindAgg = await ClientTelemetryEvent.aggregate([
+    { $match: match },
+    { $group: { _id: { clientId: '$clientId', kind: '$kind' }, count: { $sum: 1 } } },
+  ]);
+  const errorsByKindByClient = {};
+  for (const row of kindAgg) {
+    const cid = row._id?.clientId;
+    if (!cid) continue;
+    if (!errorsByKindByClient[cid]) errorsByKindByClient[cid] = {};
+    errorsByKindByClient[cid][row._id.kind] = row.count;
+  }
+
   return rows.map((row) => ({
     clientId: row._id,
     businessName: clientMap[row._id]?.businessName || row._id,
     shopifyDomain: clientMap[row._id]?.shopifyDomain || null,
     whatsappConnected: !!clientMap[row._id]?.whatsappConnectedAt,
     errorCount: row.errorCount,
+    errorsByKind: errorsByKindByClient[row._id] || {},
     lastErrorAt: row.lastErrorAt,
     lastMessage: row.lastMessage,
     topFeature: row.topFeature,
@@ -404,6 +464,153 @@ async function getClientTelemetryEvents(clientId, { limit = 50, hours = 72 } = {
     .lean();
 }
 
+const TELEMETRY_RANGE_CONFIG = {
+  '1h': { hours: 1, bucketMinutes: 5 },
+  '6h': { hours: 6, bucketMinutes: 30 },
+  '24h': { hours: 24, bucketMinutes: 60 },
+  '7d': { hours: 168, bucketMinutes: 360 },
+};
+
+function resolveTelemetryRange(range) {
+  return TELEMETRY_RANGE_CONFIG[range] || TELEMETRY_RANGE_CONFIG['24h'];
+}
+
+async function getTelemetryErrorTimeseries({ range = '24h', clientId } = {}) {
+  const cfg = resolveTelemetryRange(range);
+  const since = new Date(Date.now() - cfg.hours * 3600 * 1000);
+  const bucketMs = cfg.bucketMinutes * 60 * 1000;
+  const match = {
+    createdAt: { $gte: since },
+    kind: { $in: ['error', 'api_failure', 'api_error', 'server_error'] },
+  };
+  if (clientId) match.clientId = String(clientId);
+
+  const agg = await ClientTelemetryEvent.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: {
+          bucket: {
+            $toDate: {
+              $subtract: [
+                { $toLong: '$createdAt' },
+                { $mod: [{ $toLong: '$createdAt' }, bucketMs] },
+              ],
+            },
+          },
+          kind: '$kind',
+        },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { '_id.bucket': 1 } },
+  ]);
+
+  const byBucket = new Map();
+  for (const row of agg) {
+    const key = row._id.bucket.getTime();
+    if (!byBucket.has(key)) {
+      byBucket.set(key, { ts: row._id.bucket.toISOString(), total: 0, byKind: {} });
+    }
+    const pt = byBucket.get(key);
+    pt.total += row.count;
+    pt.byKind[row._id.kind] = (pt.byKind[row._id.kind] || 0) + row.count;
+  }
+
+  const points = [];
+  const start = Math.floor(since.getTime() / bucketMs) * bucketMs;
+  const end = Date.now();
+  for (let t = start; t <= end; t += bucketMs) {
+    const hit = byBucket.get(t);
+    points.push({
+      ts: new Date(t).toISOString(),
+      errors: hit?.total || 0,
+      byKind: hit?.byKind || {},
+    });
+  }
+
+  return { range, bucketMinutes: cfg.bucketMinutes, points };
+}
+
+async function getClientHealthDetail(clientId, { hours = 72 } = {}) {
+  const windowHours = Math.min(Math.max(Number(hours) || 72, 1), 168);
+  const since = new Date(Date.now() - windowHours * 3600 * 1000);
+  const errorKinds = ['error', 'api_failure', 'api_error', 'server_error'];
+
+  const Client = require('../../models/Client');
+  const [client, events, kindAgg, featureAgg, routeAgg, severityAgg, browserAgg] = await Promise.all([
+    Client.findOne({ clientId }).select('clientId businessName shopifyDomain whatsappConnectedAt phoneNumberId').lean(),
+    ClientTelemetryEvent.find({
+      clientId,
+      createdAt: { $gte: since },
+      kind: { $in: errorKinds },
+    })
+      .sort({ createdAt: -1 })
+      .limit(40)
+      .lean(),
+    ClientTelemetryEvent.aggregate([
+      { $match: { clientId, createdAt: { $gte: since }, kind: { $in: errorKinds } } },
+      { $group: { _id: '$kind', count: { $sum: 1 } } },
+    ]),
+    ClientTelemetryEvent.aggregate([
+      { $match: { clientId, createdAt: { $gte: since }, kind: { $in: errorKinds } } },
+      { $group: { _id: '$feature', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 8 },
+    ]),
+    ClientTelemetryEvent.aggregate([
+      { $match: { clientId, createdAt: { $gte: since }, kind: { $in: errorKinds } } },
+      { $group: { _id: '$route', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 8 },
+    ]),
+    ClientTelemetryEvent.aggregate([
+      { $match: { clientId, createdAt: { $gte: since }, kind: { $in: errorKinds } } },
+      { $group: { _id: '$metadata.severity', count: { $sum: 1 } } },
+    ]),
+    ClientTelemetryEvent.aggregate([
+      { $match: { clientId, createdAt: { $gte: since }, kind: { $in: errorKinds } } },
+      { $group: { _id: '$browser', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]),
+  ]);
+
+  const errorsByKind = Object.fromEntries(kindAgg.map((r) => [r._id, r.count]));
+  const totalErrors = Object.values(errorsByKind).reduce((s, n) => s + n, 0);
+
+  return {
+    clientId,
+    hours: windowHours,
+    client: client
+      ? {
+          businessName: client.businessName,
+          shopifyDomain: client.shopifyDomain,
+          whatsappConnected: !!client.whatsappConnectedAt,
+        }
+      : null,
+    totalErrors,
+    errorsByKind,
+    topFeatures: featureAgg.map((r) => ({ feature: r._id || 'unknown', count: r.count })),
+    topRoutes: routeAgg.map((r) => ({ route: r._id || 'unknown', count: r.count })),
+    bySeverity: Object.fromEntries(severityAgg.map((r) => [r._id || 'medium', r.count])),
+    byBrowser: browserAgg.map((r) => ({ browser: r._id || 'other', count: r.count })),
+    recentEvents: events.map((ev) => ({
+      _id: ev._id,
+      kind: ev.kind,
+      feature: ev.feature,
+      route: ev.route,
+      message: ev.message,
+      stack: ev.stack,
+      httpStatus: ev.httpStatus,
+      httpMethod: ev.httpMethod,
+      apiPath: ev.apiPath,
+      browser: ev.browser,
+      severity: ev.metadata?.severity || classifyErrorSeverity(ev.kind, ev.httpStatus),
+      createdAt: ev.createdAt,
+    })),
+  };
+}
+
 module.exports = {
   scrubText,
   eventFingerprint,
@@ -415,6 +622,9 @@ module.exports = {
   recordServerError,
   getClientHealthSummary,
   getClientTelemetryEvents,
+  getClientHealthDetail,
+  getTelemetryErrorTimeseries,
   getProductUsageSummary,
   resolveFunnelState,
+  TELEMETRY_RANGE_CONFIG,
 };

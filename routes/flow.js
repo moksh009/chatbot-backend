@@ -265,7 +265,9 @@ router.post('/ai-build', protect, async (req, res) => {
 });
 
 // POST /api/flow/simulate
-// Processes a simulation step on the backend without hitting WhatsApp API
+// Lightweight server step — Flow Builder studio uses FlowSimulator.jsx as the canonical
+// interactive simulator (buttons, shopify_call branches, http errors). This route is optional
+// for headless/API clients only (FB-P2-03).
 router.post('/simulate', protect, async (req, res) => {
   try {
     const { flowId, currentNodeId, userInput, variables, nodes, edges } = req.body;
@@ -496,16 +498,42 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 
     const historyRecord = await FlowHistory.findById(versionId);
     if (!historyRecord) return res.status(404).json({ success: false, message: 'History record not found' });
+    if (String(historyRecord.clientId) !== String(clientId)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    if (String(historyRecord.flowId) !== String(flowId)) {
+      return res.status(400).json({ success: false, message: 'Version does not belong to this flow' });
+    }
 
     const flow = await WhatsAppFlow.findOne({ clientId, flowId });
     if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
 
-    // Rollback published state (doesn't affect current draft automatically unless desired)
+    // Rollback published state (draft canvas unchanged; runtime graph restored)
     flow.publishedNodes = historyRecord.nodes;
     flow.publishedEdges = historyRecord.edges;
     flow.lastSyncedAt = Date.now();
-    
     await flow.save();
+
+    const client = await Client.findOne({ clientId });
+    if (client) {
+      const { syncClientFlowGraphStores } = require('../services/flowPublishService');
+      await syncClientFlowGraphStores(client, flow, {
+        draftNodes: flow.nodes || [],
+        draftEdges: flow.edges || [],
+        publishedNodes: flow.publishedNodes,
+        publishedEdges: flow.publishedEdges,
+        demoteOtherFlows: false,
+      });
+      await client.save();
+      const { clearClientCache, invalidateClientCache } = require('../utils/core/clientCache');
+      const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
+      const { clearTriggerCache } = require('../utils/flow/triggerEngine');
+      clearTriggerCache(clientId);
+      await clearClientCache(clientId);
+      invalidateClientCache(clientId);
+      invalidateFlowGraphCache(clientId, flowId);
+    }
+
     res.json({ success: true, message: `Rolled back to version ${historyRecord.version}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -658,6 +686,14 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
         }
       }
 
+      const doc = dbFlows.find((d) => d.flowId === f.id);
+      const vf = (client.visualFlows || []).find((v) => v.id === f.id);
+      const docNodeLen = Array.isArray(doc?.nodes) ? doc.nodes.length : 0;
+      const vfNodeLen = Array.isArray(vf?.nodes) ? vf.nodes.length : 0;
+      if (doc && vf && docNodeLen > 0 && vfNodeLen > 0 && docNodeLen !== vfNodeLen) {
+        row.storageDrift = true;
+      }
+
       formattedFlows.push(row);
     }
 
@@ -706,6 +742,26 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
     });
 
     await clone.save();
+
+    await Client.updateOne(
+      { clientId },
+      {
+        $push: {
+          visualFlows: {
+            id: newFlowId,
+            name: clone.name,
+            platform: clone.platform || 'whatsapp',
+            folderId: clone.folderId || '',
+            isActive: false,
+            nodes: clone.nodes || [],
+            edges: clone.edges || [],
+            createdAt: clone.createdAt || new Date(),
+            updatedAt: new Date(),
+          },
+        },
+      }
+    );
+
     await clearClientCache(clientId);
     res.json({
       success: true,
@@ -967,19 +1023,49 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    // Extract visitCount from flowNodes
-    // flowNodes array where each node has { id, data: { visitCount } }
+    const FlowAnalytics = require('../models/FlowAnalytics');
+    const flowId = req.query.flowId ? String(req.query.flowId) : null;
+    const windowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const matchQuery = { clientId, timestamp: { $gte: windowStart } };
+    if (flowId) matchQuery.flowId = flowId;
+
+    const nodeAgg = await FlowAnalytics.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$nodeId',
+          entries: { $sum: { $cond: [{ $eq: ['$action', 'entry'] }, 1, 0] } },
+        },
+      },
+    ]);
+
+    if (nodeAgg.length > 0) {
+      return res.json({
+        success: true,
+        source: 'FlowAnalytics',
+        nodes: nodeAgg.map((row) => ({
+          id: row._id,
+          visitCount: row.entries || 0,
+          dropOffRate: 0,
+        })),
+        edges: [],
+      });
+    }
+
+    // Legacy fallback — runtime graph visitCount on Client.flowNodes
     const nodes = client.flowNodes || [];
-    const nodeAnalytics = nodes.map(node => ({
+    const nodeAnalytics = nodes.map((node) => ({
       id: node.id,
       visitCount: node.data?.visitCount || 0,
-      dropOffRate: 0 // Will compute if requested
+      dropOffRate: 0,
     }));
 
-    // In a real implementation we would also analyze flowEdges for traffic %
-    const edges = client.flowEdges || [];
-    
-    res.json({ success: true, nodes: nodeAnalytics, edges });
+    res.json({
+      success: true,
+      source: 'flowNodes',
+      nodes: nodeAnalytics,
+      edges: client.flowEdges || [],
+    });
   } catch (error) {
     console.error('Flow Analytics error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -1018,31 +1104,39 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
       return { unansweredQuestions };
     });
 
-    // 3. Generate AI Suggested Fixes
-    // In a real scenario, we'd pipe the unansweredQuestions to Gemini here.
-    // For now, we'll return robust placeholders that the UI can interact with.
-    const aiSuggestions = [
-      { 
-        id: 'sugg_refunds', 
-        name: 'Refund & Order Status Flow', 
-        description: 'Frequent queries detected regarding refund timelines and order tracking failures.', 
-        suggestedNodes: 4,
-        impactScore: 85
-      },
-      { 
-        id: 'sugg_shipping', 
-        name: 'Logistics Partnership FAQ', 
-        description: 'Users are asking about which courier partners you use for specific zones.', 
+    const stopWords = new Set([
+      'what', 'when', 'where', 'how', 'does', 'your', 'this', 'that', 'have',
+      'the', 'and', 'for', 'are', 'you', 'can', 'will', 'with', 'from', 'about', 'please', 'help', 'want',
+    ]);
+    const wordFreq = {};
+    (payload.unansweredQuestions || []).forEach((row) => {
+      String(row.query || '')
+        .toLowerCase()
+        .split(/\s+/)
+        .forEach((word) => {
+          if (word.length > 3 && !stopWords.has(word)) {
+            wordFreq[word] = (wordFreq[word] || 0) + 1;
+          }
+        });
+    });
+    const aiSuggestions = Object.entries(wordFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .filter(([, count]) => count >= 2)
+      .map(([word, count]) => ({
+        id: `sugg_${word}`,
+        name: `${word.charAt(0).toUpperCase()}${word.slice(1)} inquiries`,
+        description: `${count} unanswered messages mentioned "${word}" — consider a dedicated flow.`,
         suggestedNodes: 2,
-        impactScore: 40
-      }
-    ];
+        impactScore: Math.min(95, count * 12),
+      }));
 
     res.json({
       success: true,
       unansweredQuestions: payload.unansweredQuestions,
       agentCorrections: [],
-      aiSuggestions
+      aiSuggestions,
+      meta: { derivedFromLiveQueries: aiSuggestions.length > 0 },
     });
     timer.finish(`200 ok | unanswered=${payload.unansweredQuestions?.length ?? 0}`);
 

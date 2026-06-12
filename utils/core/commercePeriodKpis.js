@@ -1,5 +1,13 @@
 'use strict';
 
+/**
+ * Commerce period KPIs — canonical sources (AN-P1-03):
+ * - Store revenue / orders: reconciled DailyStat + live Orders + timeline
+ * - Cart revenue INR: DailyStat.cartRevenueRecovered
+ * - Carts recovered count: CartRecoveryAttempt (getRecoveryTotalsFromAttempts)
+ * - Recovery messages: DailyStat.cartRecoveryMessagesSent (fallback abandonedCartSent)
+ */
+
 const DailyStat = require('../../models/DailyStat');
 const { istDateRangeStrings, startOfDayForDateStrIST, istDateOffsetDays } = require('./queryHelpers');
 const Order = require('../../models/Order');
@@ -100,12 +108,23 @@ async function buildPriorCommercePeriodKpis(clientId, daysInput, opts = {}) {
   } else {
     ({ start, end, days } = priorDateRangeStrings(daysInput));
   }
+  const { endOfDayForDateStrIST } = require('./queryHelpers');
   const startDate = startOfDayForDateStrIST(start);
-  const [dailyKpis, liveOrders] = await Promise.all([
+  const endDate = endOfDayForDateStrIST(end);
+  const [dailyKpis, liveOrders, attemptTotals] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
-    aggregateLiveOrdersForRange(clientId, startDate),
+    aggregateLiveOrdersForRange(clientId, startDate, endDate),
+    require('../commerce/cartRecoveryAttemptService')
+      .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
+      .catch(() => null),
   ]);
   const kpis = reconcileKpis({}, dailyKpis, liveOrders);
+  if (attemptTotals?.recoveredCarts != null) {
+    kpis.cartsRecovered = Number(attemptTotals.recoveredCarts) || 0;
+  }
+  const msgDenom = kpis.cartRecoveryMessagesSent || kpis.abandonedCartSent || 0;
+  kpis.cartRecoveryRate =
+    msgDenom > 0 ? Math.round((kpis.cartsRecovered / msgDenom) * 100) : 0;
   return { ...kpis, days, startDate: start, endDate: end, source: 'prior_reconciled' };
 }
 
@@ -186,9 +205,11 @@ async function aggregateDailyStatKpis(clientId, startDateStr, endDateStr) {
   };
 }
 
-async function aggregateLiveOrdersForRange(clientId, startDate) {
+async function aggregateLiveOrdersForRange(clientId, startDate, endDate = null) {
+  const createdAt = { $gte: startDate };
+  if (endDate) createdAt.$lte = endDate;
   const agg = await Order.aggregate([
-    { $match: { clientId, createdAt: { $gte: startDate } } },
+    { $match: { clientId, createdAt } },
     {
       $addFields: {
         orderUnits: {
@@ -308,13 +329,27 @@ async function buildCommercePeriodKpis(opts) {
   }
   const startDate = startOfDayForDateStrIST(start);
 
-  const [dailyKpis, liveOrders] = await Promise.all([
+  const { endOfDayForDateStrIST } = require('./queryHelpers');
+  const endDate = endOfDayForDateStrIST(end);
+
+  const [dailyKpis, liveOrders, attemptTotals] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
-    aggregateLiveOrdersForRange(clientId, startDate),
+    aggregateLiveOrdersForRange(clientId, startDate, endDate),
+    require('../commerce/cartRecoveryAttemptService')
+      .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
+      .catch(() => null),
   ]);
 
   const timelineKpis = sumTimelineKpis(timeline || []);
   const kpis = reconcileKpis(timelineKpis, dailyKpis, liveOrders);
+
+  // Canonical cart recovery counts — CartRecoveryAttempt (same as recovered-summary + cart workspace).
+  if (attemptTotals?.recoveredCarts != null) {
+    kpis.cartsRecovered = Number(attemptTotals.recoveredCarts) || 0;
+  }
+  const msgDenom = kpis.cartRecoveryMessagesSent || kpis.abandonedCartSent || 0;
+  kpis.cartRecoveryRate =
+    msgDenom > 0 ? Math.round((kpis.cartsRecovered / msgDenom) * 100) : 0;
 
   return {
     ...kpis,

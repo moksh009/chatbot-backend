@@ -4,10 +4,33 @@ const SupportChat = require('../models/SupportChat');
 const Notification = require('../models/Notification');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { generateText } = require('../utils/core/gemini');
+const { generateSupportReply } = require('../services/supportAI');
 const { sendEmail } = require('../utils/core/emailService');
 
-const { buildDocsContextForPrompt, appendDocLinks } = require('../constants/docsKnowledgeBase');
+const { appendDocLinks, buildDocsContextForPrompt } = require('../constants/docsKnowledgeBase');
+const { emitAdminNotification } = require('../utils/admin/emitAdminNotification');
+
+function isSupportAdmin(req) {
+  if (req.user?.role === 'SUPER_ADMIN') return true;
+  if (!req.user?.isAdminTeam) return false;
+  const p = req.user.permissions || {};
+  return !!(p.viewSupportChats || p.replySupportChats || p.takeoverChats);
+}
+
+function canReplySupport(req) {
+  if (req.user?.role === 'SUPER_ADMIN') return true;
+  if (!req.user?.isAdminTeam) return false;
+  const p = req.user.permissions || {};
+  return !!(p.replySupportChats || p.takeoverChats);
+}
+
+function supportScopeQuery(req) {
+  if (req.user?.role === 'SUPER_ADMIN') return {};
+  if (req.user?.isAdminTeam && req.user.allowedClientIds?.length) {
+    return { clientId: { $in: req.user.allowedClientIds } };
+  }
+  return {};
+}
 
 const SUPPORT_PROMPT = `
 You are Oli — TopEdge AI success coach for Indian ecommerce teams using our WhatsApp automation dashboard.
@@ -168,7 +191,7 @@ router.post('/:id/read_user', protect, async (req, res) => {
 
 // Mark support chat as read by admin (clears admin unread badge)
 router.post('/:id/read_admin', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
@@ -217,34 +240,32 @@ router.post('/message', protect, async (req, res) => {
       chat.messages.push({ sender: 'ai', text: 'I understand you\'d like to speak with a human expert. I\'m connecting you now!' });
       
       // Create a System Notification for Super Admins
-      await Notification.create({
+      const notif = await Notification.create({
         clientId: 'TOPEDGE_ADMIN',
+        audience: 'super_admin',
         title: 'Support Handoff Triggered',
         message: `${chat.clientName} requested human assistance via AI detection.`,
-        type: 'system',
-        metadata: { chatId: chat._id, clientId: req.user.clientId }
+        type: 'support_handoff',
+        metadata: { chatId: chat._id, clientId: req.user.clientId },
       });
+      emitAdminNotification(notif);
     } else if (chat.status === 'active') {
-      // Only generate AI response if status is active
-      const history = chat.messages.map(m => `${m.sender.toUpperCase()}: ${m.text}${m.imageUrl ? ` [image: ${m.imageUrl}]` : ''}`).join('\n');
-      const client = await Client.findOne({ clientId: req.user.clientId }).select('businessName businessType platformVars wizardFeatures activeConfig');
-      const bizCtx = client ? `
-BUSINESS CONTEXT:
-- Name: ${client.businessName || 'Unknown'}
-- Type: ${client.businessType || 'general'}
-- Support Email: ${client.platformVars?.supportEmail || 'not set'}
-- WhatsApp Connected: ${client.activeConfig?.whatsappConnected ? 'yes' : 'no'}
-` : '';
-      const imageHint = hasImage
-        ? '\nThe user attached an image. If the image cannot be analyzed directly, acknowledge it and ask one precise follow-up question to proceed.'
-        : '';
-      const prompt = `${SUPPORT_PROMPT}\n${bizCtx}${imageHint}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
-      
-      const genOpts = { isPlatform: true, maxTokens: 768, temperature: 0.55 };
-      let aiResponse = await generateText(prompt, null, genOpts);
+      const client = await Client.findOne({ clientId: req.user.clientId }).lean();
+      const priorMessages = chat.messages.map((m) => ({
+        sender: m.sender,
+        text: `${m.text || ''}${m.imageUrl ? ' [image attached]' : ''}`,
+      }));
+      let aiResponse = await generateSupportReply({
+        client: client || {},
+        message: hasImage ? `${userText || ''} [User attached an image]` : userText,
+        priorMessages,
+      });
       if (looksIncompleteSupportReply(aiResponse)) {
-        const retryPrompt = `${prompt}\n\nYour previous reply was cut off before finishing the steps. Reply again with the FULL answer — complete every numbered step.`;
-        const retry = await generateText(retryPrompt, null, genOpts);
+        const retry = await generateSupportReply({
+          client: client || {},
+          message: `${userText}\n\n(Previous reply was incomplete — provide the full numbered steps.)`,
+          priorMessages,
+        });
         if (retry && !looksIncompleteSupportReply(retry)) aiResponse = retry;
       }
       const replyText = appendDocLinks(formatSupportReply(aiResponse), userText);
@@ -280,13 +301,15 @@ router.post('/handoff', protect, async (req, res) => {
     await chat.save();
 
     // Create a System Notification for Super Admins
-    await Notification.create({
+    const notif = await Notification.create({
       clientId: 'TOPEDGE_ADMIN',
+      audience: 'super_admin',
       title: 'Support Handoff Required',
       message: `${chat.clientName} requires human assistance in dashboard support.`,
-      type: 'system',
-      metadata: { chatId: chat._id, clientId: req.user.clientId }
+      type: 'support_handoff',
+      metadata: { chatId: chat._id, clientId: req.user.clientId },
     });
+    emitAdminNotification(notif);
 
     const io = req.app.get('socketio');
     if (io) {
@@ -302,9 +325,9 @@ router.post('/handoff', protect, async (req, res) => {
 
 // Super Admin: Get all support chats
 router.get('/all', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
-    const chats = await SupportChat.find().sort({ lastMessageAt: -1 }).limit(50);
+    const chats = await SupportChat.find(supportScopeQuery(req)).sort({ lastMessageAt: -1 }).limit(50);
     res.json(chats);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -313,7 +336,7 @@ router.get('/all', protect, async (req, res) => {
 
 // Admin Reply
 router.post('/:id/reply', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!canReplySupport(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
     const { text, sendEmailCopy = true, emailSubject } = req.body;
     const chat = await SupportChat.findById(req.params.id);
@@ -407,7 +430,7 @@ router.post('/:id/reply', protect, async (req, res) => {
 
 // Admin: Take over conversation (human control, AI paused)
 router.post('/:id/takeover', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
@@ -437,7 +460,7 @@ router.post('/:id/takeover', protect, async (req, res) => {
 
 // Admin: Release to AI
 router.post('/:id/release', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
@@ -475,7 +498,7 @@ router.post('/:id/release', protect, async (req, res) => {
 
 // Admin: Resolve Chat
 router.post('/:id/resolve', protect, async (req, res) => {
-  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
@@ -492,6 +515,28 @@ router.post('/:id/resolve', protect, async (req, res) => {
     }
 
     res.json(chat);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.post('/:id/rating', protect, async (req, res) => {
+  try {
+    const rating = Number(req.body?.rating);
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'Rating must be between 1 and 5' });
+    }
+    const chat = await SupportChat.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId,
+      status: 'resolved',
+    });
+    if (!chat) return res.status(404).json({ message: 'Resolved chat not found' });
+    chat.rating = rating;
+    chat.ratingComment = String(req.body?.comment || '').slice(0, 500);
+    chat.ratedAt = new Date();
+    await chat.save();
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

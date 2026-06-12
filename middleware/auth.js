@@ -20,6 +20,27 @@ const protect = async (req, res, next) => {
       }
       const decoded = jwt.verify(token, jwtSecret);
 
+      if (decoded.type === 'admin_team' && decoded.adminMemberId) {
+        const AdminTeamMember = require('../models/AdminTeamMember');
+        const member = await AdminTeamMember.findById(decoded.adminMemberId).lean();
+        if (!member || !member.isActive) {
+          return res.status(401).json({ message: 'Not authorized, admin account inactive' });
+        }
+        req.user = {
+          _id: member._id,
+          id: String(member._id),
+          email: member.email,
+          name: member.name,
+          role: 'ADMIN_TEAM',
+          isAdminTeam: true,
+          adminMemberId: member._id,
+          adminRole: member.role,
+          permissions: member.permissions || {},
+          allowedClientIds: member.allowedClientIds || [],
+        };
+        return next();
+      }
+
       req.user = await User.findById(decoded.id).select('-password').maxTimeMS(8000);
       if (!req.user) {
           return res.status(401).json({ message: 'Not authorized, user not found' });

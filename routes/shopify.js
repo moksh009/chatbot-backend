@@ -23,6 +23,11 @@ const internalOrProtect = (req, res, next) => {
   return protect(req, res, next);
 };
 
+const internalOrTenantAccess = (req, res, next) => {
+  if (req.headers.authorization === 'Bearer INTERNAL_SYNC') return next();
+  return verifyClientAccess(req, res, next);
+};
+
 async function registerWebhooks(shopDomain, accessToken, clientId, grantedScopesStr) {
   const effectiveScopes = expandImpliedScopes(parseShopifyScopes(grantedScopesStr || ''));
   const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
@@ -71,7 +76,7 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 });
 
 // POST /api/shopify/:clientId/sync-products
-router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
+router.post('/:clientId/sync-products', internalOrProtect, internalOrTenantAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
     const { syncNicheDataProducts } = require('../utils/shopify/shopifyNicheProductSync');
@@ -112,7 +117,7 @@ router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
 });
 
 // POST /api/shopify/:clientId/sync-orders
-router.post('/:clientId/sync-orders', internalOrProtect, async (req, res) => {
+router.post('/:clientId/sync-orders', internalOrProtect, internalOrTenantAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
 

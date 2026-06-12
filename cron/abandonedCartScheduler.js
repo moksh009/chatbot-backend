@@ -503,7 +503,7 @@ async function runAbandonedCartTick() {
                      *  on step 0 so the next 5-min tick retries cleanly. */
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 1,
-                        templateName: tplForSlot('followup_1', niche.abandonedTpl15m),
+                        templateName: tplForSlot('followup_1', 'cart_recovery_1'),
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
@@ -551,7 +551,7 @@ async function runAbandonedCartTick() {
 
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 2,
-                        templateName: tplForSlot('followup_2', niche.abandonedTpl2h),
+                        templateName: tplForSlot('followup_2', 'cart_recovery_2'),
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
@@ -600,7 +600,7 @@ async function runAbandonedCartTick() {
                     
                     let discountCode = "";
                     let msg = (niche.abandonedMsg24h || niche.abandonedMsg3 || "Final call! Your cart is about to expire. 🛒").replace(/{name}/g, lead.name || 'there');
-                    let templateName = tplForSlot('followup_3', niche.abandonedTpl24h || niche.abandonedTplFinal);
+                    let templateName = tplForSlot('followup_3', 'cart_recovery_3');
 
                     if (flowConfig.discountEnabled && client.storeType === 'shopify') {
                         try {

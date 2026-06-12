@@ -22,9 +22,21 @@ const PATH_RESOURCE_RULES = [
 
 function inferScopeOpts(req) {
   const path = req.originalUrl || req.baseUrl + req.path || req.path || '';
-  if (CAMPAIGN_CLIENT_SCOPED.test(path.split('?')[0])) {
+  const pathOnly = path.split('?')[0];
+
+  if (CAMPAIGN_CLIENT_SCOPED.test(pathOnly)) {
     return {};
   }
+
+  // Inbox :id routes — channel-aware (IG vs WA model) for verifyTenantScope
+  if (/^\/api\/inbox\/conversations\/[^/]+/i.test(pathOnly)) {
+    const channel = String(req.query?.channel || req.body?.channel || '').toLowerCase();
+    if (channel === 'instagram') {
+      return { lookupBy: 'igConversation', param: 'id' };
+    }
+    return { lookupBy: 'conversation', param: 'id' };
+  }
+
   for (const rule of PATH_RESOURCE_RULES) {
     if (rule.pattern.test(path)) {
       return { lookupBy: rule.lookupBy, param: rule.param };

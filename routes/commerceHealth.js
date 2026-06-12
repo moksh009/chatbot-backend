@@ -23,7 +23,7 @@ function staleDays(date, thresholdDays = 7) {
 router.get('/:clientId/health', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'super-admin') {
+    if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'SUPER_ADMIN') {
       return res.status(403).json({ success: false, message: 'Forbidden' });
     }
 

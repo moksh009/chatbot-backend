@@ -17,16 +17,20 @@ function requireSmartRulesEnabled(req, res, next) {
 
 router.use(requireSmartRulesEnabled);
 
+function resolveBehaviorRules(client) {
+    return (client?.behaviorRules?.length ? client.behaviorRules : null) ?? client?.automationRules ?? [];
+}
+
 async function runRuleTest(req, res, clientId) {
     const message = String(req.body.message || '').trim();
     const simulateFirstMessage = req.body.simulateFirstMessage === true;
-    const client = await Client.findOne({ clientId }).select('automationRules').lean();
+    const client = await Client.findOne({ clientId }).select('automationRules behaviorRules').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const evalContext = {
         _inboundCountPostSave: simulateFirstMessage ? 1 : 2,
     };
-    const matched = findMatchingRule(client.automationRules || [], message, evalContext);
+    const matched = findMatchingRule(resolveBehaviorRules(client), message, evalContext);
     return res.json({
         success: true,
         matched: matched
@@ -85,7 +89,7 @@ router.put('/:clientId', protect, async (req, res) => {
 
         const client = await Client.findOneAndUpdate(
             { clientId },
-            { $set: { automationRules: rules } },
+            { $set: { automationRules: rules, behaviorRules: rules } },
             { new: true }
         ).select('automationRules');
 
@@ -122,6 +126,7 @@ router.patch('/:clientId/:ruleId/toggle', protect, async (req, res) => {
         }
 
         client.automationRules = newRules;
+        client.behaviorRules = newRules;
         await client.save();
 
         res.json({ success: true, rules: client.automationRules });
@@ -155,7 +160,9 @@ router.delete('/:clientId/:ruleId', protect, async (req, res) => {
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-        client.automationRules = (client.automationRules || []).filter(r => r.id !== ruleId);
+        const nextRules = (client.automationRules || []).filter(r => r.id !== ruleId);
+        client.automationRules = nextRules;
+        client.behaviorRules = nextRules;
         await client.save();
 
         res.json({ success: true, rules: client.automationRules });

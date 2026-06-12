@@ -46,8 +46,13 @@ router.get('/flows', protect, dashboardController.getFlows);
 router.post('/export-pdf', protect, async (req, res) => {
   try {
     const { generateDashboardPDF } = require('../utils/core/pdfExporter');
+    const { tenantClientId } = require('../utils/core/queryHelpers');
     const { widgetIds, period, data } = req.body;
-    const client = await require('../models/Client').findOne({ clientId: req.user.clientId }).lean();
+    const effectiveClientId = tenantClientId(req);
+    if (!effectiveClientId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+    const client = await require('../models/Client').findOne({ clientId: effectiveClientId }).lean();
     
     if (!client) return res.status(404).json({ message: "Client not found" });
 

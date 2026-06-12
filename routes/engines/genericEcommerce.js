@@ -969,7 +969,13 @@ const getClientOrders = async (req, res) => {
         const result = await dedupeAsync(dedupeKey, async () => {
             const tab = statusTab || req.query.statusTab || 'All';
             const needsTabFilter = String(tab).toLowerCase() !== 'all';
-            const fetchLimit = needsTabFilter ? 15000 : Math.min(15000, Math.max(limit * page + limit, 500));
+            const tabFilterMaxFetch = Math.min(
+                15000,
+                Math.max(500, parseInt(process.env.ORDERS_TAB_FILTER_MAX_FETCH, 10) || 5000)
+            );
+            const fetchLimit = needsTabFilter
+                ? tabFilterMaxFetch
+                : Math.min(15000, Math.max(limit * page + limit, 500));
             const raw = await timer.time('Order.find', () => {
                 const q = Order.find(mongoQuery).sort({ createdAt: -1 }).limit(fetchLimit).lean();
                 if (mongoQuery.clientId) {
@@ -979,8 +985,11 @@ const getClientOrders = async (req, res) => {
             });
             let list = dedupeOrdersByShopifyKey(raw);
             list = filterOrdersByStatusTab(list, tab);
+            const tabFilterTruncated = needsTabFilter && raw.length >= fetchLimit;
             const dbCount = await Order.countDocuments(mongoQuery);
-            const total = Math.max(list.length, needsTabFilter ? list.length : dbCount);
+            const total = needsTabFilter
+                ? list.length
+                : Math.max(list.length, dbCount);
             const totalPages = Math.max(1, Math.ceil(total / limit));
             const safePage = Math.min(page, totalPages);
             const start = (safePage - 1) * limit;
@@ -990,7 +999,8 @@ const getClientOrders = async (req, res) => {
                 cartValue: computeOrderCartValue(order),
             }));
             const orders = await enrichOrdersLineItemImages(clientConfig.clientId, pageSlice);
-            return { orders, total, page: safePage, limit, totalPages };
+            const meta = tabFilterTruncated ? { tabFilterTruncated: true, tabFilterMaxFetch: fetchLimit } : undefined;
+            return { orders, total, page: safePage, limit, totalPages, meta };
         });
 
         res.json({ success: true, ...result });

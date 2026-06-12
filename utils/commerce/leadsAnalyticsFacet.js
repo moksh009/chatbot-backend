@@ -32,7 +32,31 @@ const LEAD_LIST_PROJECTION = {
   inboundMessageCount: 1,
 };
 
-function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen, importBatchId, optStatus, hasPhone }) {
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function applyLeadScoreStage(query, stage) {
+  const s = String(stage || '').toLowerCase();
+  if (!s) return;
+  const existing = query.leadScore && typeof query.leadScore === 'object' ? { ...query.leadScore } : {};
+  if (s === 'hot') {
+    query.leadScore = { ...existing, $gte: Math.max(existing.$gte ?? 0, 80) };
+  } else if (s === 'warm') {
+    query.leadScore = {
+      ...existing,
+      $gte: Math.max(existing.$gte ?? 0, 50),
+      $lt: existing.$lt != null ? Math.min(existing.$lt, 80) : 80,
+    };
+  } else if (s === 'cold') {
+    query.leadScore = { ...existing, $lt: existing.$lt != null ? Math.min(existing.$lt, 50) : 50 };
+  }
+}
+
+function buildLeadsListQuery(
+  clientId,
+  { search, tag, segmentScore, lastSeen, importBatchId, optStatus, hasPhone, source, stage, engagement, convStatus }
+) {
   const query = { clientId };
   if (importBatchId) {
     query.importBatchId = importBatchId;
@@ -48,12 +72,48 @@ function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen, im
   }
   if (search) {
     const searchRegex = new RegExp(search, 'i');
-    query.$or = [{ name: searchRegex }, { phoneNumber: searchRegex }, { email: searchRegex }];
+    query.$and = (query.$and || []).concat([
+      { $or: [{ name: searchRegex }, { phoneNumber: searchRegex }, { email: searchRegex }] },
+    ]);
   }
   if (tag) query.tags = tag;
+  if (source) {
+    query.source = { $regex: new RegExp(`^${escapeRegex(source)}$`, 'i') };
+  }
   if (segmentScore) {
     const [min, max] = segmentScore.split('-').map(Number);
     if (!Number.isNaN(min) && !Number.isNaN(max)) query.leadScore = { $gte: min, $lte: max };
+  }
+  applyLeadScoreStage(query, stage);
+  const engagementKey = String(engagement || '').toLowerCase();
+  if (engagementKey === 'high') {
+    query.linkClicks = { $gt: 5 };
+  } else if (engagementKey === 'medium') {
+    query.linkClicks = { $gte: 1, $lte: 5 };
+  } else if (engagementKey === 'low') {
+    query.$and = (query.$and || []).concat([
+      { $or: [{ linkClicks: { $exists: false } }, { linkClicks: 0 }] },
+    ]);
+  }
+  const convKey = String(convStatus || '').toLowerCase();
+  if (convKey === 'has_conv') {
+    query.$and = (query.$and || []).concat([
+      {
+        $or: [
+          { chatSummary: { $exists: true, $nin: [null, ''] } },
+          { lastMessageContent: { $exists: true, $nin: [null, ''] } },
+        ],
+      },
+    ]);
+  } else if (convKey === 'no_conv') {
+    query.$and = (query.$and || []).concat([
+      {
+        $and: [
+          { $or: [{ chatSummary: { $exists: false } }, { chatSummary: null }, { chatSummary: '' }] },
+          { $or: [{ lastMessageContent: { $exists: false } }, { lastMessageContent: null }, { lastMessageContent: '' }] },
+        ],
+      },
+    ]);
   }
   if (lastSeen) {
     const days =
@@ -123,6 +183,10 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     importBatchId = null,
     optStatus,
     hasPhone,
+    source,
+    stage,
+    engagement,
+    convStatus,
   } = opts;
 
   const pageNum = parseInt(page, 10) || 1;
@@ -136,6 +200,10 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     importBatchId,
     optStatus,
     hasPhone,
+    source,
+    stage,
+    engagement,
+    convStatus,
   });
 
   const dayStart = new Date();

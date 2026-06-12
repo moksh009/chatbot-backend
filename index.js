@@ -262,9 +262,9 @@ app.use('/api/flows', flowRoutes);
 
 const aiRoutes = require('./routes/ai');
 app.use('/api/ai', aiRoutes);
-app.use('/api/ai-wallet', require('./routes/aiWallet'));
-app.use('/api/knowledge', require('./routes/knowledge'));
-app.use('/api/ai-brain', require('./routes/aiBrain'));
+app.use('/api/ai-wallet', aiLimiter, require('./routes/aiWallet'));
+app.use('/api/knowledge', aiLimiter, require('./routes/knowledge'));
+app.use('/api/ai-brain', aiLimiter, require('./routes/aiBrain'));
 
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
@@ -316,7 +316,11 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 // Specific channel webhooks
 // (Instagram now handled inside dynamicClientRouter)
 
-app.use('/api/admin', adminRoutes); // Super Admin Route Registration
+const { adminImpersonationAudit } = require('./middleware/adminImpersonationAudit');
+const { adminApiLimiter } = require('./middleware/adminRateLimits');
+app.use('/api/admin', adminApiLimiter, adminImpersonationAudit, adminRoutes); // Super Admin Route Registration
+app.use('/api/admin/auth', require('./routes/adminAuth'));
+app.use('/api/admin/notifications', require('./routes/adminNotifications'));
 app.use('/api/telemetry', require('./routes/telemetry'));
 app.use('/api/templates', templatesRoutes);
 app.use('/api/meta-templates', require('./routes/metaTemplates'));

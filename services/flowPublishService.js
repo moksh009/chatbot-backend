@@ -82,6 +82,19 @@ async function publishFlowForClient({
   flow.lastSyncedAt = Date.now();
   await flow.save();
 
+  // Single active published flow per tenant — demote others server-side
+  await WhatsAppFlow.updateMany(
+    { clientId, flowId: { $ne: flow.flowId }, status: 'PUBLISHED' },
+    { $set: { status: 'ARCHIVED' } }
+  );
+
+  await syncClientFlowGraphStores(client, flow, {
+    draftNodes,
+    draftEdges,
+    publishedNodes: flow.publishedNodes,
+    publishedEdges: flow.publishedEdges,
+    demoteOtherFlows: true,
+  });
   client.publishedFlowVersion = (client.publishedFlowVersion || 0) + 1;
   await client.save();
 
@@ -107,4 +120,48 @@ async function publishFlowForClient({
   };
 }
 
-module.exports = { publishFlowForClient };
+/**
+ * FB-P1-08: Align Client.visualFlows card + runtime flowNodes/flowEdges with WhatsAppFlow publish/rollback.
+ */
+async function syncClientFlowGraphStores(client, flow, opts = {}) {
+  const {
+    draftNodes = flow.nodes || [],
+    draftEdges = flow.edges || [],
+    publishedNodes = flow.publishedNodes || [],
+    publishedEdges = flow.publishedEdges || [],
+    demoteOtherFlows = false,
+  } = opts;
+
+  const { resolveFlowListCounts } = require('../utils/flow/flowGraphResolver');
+  const draftCounts = resolveFlowListCounts(draftNodes, null, draftEdges, null, {});
+  const vf = [...(client.visualFlows || [])];
+  const vfIdx = vf.findIndex((v) => String(v.id) === String(flow.flowId));
+  const vfPatch = {
+    ...(vfIdx >= 0 ? vf[vfIdx] : {}),
+    id: flow.flowId,
+    name: flow.name || (vfIdx >= 0 ? vf[vfIdx].name : 'Published Flow'),
+    platform: flow.platform || 'whatsapp',
+    folderId: flow.folderId || (vfIdx >= 0 ? vf[vfIdx].folderId : '') || '',
+    isActive: true,
+    nodes: draftNodes,
+    edges: draftEdges,
+    nodeCount: draftCounts.nodeCount,
+    edgeCount: draftCounts.edgeCount,
+    updatedAt: new Date(),
+  };
+  if (vfIdx >= 0) vf[vfIdx] = vfPatch;
+  else vf.push(vfPatch);
+  if (demoteOtherFlows) {
+    for (let i = 0; i < vf.length; i += 1) {
+      if (String(vf[i].id) !== String(flow.flowId)) {
+        vf[i] = { ...vf[i], isActive: false };
+      }
+    }
+  }
+  client.visualFlows = vf;
+  client.flowNodes = publishedNodes;
+  client.flowEdges = publishedEdges;
+  client.markModified('visualFlows');
+}
+
+module.exports = { publishFlowForClient, syncClientFlowGraphStores };

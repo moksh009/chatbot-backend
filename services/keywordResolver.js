@@ -45,7 +45,10 @@ async function findMatchingTrigger({ client, clientId, message, context = {} }) 
   const cid = clientId || client?.clientId;
 
   if (isSmartRulesEngineEnabled()) {
-    const behaviorRules = client?.behaviorRules || client?.automationRules || [];
+    const behaviorRules =
+      (client?.behaviorRules?.length ? client.behaviorRules : null) ??
+      client?.automationRules ??
+      [];
     const behavior = findMatchingRule(behaviorRules, message, context);
     if (behavior) {
       return { type: 'behavior', match: behavior, action: behavior.actions };

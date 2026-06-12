@@ -199,18 +199,20 @@ exports.getIntentStats = async (req, res) => {
       totalFallback: acc.totalFallback + (curr.fallbackCount || 0)
     }), { totalProcessed: 0, totalMatched: 0, totalFallback: 0 });
 
-    const accuracy = totals.totalProcessed > 0
-      ? parseFloat(((totals.totalMatched / totals.totalProcessed) * 100).toFixed(1))
-      : 100;
+    const accuracy =
+      totals.totalProcessed > 0
+        ? parseFloat(((totals.totalMatched / totals.totalProcessed) * 100).toFixed(1))
+        : null;
 
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       stats: {
         activeIntents,
         pendingPhrases: 0,
         totalLearningHits: totals.totalMatched,
-        accuracy
-      }
+        accuracy,
+        totalProcessed: totals.totalProcessed,
+      },
     });
   } catch (error) {
     console.error('[IntentApi] Stats Error:', error);

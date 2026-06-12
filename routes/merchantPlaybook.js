@@ -8,7 +8,7 @@ const { buildMerchantPlaybookStatus } = require('../utils/hub/merchantPlaybookSt
 
 function assertClientAccess(req, res) {
   const { clientId } = req.params;
-  if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'super-admin') {
+  if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'SUPER_ADMIN') {
     res.status(403).json({ success: false, message: 'Forbidden' });
     return false;
   }

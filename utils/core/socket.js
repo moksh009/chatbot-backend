@@ -2,12 +2,18 @@ const socketIo = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const log = require('./logger')('Socket');
 const { getAppRedis, getQueueRedis } = require('./redisFactory');
+const {
+  attachSocketAuthMiddleware,
+  joinAuthorizedRooms,
+  registerSocketRoomHandlers,
+} = require('./socketAuth');
 
 let io = null;
 
 /**
  * Initializes Socket.io with the given HTTP server.
  * Uses shared Redis singleton(s) + duplicate subscriber — avoids extra TCP connections.
+ * All connections require JWT via handshake.auth.token (see socketAuth.js).
  */
 const init = (server) => {
   const ioOptions = {
@@ -40,42 +46,17 @@ const init = (server) => {
 
   global.io = io;
 
+  attachSocketAuthMiddleware(io);
+
   io.on('connection', (socket) => {
-    log.info('New client connected', { socketId: socket.id });
+    const userId = socket.data.user?._id || socket.data.user?.id;
+    log.info('Client connected', { socketId: socket.id, userId, role: socket.data.user?.role });
 
-    const clientId = socket.handshake.query.clientId;
-    if (clientId) {
-      socket.join(`client_${clientId}`);
-      log.info(`Socket joined client room`, { socketId: socket.id, clientId });
-    }
-
-    const userRole = socket.handshake.query.role;
-    if (userRole === 'SUPER_ADMIN') {
-      socket.join('super_admin_room');
-      log.info(`Socket joined super_admin_room`, { socketId: socket.id });
-    }
-
-    socket.on('join_agent', (agentId) => {
-      socket.join(`agent_${agentId}`);
-      log.info(`Socket joined agent room`, { socketId: socket.id, agentId });
-    });
-
-    socket.on('join_client_room', ({ clientId: roomClientId } = {}) => {
-      if (roomClientId) {
-        socket.join(`client_${roomClientId}`);
-        log.info(`Socket dynamically joined client room`, { socketId: socket.id, clientId: roomClientId });
-      }
-    });
-
-    socket.on('join_client', (cid) => {
-      if (cid) {
-        socket.join(`client_${cid}`);
-        log.info(`Socket joined client_${cid}`);
-      }
-    });
+    joinAuthorizedRooms(socket);
+    registerSocketRoomHandlers(socket);
 
     socket.on('disconnect', () => {
-      log.info('Client disconnected', { socketId: socket.id });
+      log.info('Client disconnected', { socketId: socket.id, userId });
     });
   });
 

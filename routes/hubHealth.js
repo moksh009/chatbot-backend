@@ -7,11 +7,19 @@ const loadClientConfig = require('../middleware/clientConfig');
 const { buildMarketingHubHealth } = require('../utils/hub/marketingHubHealth');
 const { buildMetaHubHealth } = require('../utils/hub/metaHubHealth');
 const { buildPlatformHealth } = require('../utils/hub/platformHealth');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 function assertClientAccess(req, res) {
   const { clientId } = req.params;
   const role = String(req.user?.role || '').toUpperCase();
-  if (role === 'SUPER_ADMIN') return true;
+  const effectiveTenant = tenantClientId(req) || clientId;
+  if (role === 'SUPER_ADMIN') {
+    if (effectiveTenant && effectiveTenant !== clientId) {
+      res.status(403).json({ success: false, message: 'Forbidden' });
+      return false;
+    }
+    return true;
+  }
   if (req.user?.clientId && req.user.clientId !== clientId) {
     res.status(403).json({ success: false, message: 'Forbidden' });
     return false;

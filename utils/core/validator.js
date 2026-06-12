@@ -465,6 +465,22 @@ function validateFlowNode(node, client) {
       break;
     }
 
+    case 'whatsapp_flow': {
+      const metaFlowId =
+        node.data?.flowId ||
+        node.data?.whatsappFlowId ||
+        node.data?.metaFlowId;
+      if (!metaFlowId || !String(metaFlowId).trim()) {
+        errors.push({
+          code: 'NODE_NO_WA_FLOW',
+          nodeId: node.id,
+          message: 'WhatsApp Flow node has no Meta Flow ID.',
+          fix: 'Select a synced Meta Flow in Flow Builder or paste the Flow ID from Meta Business Manager.',
+        });
+      }
+      break;
+    }
+
     default:
       break;
   }

@@ -506,7 +506,8 @@ router.get('/:clientId/tags', protect, logPersonalDataAccess, async (req, res) =
 router.post('/bulk-template', protect, async (req, res) => {
     try {
         const { leadIds, templateName, languageCode, components } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
             return res.status(400).json({ success: false, message: 'Valid leadIds array is required' });
@@ -561,7 +562,8 @@ router.post('/bulk-template', protect, async (req, res) => {
 router.post('/bulk-sequence', protect, async (req, res) => {
     try {
         const { leadIds, sequenceName, steps, type, enrollment } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
             return res.status(400).json({ success: false, message: 'Valid leadIds required' });
@@ -630,7 +632,8 @@ router.post('/bulk-sequence', protect, async (req, res) => {
 router.post('/:leadId/send-recovery', protect, async (req, res) => {
     try {
         const { leadId } = req.params;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const lead = await AdLead.findOne({ _id: leadId, clientId })
             .select('phoneNumber name cartSnapshot activityLog recoveryStep recoveryStartedAt')
@@ -736,7 +739,8 @@ router.post('/:leadId/send-recovery', protect, async (req, res) => {
 // POST /api/leads/bulk-recovery
 router.post('/bulk-recovery', protect, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ message: 'Client not found' });
         
@@ -885,7 +889,10 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
 router.post('/bulk-delete', protect, async (req, res) => {
     try {
         const { filters, hardDelete, leadIds } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
         const query = { clientId };
 
@@ -982,7 +989,10 @@ router.post('/:contactId/reset', protect, async (req, res) => {
     try {
         const { contactId } = req.params;
         const { hardDelete } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
         const lead = await AdLead.findOne({ _id: contactId, clientId });
         if (!lead) return res.status(404).json({ message: 'Contact not found' });
@@ -1118,7 +1128,9 @@ router.patch('/:id', protect, async (req, res) => {
 
 router.get('/:id/score-breakdown', protect, leadGdprScope, async (req, res) => {
   try {
-    const lead = await AdLead.findOne({ _id: req.params.id, clientId: req.user.clientId }).lean();
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const lead = await AdLead.findOne({ _id: req.params.id, clientId }).lean();
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
     const { recomputeLeadScoreDocument } = require('../utils/core/scoringHelper');
     const updated = await recomputeLeadScoreDocument(lead);
@@ -1136,10 +1148,14 @@ router.get('/:id/score-breakdown', protect, leadGdprScope, async (req, res) => {
 
 router.get('/:id/gdpr-export', ...gdprAdmin, async (req, res) => {
   try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
     const bundle = await exportLeadBundle({
       leadId: req.params.id,
       actor: { type: 'user', userId: req.user._id, source: 'api' },
-      clientId: req.user.clientId,
+      clientId,
     });
     res.json(bundle);
   } catch (e) {

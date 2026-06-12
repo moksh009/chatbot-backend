@@ -33,7 +33,12 @@ router.get('/import-batches', protect, async (req, res) => {
       createdAt: b.createdAt
     }));
 
-    res.json({ success: true, batches: formattedBatches });
+    res.set('Deprecation', 'Use GET /api/analytics/import-sessions');
+    res.json({
+      success: true,
+      batches: formattedBatches,
+      meta: { deprecatedUse: '/api/analytics/import-sessions' },
+    });
   } catch (err) {
     console.error('[Audience] Fetch import batches error:', err);
     res.status(500).json({ success: false, error: 'Failed to fetch import batches' });

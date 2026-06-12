@@ -782,6 +782,19 @@ async function upsertAutomation(clientId, automation = {}) {
   return merged.find((a) => a.id === normalized.id) || normalized;
 }
 
+async function pauseAutomationsBatch(clientId, automationIds = []) {
+  const ids = [...new Set((automationIds || []).map(String).filter(Boolean))];
+  if (!ids.length) return [];
+  const client = await Client.findOne({ clientId });
+  if (!client) throw new Error('Client not found');
+  const current = await ensureSystemAutomationsPersisted(client);
+  const merged = mergeSystemAutomations(
+    current.map((a) => (ids.includes(a.id) ? { ...a, isActive: false } : a))
+  );
+  await persistAutomations(clientId, merged);
+  return merged.filter((a) => ids.includes(a.id));
+}
+
 async function toggleAutomation(clientId, automationId, { active } = {}) {
   const client = await Client.findOne({ clientId });
   if (!client) throw new Error('Client not found');
@@ -991,6 +1004,7 @@ module.exports = {
   listAutomations,
   upsertAutomation,
   toggleAutomation,
+  pauseAutomationsBatch,
   deleteAutomation,
   resolveTargetProductIds,
   hasSpecificProductScope,

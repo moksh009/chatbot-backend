@@ -354,6 +354,27 @@ router.patch('/order-messages/rules/:ruleId/toggle', ...secure, async (req, res)
   }
 });
 
+router.post('/commerce-automations/pause-batch', ...secure, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: 'ids array is required' });
+    }
+    const paused = await commerceAutomationService.pauseAutomationsBatch(clientId, ids);
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+    return res.json({ success: true, pausedCount: paused.length, automations: paused });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.put('/commerce-automations/:automationId', ...secure, async (req, res) => {
   try {
     const { clientId, automationId } = req.params;

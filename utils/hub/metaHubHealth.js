@@ -16,7 +16,7 @@ async function buildMetaHubHealth(clientId, clientConfig) {
     clientConfig ||
     (await Client.findOne({ clientId })
       .select(
-        'whatsappToken phoneNumberId wabaId facebookCatalogId waCatalogId metaCatalogAccessToken shopifyAccessToken shopDomain syncedMetaTemplates templatesSyncedAt catalogSyncedAt'
+        'whatsappToken phoneNumberId wabaId facebookCatalogId waCatalogId metaCatalogAccessToken shopifyAccessToken shopDomain syncedMetaTemplates templatesSyncedAt catalogSyncedAt commerceAutomations'
       )
       .lean());
 
@@ -50,9 +50,12 @@ async function buildMetaHubHealth(clientId, clientConfig) {
   }
 
   const webhooks = orderMessages?.webhooks;
-  const liveStatuses = ['paid', 'shipped', 'delivered'].filter(
+  const automations = Array.isArray(client.commerceAutomations) ? client.commerceAutomations : [];
+  const liveAutomationCount = automations.filter((r) => r && r.isActive !== false).length;
+  const legacyLiveStatuses = ['paid', 'shipped', 'delivered'].filter(
     (s) => orderMessages?.orderTriggers?.[s]
   ).length;
+  const liveStatuses = liveAutomationCount > 0 ? liveAutomationCount : legacyLiveStatuses;
 
   const qualityRaw = String(
     client.whatsappQualityRating ||

@@ -4,6 +4,7 @@ const Client = require('../models/Client');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const log = require('../utils/core/logger')('AdminAPI');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { getDefaultFlowForNiche } = require('../utils/flow/defaultFlowNodes');
 const { generateFlowForClient } = require('../utils/flow/flowAutogen');
 const { runFullMigration } = require('../scripts/phase9MigrationLogic');
@@ -23,6 +24,16 @@ const { getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
 const WhatsApp = require('../utils/meta/whatsapp');
 const AuditLog = require('../models/AuditLog');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
+const { adminSensitiveLimiter } = require('../middleware/adminRateLimits');
+const { requireAdminPermission } = require('../middleware/requireAdminPermission');
+const {
+  blockMasterTesterOnAdmin,
+  requireAdminUser,
+  applyClientScopeFilter,
+  authorizeAdminScope,
+} = require('../middleware/adminAccess');
+
+router.use(blockMasterTesterOnAdmin);
 
 router.post('/shopify/force-sync', protect, async (req, res) => {
   try {
@@ -45,21 +56,9 @@ router.post('/shopify/force-sync', protect, async (req, res) => {
   }
 });
 
-// Middleware to check if user is a Super Admin
-const isSuperAdmin = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (user && user.role === 'SUPER_ADMIN') {
-      next();
-    } else {
-      res.status(403).json({ message: 'Access denied: Super Admin only' });
-    }
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
-  }
-};
+const isSuperAdmin = requireAdminUser;
 // --- TEST WHATSAPP CONNECTION ---
-router.post('/test-whatsapp-send', protect, async (req, res) => {
+router.post('/test-whatsapp-send', protect, isSuperAdmin, async (req, res) => {
   try {
     const { phone, phoneNumberId, wabaId, token } = req.body;
     
@@ -274,40 +273,80 @@ router.post('/warranty/migrate-legacy', protect, async (req, res) => {
 });
 
 
+const { enrichClientsForList } = require('../utils/admin/clientListEnrichment');
+
+function buildAdminClientListFilter(query = {}) {
+  const filter = { isActive: { $ne: false }, deletedAt: { $exists: false } };
+  if (query.search) {
+    filter.$or = [
+      { businessName: { $regex: query.search, $options: 'i' } },
+      { clientId: { $regex: query.search, $options: 'i' } },
+      { name: { $regex: query.search, $options: 'i' } },
+    ];
+  }
+  if (query.status === 'suspended') filter.suspendedAt = { $ne: null };
+  if (query.status === 'vip') filter.isLifetimeAdmin = true;
+  if (query.status === 'trial') {
+    filter.trialActive = { $ne: false };
+    filter.isLifetimeAdmin = { $ne: true };
+    filter.suspendedAt = null;
+  }
+  if (query.status === 'trial_expired') {
+    filter.trialEndsAt = { $lt: new Date() };
+    filter.isLifetimeAdmin = { $ne: true };
+    filter.isPaidAccount = { $ne: true };
+  }
+  if (query.status === 'paid') filter.isPaidAccount = true;
+  if (query.plan && query.plan !== 'all') filter.plan = query.plan;
+  if (query.store && query.store !== 'all') filter.storeType = query.store;
+  if (query.channels === 'whatsapp') {
+    filter.$and = (filter.$and || []).concat([
+      { phoneNumberId: { $exists: true, $ne: '' } },
+      { wabaId: { $exists: true, $ne: '' } },
+    ]);
+  }
+  if (query.channels === 'instagram') filter.instagramConnected = true;
+  return filter;
+}
+
 // --- GET ALL CLIENTS ---
 router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
   try {
-    const page  = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip  = (page - 1) * limit;
-
-    const filter = { isActive: { $ne: false } };
-    if (req.query.search) {
-      filter.$or = [
-        { businessName: { $regex: req.query.search, $options: 'i' } },
-        { clientId: { $regex: req.query.search, $options: 'i' } }
-      ];
+    if (req.query.check_id) {
+      const taken = await Client.exists({
+        clientId: String(req.query.check_id).trim(),
+        isActive: { $ne: false },
+      });
+      return res.json({ success: true, checkIdTaken: !!taken });
     }
 
-    const clients = await Client.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select(
-        'clientId businessName name plan tier wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures geminiApiKey openaiApiKey trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt billing.isPaidAccount billing.paymentSource billing.offlinePaymentNote wizardCompleted onboardingCompleted config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars'
-      )
-      .lean();
-    
-    const total = await Client.countDocuments(filter);
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const skip = (page - 1) * limit;
+    const filter = applyClientScopeFilter(buildAdminClientListFilter(req.query), req);
+
+    const [rawClients, total] = await Promise.all([
+      Client.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select(
+          'clientId businessName name plan tier wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminEmail emailUser trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt billing createdAt updatedAt geminiApiKey openaiApiKey config'
+        )
+        .lean(),
+      Client.countDocuments(filter),
+    ]);
+
+    const data = await enrichClientsForList(rawClients);
 
     res.json({
       success: true,
-      data: clients,
+      data,
       pagination: {
         total,
         page,
-        pages: Math.ceil(total / limit)
-      }
+        pages: Math.ceil(total / limit) || 1,
+      },
     });
   } catch (err) {
     log.error('Error fetching clients', { error: err.message });
@@ -315,14 +354,35 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
   }
 });
 
-// --- RUN AUTOMATION MIGRATION (Super Admin) ---
-// Temporarily public for easy browser execution (Add basic secret key param for safety)
-router.get('/run-migration', async (req, res) => {
+// --- EXPORT CLIENTS CSV ---
+router.get('/clients/export', protect, isSuperAdmin, async (req, res) => {
   try {
-    const { key } = req.query;
-    if (key !== 'topedge_secure_admin_123') {
-      return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
-    }
+    const filter = buildAdminClientListFilter(req.query);
+    const clients = await Client.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(5000)
+      .select('clientId businessName name plan storeType trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt createdAt')
+      .lean();
+    const header = 'clientId,businessName,plan,storeType,status,createdAt\n';
+    const rows = clients
+      .map((c) => {
+        const name = (c.businessName || c.name || '').replace(/"/g, '""');
+        return `"${c.clientId}","${name}","${c.plan || ''}","${c.storeType || ''}","${c.suspendedAt ? 'suspended' : 'active'}","${c.createdAt || ''}"`;
+      })
+      .join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="topedge-clients.csv"');
+    res.send(header + rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+const { requireAdminMigrationSecret } = require('../middleware/adminMigrationAuth');
+
+// --- RUN AUTOMATION MIGRATION (Super Admin) ---
+router.get('/run-migration', requireAdminMigrationSecret, async (req, res) => {
+  try {
 
     const defaultAutomationFlows = [
       { id: 'abandoned_cart', isActive: true, config: { delayHours: 2 } },
@@ -399,13 +459,10 @@ router.get('/run-migration', async (req, res) => {
   }
 });
 
-// --- ROLE PROMOTION (EMERGENCY DEBUG) ---
-router.get('/promote-me', async (req, res) => {
+// --- ROLE PROMOTION (EMERGENCY — migration secret + super admin) ---
+router.get('/promote-me', requireAdminMigrationSecret, protect, isSuperAdmin, async (req, res) => {
   try {
-    const { email, role, secret } = req.query;
-    if (secret !== 'topedge_secure_admin_123') {
-      return res.status(401).json({ message: 'Unauthorized. Use ?secret=topedge_secure_admin_123' });
-    }
+    const { email, role } = req.query;
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: 'User not found' });
     user.role = role || 'SUPER_ADMIN';
@@ -419,12 +476,9 @@ router.get('/promote-me', async (req, res) => {
 // Legacy Delitech migration routes removed.
 
 // --- RUN GENERIC FOLDERIZATION (URL RUNNABLE) ---
-router.get('/folderize-clients', async (req, res) => {
+router.get('/folderize-clients', requireAdminMigrationSecret, protect, isSuperAdmin, async (req, res) => {
   try {
-    const { key, target } = req.query;
-    if (key !== 'topedge_secure_admin_123') {
-      return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
-    }
+    const { target } = req.query;
 
     // Default to the major ones we know lack the strict new folder structure,
     // or allow targeting a specific one via ?target=client_id
@@ -516,6 +570,15 @@ router.get('/clients/:id', protect, isSuperAdmin, sanitizeMiddleware, async (req
     const { getAccessForUserClient } = require('../utils/core/accessFlags');
     const access = await getAccessForUserClient(req.user, client);
 
+    await AuditLog.create({
+      clientId: client.clientId,
+      category: 'admin',
+      action_type: 'ADMIN_VIEWED_CLIENT_DETAIL',
+      severity: 'info',
+      actor: { type: 'super_admin', userId: req.user._id, source: 'admin_panel' },
+      payload: { adminEmail: req.user.email },
+    }).catch(() => {});
+
     res.json({
       ...client,
       workspaceAccess: access,
@@ -523,6 +586,46 @@ router.get('/clients/:id', protect, isSuperAdmin, sanitizeMiddleware, async (req
   } catch (err) {
     console.error('Error fetching client details:', err);
     res.status(500).json({ message: 'Server error fetching client details' });
+  }
+});
+
+router.get('/clients/:id/credentials', protect, isSuperAdmin, adminSensitiveLimiter, requireAdminPermission('viewSensitiveKeys'), async (req, res) => {
+  try {
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ message: 'Invalid client id' });
+
+    const client = await Client.findOne(query).lean();
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    await AuditLog.create({
+      clientId: client.clientId,
+      category: 'security',
+      action_type: 'ADMIN_VIEWED_SENSITIVE_CREDENTIALS',
+      severity: 'critical',
+      actor: { type: 'super_admin', userId: req.user._id, source: 'admin_panel' },
+      payload: { adminEmail: req.user.email },
+    });
+
+    const decryptField = (v) => {
+      if (!v) return '';
+      try {
+        return decrypt(v) || v;
+      } catch {
+        return v;
+      }
+    };
+
+    res.json({
+      success: true,
+      clientId: client.clientId,
+      whatsappToken: decryptField(client.whatsappToken || client.config?.whatsappToken),
+      shopifyAccessToken: decryptField(client.shopifyAccessToken || client.config?.shopifyAccessToken),
+      geminiApiKey: client.geminiApiKey || '',
+      openaiApiKey: client.openaiApiKey || '',
+      emailAppPassword: client.emailAppPassword || '',
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -797,6 +900,16 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     }
 
     log.success(`New client provisioned: ${clientId} | Plan: ${tier || 'Growth'}`);
+    await AuditLog.create({
+      clientId: clientId.trim(),
+      category: 'admin',
+      action_type: 'CLIENT_CREATED',
+      severity: 'info',
+      actorEmail: req.user?.email,
+      userId: req.user?._id,
+      payload: { plan: tier, businessName },
+    }).catch(() => {});
+
     res.status(201).json({ 
       ...savedClient.toObject(), 
       flowReady: !!template,
@@ -1015,18 +1128,63 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // --- DELETE CLIENT (Soft Delete) ---
 router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
-    const deletedClient = await Client.findByIdAndUpdate(
-      req.params.id, 
-      { $set: { isActive: false } },
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ message: 'Invalid client id' });
+
+    const deletedClient = await Client.findOneAndUpdate(
+      query,
+      { $set: { isActive: false, deletedAt: new Date() } },
       { new: true }
     );
     if (!deletedClient) {
       return res.status(404).json({ message: 'Client not found' });
     }
+
+    await AuditLog.create({
+      clientId: deletedClient.clientId,
+      category: 'admin',
+      action_type: 'CLIENT_SOFT_DELETED',
+      severity: 'critical',
+      actor: { type: 'super_admin', userId: req.user._id, source: 'admin_panel' },
+      payload: { adminEmail: req.user.email },
+    });
+
     res.json({ message: 'Client deactivated successfully (Soft Deleted)' });
   } catch (err) {
     console.error('Error deleting client:', err);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.delete('/clients/:id/permanent', protect, isSuperAdmin, adminSensitiveLimiter, requireAdminPermission('deleteClients'), async (req, res) => {
+  try {
+    const { confirmationToken, reason } = req.body || {};
+    const expected = process.env.ADMIN_PERMANENT_DELETE_TOKEN || 'PERMANENT_DELETE_CONFIRM';
+    if (confirmationToken !== expected) {
+      return res.status(403).json({ message: 'Invalid confirmation token' });
+    }
+
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ message: 'Invalid client id' });
+
+    const client = await Client.findOne(query).lean();
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    await User.deleteMany({ clientId: client.clientId });
+    await Client.deleteOne({ _id: client._id });
+
+    await AuditLog.create({
+      clientId: client.clientId,
+      category: 'admin',
+      action_type: 'CLIENT_PERMANENTLY_DELETED',
+      severity: 'critical',
+      actor: { type: 'super_admin', userId: req.user._id, source: 'admin_panel' },
+      payload: { adminEmail: req.user.email, reason: reason || '' },
+    });
+
+    res.json({ success: true, message: 'Client permanently deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -1279,7 +1437,19 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;
     if (simpleSettings !== undefined) updateFields.simpleSettings = simpleSettings;
     if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
-    if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
+    if (flowFolders !== undefined) {
+      if (!Array.isArray(flowFolders)) {
+        return res.status(400).json({ success: false, message: 'flowFolders must be an array' });
+      }
+      updateFields.flowFolders = flowFolders
+        .filter((f) => f && typeof f === 'object' && String(f.id || '').trim())
+        .slice(0, 50)
+        .map((f) => ({
+          id: String(f.id).trim().slice(0, 80),
+          name: String(f.name || 'Folder').trim().slice(0, 120) || 'Folder',
+          ...(f.color ? { color: String(f.color).slice(0, 32) } : {}),
+        }));
+    }
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
     if (websiteChatWidgetConfig !== undefined) {
       const { mergeWebsiteWidgetConfig } = require('../utils/core/websiteWidgetDefaults');
@@ -2066,90 +2236,12 @@ router.post('/generate-flow', protect, async (req, res) => {
   }
 });
 
-// --- AI SMART FIX AUTOMATION ---
-router.post('/flow/fix', protect, async (req, res) => {
-  try {
-    const { diagnostics, nodes, edges } = req.body;
-    if (!diagnostics || !nodes || !edges) return res.status(400).json({ error: 'Missing diagnostic or graph data' });
+// --- AI SMART FIX AUTOMATION (FB-P1-05 — single handler via flowFixController) ---
+const { fixFlowWithAI } = require('../controllers/flowFixController');
+router.post('/flow/fix', protect, fixFlowWithAI);
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
-
-    let model = getGeminiModel(apiKey);
-
-    const systemPrompt = `You are a WhatsApp chatbot flow engineer debugging a ReactFlow JSON graph.
-    You will receive the current graph (nodes and edges) and a list of diagnostic errors.
-    Your task is to fix the errors by intelligently modifying the "nodes" or "edges" array.
-    
-    Diagnostics:
-    ${JSON.stringify(diagnostics, null, 2)}
-    
-    Current Nodes:
-    ${JSON.stringify(nodes, null, 2)}
-    
-    Current Edges:
-    ${JSON.stringify(edges, null, 2)}
-    
-    Return ONLY valid JSON with exactly two properties: "nodes" and "edges".
-    DO NOT DELETE nodes unless absolutely necessary. Just fix the broken edges or properties.
-    The response MUST be a valid JSON object. Do not add markdown formatting or explanations.`;
-
-    console.log('[flow/fix] Calling Gemini API for smart fix...');
-    let result;
-    try {
-      result = await model.generateContent(systemPrompt);
-    } catch (apiErr) {
-      console.warn('[flow/fix] Flash failed, falling back to Pro:', apiErr.message);
-      model = getGeminiModel(apiKey);
-      result = await model.generateContent(systemPrompt);
-    }
-
-    const rawText = result.response.text().trim();
-    
-    let cleaned = rawText
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    const startIdx = cleaned.indexOf('{');
-    const endIdx = cleaned.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      cleaned = cleaned.substring(startIdx, endIdx + 1);
-    }
-
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error('[flow/fix] No JSON found in response:', rawText.slice(0, 300));
-      return res.status(500).json({ error: 'AI did not return valid JSON' });
-    }
-
-    let fixedGraph;
-    try {
-      fixedGraph = JSON.parse(jsonMatch[0]);
-    } catch (parseErr) {
-      return res.status(500).json({ error: 'Failed to parse AI JSON: ' + parseErr.message });
-    }
-
-    if (!fixedGraph.nodes || !fixedGraph.edges) {
-      return res.status(500).json({ error: 'AI output missing nodes/edges' });
-    }
-
-    const cleanedGraph = validateAndCleanFlow({
-      nodes: fixedGraph.nodes || nodes || [],
-      edges: fixedGraph.edges || edges || []
-    }, 0);
-
-    console.log('[flow/fix] Success - Returning fixed graph.');
-    res.json({ success: true, nodes: cleanedGraph.nodes, edges: cleanedGraph.edges });
-  } catch (err) {
-    console.error('[flow/fix] FATAL:', err.message);
-    res.status(500).json({ error: 'AI Auto-Fix Failed: ' + err.message });
-  }
-});
-
-// --- GEMINI KEY PROBE (no auth — for diagnostics) ---
-router.get('/test-gemini', async (req, res) => {
+// --- GEMINI KEY PROBE (super admin only) ---
+router.get('/test-gemini', protect, isSuperAdmin, async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ ok: false, error: 'GEMINI_API_KEY not set' });
   try {
@@ -2369,11 +2461,7 @@ router.get('/flows/sync/:clientId', protect, async (req, res) => {
 });
 
 // --- SYSTEM MIGRATION (BROWSER-READY) ---
-router.get('/run-full-migration', async (req, res) => {
-    const { key } = req.query;
-    if (key !== 'topedge_secure_admin_123') {
-        return res.status(401).send('<h1>Access Denied</h1><p>Invalid migration key.</p>');
-    }
+router.get('/run-full-migration', requireAdminMigrationSecret, protect, isSuperAdmin, async (req, res) => {
 
     try {
         const clients = await Client.find({});
@@ -2438,7 +2526,7 @@ router.post('/flow/autogen/:clientId', protect, async (req, res) => {
 });
 
 // --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (removed) ---
-router.post('/flow/convert-legacy/:clientId', async (req, res) => {
+router.post('/flow/convert-legacy/:clientId', protect, isSuperAdmin, async (req, res) => {
     return res.status(410).json({
         error: 'Legacy clientcode files were removed. Use Flow Builder or POST /api/admin/flow/autogen for this tenant.',
     });
@@ -2449,11 +2537,7 @@ router.post('/flow/convert-legacy/:clientId', async (req, res) => {
  * URL: [BASE_URL]/api/admin/phase13-migration?key=topedge_phase13_secure_99
  * Purpose: Transition all records to Phase 13 (Omnichannel + Gemini + Stability)
  */
-router.get('/phase13-migration', async (req, res) => {
-  const { key } = req.query;
-  if (key !== 'topedge_phase13_secure_99') {
-    return res.status(401).send("Unauthorized. Use ?key=topedge_phase13_secure_99");
-  }
+router.get('/phase13-migration', requireAdminMigrationSecret, protect, isSuperAdmin, async (req, res) => {
 
   const Conversation = require('../models/Conversation');
   const Message = require('../models/Message');
@@ -2568,7 +2652,7 @@ router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
 });
 
 // --- GET AUDIT LOG (Super Admin viewer — Phase 5) ---
-router.get('/audit-log', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/audit-log', protect, authorizeAdminScope('viewAuditLog'), async (req, res) => {
   try {
     const AuditLog = require('../models/AuditLog');
     const {
@@ -2601,7 +2685,7 @@ router.get('/audit-log', protect, authorize('SUPER_ADMIN'), async (req, res) => 
   }
 });
 
-router.get('/audit-log/export', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/audit-log/export', protect, authorizeAdminScope('viewAuditLog'), async (req, res) => {
   try {
     const AuditLog = require('../models/AuditLog');
     const logs = await AuditLog.find({}).sort({ createdAt: -1 }).limit(5000).lean();
@@ -2740,7 +2824,7 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
     } = require('../utils/meta/whatsappWebhookPublic');
     const { buildWebhookDashboardStatus } = require('../utils/meta/whatsappWebhookLifecycle');
 
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
     if (!clientId) {
       return res.status(400).json({ success: false, message: 'No clientId on session' });
     }
@@ -2829,7 +2913,7 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
 // POST /admin/whatsapp-webhook-ack — user confirms they pasted URL/token in Meta (optional hint for status)
 router.post('/whatsapp-webhook-ack', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
     if (!clientId) {
       return res.status(400).json({ success: false, message: 'No clientId on session' });
     }
@@ -2914,15 +2998,23 @@ router.post('/test-email', protect, async (req, res) => {
   }
 });
 
-router.get('/metrics/live', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/metrics/live', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
   try {
     const requestMetrics = require('../middleware/requestMetrics');
     const metricsCollector = require('../services/observability/metricsCollector');
     const { getAppRedis } = require('../utils/core/redisFactory');
     const redis = getAppRedis();
+    const range = String(req.query.range || '24h');
     let queueDepth = {};
     if (redis) {
-      for (const q of ['campaign-dispatch', 'sequence-dispatch', 'webhook-delivery']) {
+      for (const q of [
+        'campaign-dispatch',
+        'sequence-dispatch',
+        'webhook-delivery',
+        'flow-resumption',
+        'template-sync',
+        'shopify-sync',
+      ]) {
         try {
           const n = await redis.llen(`bull:${q}:wait`);
           queueDepth[q] = Number(n) || 0;
@@ -2931,11 +3023,29 @@ router.get('/metrics/live', protect, authorize('SUPER_ADMIN'), async (req, res) 
         }
       }
     }
+    const mongoose = require('mongoose');
+    const { getTelemetryErrorTimeseries } = require('../services/observability/telemetryIngestService');
+    const [requestSeries, telemetryErrors] = await Promise.all([
+      Promise.resolve(
+        typeof requestMetrics.getTimeseries === 'function'
+          ? requestMetrics.getTimeseries(range)
+          : { points: [] }
+      ),
+      getTelemetryErrorTimeseries({ range }),
+    ]);
     res.json({
       success: true,
+      range,
       requestMetrics: typeof requestMetrics.summarize === 'function' ? requestMetrics.summarize() : {},
+      requestTimeseries: requestSeries,
+      telemetryErrorTimeseries: telemetryErrors,
       customMetrics: metricsCollector.snapshot(),
       queueDepth,
+      systemHealth: {
+        api: true,
+        redis: !!redis,
+        mongo: mongoose.connection.readyState === 1,
+      },
       at: new Date().toISOString(),
     });
   } catch (e) {
@@ -2943,7 +3053,7 @@ router.get('/metrics/live', protect, authorize('SUPER_ADMIN'), async (req, res) 
   }
 });
 
-router.get('/dead-letters', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/dead-letters', protect, authorizeAdminScope('viewDeadLetters'), async (req, res) => {
   try {
     const DeadLetterWebhook = require('../models/DeadLetterWebhook');
     const rows = await DeadLetterWebhook.find({}).sort({ deadLetteredAt: -1 }).limit(100).lean();
@@ -2953,7 +3063,7 @@ router.get('/dead-letters', protect, authorize('SUPER_ADMIN'), async (req, res) 
   }
 });
 
-router.post('/dead-letters/:id/retry', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.post('/dead-letters/:id/retry', protect, authorizeAdminScope('retryDeadLetters'), async (req, res) => {
   try {
     const DeadLetterWebhook = require('../models/DeadLetterWebhook');
     const WebhookConfig = require('../models/WebhookConfig');
@@ -2979,7 +3089,7 @@ router.post('/dead-letters/:id/retry', protect, authorize('SUPER_ADMIN'), async 
   }
 });
 
-router.delete('/dead-letters/:id', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.delete('/dead-letters/:id', protect, authorizeAdminScope('retryDeadLetters'), async (req, res) => {
   try {
     const DeadLetterWebhook = require('../models/DeadLetterWebhook');
     await DeadLetterWebhook.deleteOne({ _id: req.params.id });
@@ -2989,7 +3099,7 @@ router.delete('/dead-letters/:id', protect, authorize('SUPER_ADMIN'), async (req
   }
 });
 
-router.get('/telemetry/usage-summary', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/telemetry/usage-summary', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
   try {
     const clientId = String(req.query.clientId || '').trim();
     if (!clientId) {
@@ -3012,7 +3122,7 @@ router.get('/telemetry/usage-summary', protect, authorize('SUPER_ADMIN'), async 
   }
 });
 
-router.get('/reliability/summary', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/reliability/summary', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getPlatformReliabilitySummary } = require('../services/observability/reliabilityService');
     const days = parseInt(req.query.days, 10) || 7;
@@ -3024,7 +3134,7 @@ router.get('/reliability/summary', protect, authorize('SUPER_ADMIN'), async (req
   }
 });
 
-router.get('/reliability/:clientId/send-log', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/reliability/:clientId/send-log', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getFailedTemplateSendLogs } = require('../services/observability/reliabilityService');
     const days = parseInt(req.query.days, 10) || 7;
@@ -3038,7 +3148,7 @@ router.get('/reliability/:clientId/send-log', protect, authorize('SUPER_ADMIN'),
   }
 });
 
-router.get('/reliability/:clientId', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/reliability/:clientId', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getClientReliabilityDetail } = require('../services/observability/reliabilityService');
     const days = parseInt(req.query.days, 10) || 7;
@@ -3049,7 +3159,7 @@ router.get('/reliability/:clientId', protect, authorize('SUPER_ADMIN'), async (r
   }
 });
 
-router.get('/telemetry/sessions', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/telemetry/sessions', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getAdminSessionSummary } = require('../services/observability/dashboardSessionService');
     const hours = parseInt(req.query.hours, 10) || 24;
@@ -3061,7 +3171,7 @@ router.get('/telemetry/sessions', protect, authorize('SUPER_ADMIN'), async (req,
   }
 });
 
-router.get('/telemetry/client-health', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/telemetry/client-health', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getClientHealthSummary } = require('../services/observability/telemetryIngestService');
     const hours = parseInt(req.query.hours, 10) || 24;
@@ -3073,7 +3183,7 @@ router.get('/telemetry/client-health', protect, authorize('SUPER_ADMIN'), async 
   }
 });
 
-router.get('/telemetry/client-health/:clientId/events', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/telemetry/client-health/:clientId/events', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
   try {
     const { getClientTelemetryEvents } = require('../services/observability/telemetryIngestService');
     const limit = parseInt(req.query.limit, 10) || 50;
@@ -3085,7 +3195,30 @@ router.get('/telemetry/client-health/:clientId/events', protect, authorize('SUPE
   }
 });
 
-router.get('/tenant-economics', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+router.get('/telemetry/client-health/:clientId/detail', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
+  try {
+    const { getClientHealthDetail } = require('../services/observability/telemetryIngestService');
+    const hours = parseInt(req.query.hours, 10) || 72;
+    const data = await getClientHealthDetail(req.params.clientId, { hours });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/telemetry/client-health/:clientId/timeseries', protect, authorizeAdminScope('viewErrors'), async (req, res) => {
+  try {
+    const { getTelemetryErrorTimeseries } = require('../services/observability/telemetryIngestService');
+    const hours = parseInt(req.query.hours, 10) || 24;
+    const range = hours <= 1 ? '1h' : hours <= 6 ? '6h' : hours <= 24 ? '24h' : '7d';
+    const data = await getTelemetryErrorTimeseries({ range, clientId: req.params.clientId });
+    res.json({ success: true, clientId: req.params.clientId, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/tenant-economics', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
   try {
     const DailyTenantUsageCost = require('../models/DailyTenantUsageCost');
     const rows = await DailyTenantUsageCost.find({})

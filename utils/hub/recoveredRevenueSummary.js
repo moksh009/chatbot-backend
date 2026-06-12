@@ -27,7 +27,9 @@ function resolveCartNudgeFromClient(client) {
  */
 async function buildRecoveredRevenueSummary(clientId, opts = {}) {
   const days = Math.min(Math.max(parseInt(opts.days, 10) || 30, 1), 90);
-  const start = moment().subtract(days, 'days').startOf('day').toDate();
+  const { istDateRangeStrings, startOfDayForDateStrIST } = require('../core/queryHelpers');
+  const { start: startDateStr } = istDateRangeStrings(days);
+  const start = startOfDayForDateStrIST(startDateStr);
 
   const client = await Client.findOne({ clientId })
     .select('wizardFeatures whatsappToken phoneNumberId wabaId shopDomain shopifyAccessToken')
@@ -48,7 +50,7 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
   else if (!shopifyConnected) cartStatus = 'needs_setup';
   else cartStatus = 'live';
 
-  const startStr = moment(start).format('YYYY-MM-DD');
+  const startStr = startDateStr;
   const { getRecoveryTotalsFromAttempts } = require('../commerce/cartRecoveryAttemptService');
   const attemptTotals = await getRecoveryTotalsFromAttempts(clientId, start, new Date()).catch(() => null);
 

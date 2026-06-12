@@ -3,6 +3,7 @@ const router = express.Router();
 const WhatsAppFlow = require('../models/WhatsAppFlow');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const axios = require('axios');
 const log = require('../utils/core/logger')('WhatsAppFlows');
 const { checkLimit } = require('../utils/core/planLimits');
@@ -29,7 +30,9 @@ router.get('/', protect, apiCache(60), async (req, res) => {
     const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/whatsapp-flows', req.user?.clientId || '');
     try {
-        const flows = await WhatsAppFlow.find({ clientId: req.user.clientId })
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+        const flows = await WhatsAppFlow.find({ clientId })
             .select('flowId name status categories lastSyncedAt validationErrors')
             .sort({ status: 1, lastSyncedAt: -1 })
             .limit(100)
@@ -48,7 +51,8 @@ router.get('/', protect, apiCache(60), async (req, res) => {
  * Syncs flows from Meta Graph API for the client's WABA
  */
 router.post('/sync', protect, async (req, res) => {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
     try {
         const client = await Client.findOne({ clientId });
         if (!client || !client.whatsappToken || !client.wabaId) {
@@ -104,7 +108,8 @@ router.post('/sync', protect, async (req, res) => {
  */
 router.post('/send', protect, async (req, res) => {
     const { phone, flowId, header, body, cta, screen } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     if (!phone || !flowId) return res.status(400).json({ error: 'Phone and Flow ID required.' });
 

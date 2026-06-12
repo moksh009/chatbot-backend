@@ -22,6 +22,7 @@ function envFlag(name, defaultValue = false) {
 
 const SMART_RULES_ENGINE_ENABLED = envFlag('SMART_RULES_ENGINE_ENABLED', false);
 const WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED = envFlag('WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED', false);
+const DELIVERY_RTO_INSIGHTS_ENABLED = envFlag('DELIVERY_RTO_INSIGHTS_ENABLED', false);
 
 function isSmartRulesEngineEnabled() {
   return SMART_RULES_ENGINE_ENABLED;
@@ -29,6 +30,10 @@ function isSmartRulesEngineEnabled() {
 
 function isWebsiteChatWidgetSettingsEnabled() {
   return WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED;
+}
+
+function isDeliveryRtoInsightsEnabled() {
+  return DELIVERY_RTO_INSIGHTS_ENABLED;
 }
 
 function wizardFeatures(client) {
@@ -149,4 +154,5 @@ module.exports = {
   isAbandonedCartEnabled,
   isSmartRulesEngineEnabled,
   isWebsiteChatWidgetSettingsEnabled,
+  isDeliveryRtoInsightsEnabled,
 };

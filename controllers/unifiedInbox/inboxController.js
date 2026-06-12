@@ -207,13 +207,14 @@ async function getFilters(req, res) {
 async function getMessages(req, res) {
   try {
     const { id } = req.params;
-    const channel = req.query.channel;
+    const scoped = req.inboxConversation;
+    const channel = scoped?.channel || req.query.channel;
 
     if (!channel) return res.status(400).json({ error: 'channel query param is required' });
 
     if (channel === 'instagram') {
       const convo = await IGConversation.findById(id)
-        .select('messages igsid igUsername igProfilePic')
+        .select('messages igsid igUsername igProfilePic clientId')
         .lean();
 
       if (!convo) return res.status(404).json({ error: 'Conversation not found' });
@@ -234,7 +235,7 @@ async function getMessages(req, res) {
       return res.json({ success: true, messages });
     }
 
-    // WhatsApp — use existing Message model
+    // WhatsApp — use existing Message model (tenant verified by inboxConversationScope)
     const Message = require('../../models/Message');
     const messages = await Message.find({ conversationId: id })
       .sort({ timestamp: 1 })
@@ -263,11 +264,7 @@ async function getMessages(req, res) {
 async function markRead(req, res) {
   try {
     const { id } = req.params;
-    const channel = req.body?.channel || 'whatsapp';
-
-    if (!id || !/^[a-f\d]{24}$/i.test(String(id))) {
-      return res.status(400).json({ error: 'Invalid conversation id' });
-    }
+    const channel = req.inboxConversation?.channel || req.body?.channel || 'whatsapp';
 
     if (channel === 'instagram') {
       const updated = await IGConversation.findByIdAndUpdate(
@@ -301,7 +298,8 @@ async function markRead(req, res) {
 async function sendMessage(req, res) {
   try {
     const { id } = req.params;
-    const { channel, content } = req.body;
+    const channel = req.inboxConversation?.channel || req.body?.channel;
+    const { content } = req.body;
 
     if (!content || !channel) {
       return res.status(400).json({ error: 'content and channel are required' });
@@ -313,12 +311,8 @@ async function sendMessage(req, res) {
     }
 
     if (channel === 'instagram') {
-      // Get the conversation to find the recipient IGSID
       const convo = await IGConversation.findById(id).lean();
       if (!convo) return res.status(404).json({ error: 'Conversation not found' });
-      if (convo.clientId !== effectiveClientId) {
-        return res.status(403).json({ error: 'Unauthorized' });
-      }
 
       // Get the client's IG access token
       const client = await Client.findOne({ clientId: effectiveClientId }).lean();

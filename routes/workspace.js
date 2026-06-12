@@ -7,6 +7,11 @@ const { verifyTenantScope } = require('../middleware/verifyTenantScope');
 const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
 const { buildConnectionStatusContract } = require('../utils/core/connectionStatusV2');
 const { getCachedClient, CONNECTION_STATUS_SELECT, invalidateClientCache } = require('../utils/core/clientCache');
+const {
+  isSmartRulesEngineEnabled,
+  isWebsiteChatWidgetSettingsEnabled,
+  isDeliveryRtoInsightsEnabled,
+} = require('../utils/core/featureFlags');
 const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
 
 const CACHE_TTL_SEC = 30;
@@ -55,6 +60,11 @@ router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (
     whatsapp_connected: legacy.whatsapp_connected,
     meta_connected: legacy.meta_connected,
     instagram_connected: legacy.instagram_connected,
+    featureRollout: {
+      smartRulesEngine: isSmartRulesEngineEnabled(),
+      websiteChatWidgetSettings: isWebsiteChatWidgetSettingsEnabled(),
+      deliveryRtoInsights: isDeliveryRtoInsightsEnabled(),
+    },
   };
 
   try {

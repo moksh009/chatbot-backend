@@ -4,6 +4,7 @@ const LOOKUP = {
   campaign: { model: () => require('../../models/Campaign'), field: 'clientId' },
   campaignMessage: { model: () => require('../../models/CampaignMessage'), field: 'clientId' },
   conversation: { model: () => require('../../models/Conversation'), field: 'clientId' },
+  igConversation: { model: () => require('../../models/IGConversation'), field: 'clientId' },
   order: { model: () => require('../../models/Order'), field: 'clientId' },
   lead: { model: () => require('../../models/AdLead'), field: 'clientId' },
   sequence: { model: () => require('../../models/FollowUpSequence'), field: 'clientId' },

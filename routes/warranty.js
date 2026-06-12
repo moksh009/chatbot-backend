@@ -11,6 +11,7 @@ const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 const { normalizePhone } = require('../utils/core/helpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 function normalizeProductRules(body = {}) {
     const { productRules, shopifyProductIds, durationMonths } = body;
@@ -75,7 +76,8 @@ function buildPhoneVariants(phone = '') {
  */
 router.get('/batches', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const batches = await WarrantyBatch.find({ clientId }).sort({ createdAt: -1 });
         res.json({ success: true, batches });
     } catch (err) {
@@ -90,7 +92,8 @@ router.get('/batches', protect, featureWarranty, async (req, res) => {
 router.post('/batches', protect, featureWarranty, async (req, res) => {
     try {
         const { batchName, validFrom, validUntil } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         await requireShopifyConnected(clientId);
 
         const productRules = normalizeProductRules(req.body);
@@ -138,7 +141,8 @@ router.patch('/batches/:id', protect, featureWarranty, async (req, res) => {
             validFrom,
             validUntil
         } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const batch = await WarrantyBatch.findOne({ _id: id, clientId });
         if (!batch) return res.status(404).json({ success: false, message: 'Batch not found' });
@@ -203,7 +207,8 @@ router.patch('/batches/:id', protect, featureWarranty, async (req, res) => {
  */
 router.delete('/batches/:id', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const { id } = req.params;
 
         const batch = await WarrantyBatch.findOne({ _id: id, clientId }).select('_id');
@@ -226,7 +231,8 @@ router.delete('/batches/:id', protect, featureWarranty, async (req, res) => {
  */
 router.get('/records', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const records = await WarrantyRecord.find({ clientId })
             .populate('customerId', 'name phoneNumber email')
             .populate('batchId', 'batchName productRules durationMonths')
@@ -323,7 +329,8 @@ router.get('/records', protect, featureWarranty, async (req, res) => {
  */
 router.get('/stats', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const [statusCounts, customerIds] = await Promise.all([
             WarrantyRecord.aggregate([
                 { $match: { clientId } },
@@ -358,7 +365,8 @@ router.get('/stats', protect, featureWarranty, async (req, res) => {
  */
 router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const phone = normalizePhone(req.query.phone || '');
         if (!phone) {
             return res.status(400).json({ success: false, message: 'Phone is required' });
@@ -492,7 +500,8 @@ router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
  */
 router.get('/resolve-lead', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const phone = normalizePhone(req.query.phone || '');
         if (!phone) return res.json({ success: true, leadId: null });
         const lead = await AdLead.findOne({ clientId, phoneNumber: phone }).select('_id').lean();
@@ -510,7 +519,8 @@ router.patch('/records/:id', protect, featureWarranty, async (req, res) => {
     try {
         const { id } = req.params;
         const { expiryDate, status } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const record = await WarrantyRecord.findOne({ _id: id, clientId });
         if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
@@ -531,7 +541,8 @@ router.patch('/records/:id', protect, featureWarranty, async (req, res) => {
  */
 router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const {
             recordId,
             phoneNumber,
@@ -615,7 +626,8 @@ router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
  */
 router.delete('/records/customer/:phone', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const rawPhone = decodeURIComponent(req.params.phone || '');
         const phoneVariants = buildPhoneVariants(rawPhone);
         if (!phoneVariants.length) {
@@ -653,7 +665,8 @@ router.delete('/records/customer/:phone', protect, featureWarranty, async (req, 
  */
 router.get('/unassigned-orders', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();
         const assignedOrderIds = new Set(
             records
@@ -689,7 +702,8 @@ router.get('/unassigned-orders', protect, featureWarranty, async (req, res) => {
  */
 router.post('/manual-register', protect, featureWarranty, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const {
             phoneNumber,
             productName,
@@ -793,7 +807,8 @@ router.get('/check', async (req, res) => {
 router.post('/resend-notification', protect, featureWarranty, async (req, res) => {
     try {
         const { recordId } = req.body;
-        const clientId = req.user.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const record = await WarrantyRecord.findOne({ _id: recordId, clientId }).populate('customerId');
         if (!record || !record.customerId) {

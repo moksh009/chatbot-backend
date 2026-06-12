@@ -47,7 +47,8 @@ function testRazorpayWebhook401() {
 function testLegacyRoutes410() {
   const flow = read('routes/flow.js');
   const admin = read('routes/admin.js');
-  assert.ok(flow.includes("status(410)") && flow.includes('/ai-build'));
+  // ai-build is live again (tenant BYO key); legacy admin publish alias returns 410
+  assert.ok(flow.includes('/ai-build') && flow.includes('tenantClientId'));
   assert.ok(admin.includes("status(410)") && admin.includes('/flow/publish'));
 }
 

@@ -257,11 +257,11 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
-                /** WS-2 fix: AWAIT the new pipeline so its `OrderStatusSent`
-                 *  ledger writes BEFORE the legacy dispatcher reads it.
-                 *  Previously both ran concurrently → both passed the
-                 *  dedup pre-check → customer received two messages for
-                 *  the same paid event. */
+                /** OM-P0-02 / WS-2: Order event pipelines (sequential, shared dedup ledger).
+                 *  1. processOrderStatusAutomations — canonical sys_* rules + OrderStatusSent ledger
+                 *  2. dispatchOrderStatusAutomation — legacy commerce rules (checks ledger before send)
+                 *  3. commerceAutomationService — SKU-scoped automations only (skipOrderStatusRules)
+                 *  AWAIT step 1 before 2 so dedup pre-check sees ledger writes. */
                 await processOrderStatusAutomations({
                   client,
                   payload: data,

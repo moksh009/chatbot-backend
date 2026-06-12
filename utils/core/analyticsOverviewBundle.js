@@ -92,10 +92,11 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
  */
 async function getAnalyticsOverviewBundle(clientId, query = {}, options = {}) {
   const { timer } = options;
-  const days = parseInt(query.days, 10);
+  const rawDays = parseInt(query.days, 10);
+  const days = rawDays === 999 ? 90 : rawDays;
   let startDate = query.startDate ? new Date(query.startDate) : null;
   let endDate = query.endDate ? new Date(query.endDate) : null;
-  if (!startDate && Number.isFinite(days) && days > 0 && days < 900) {
+  if (!startDate && Number.isFinite(days) && days > 0) {
     startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     endDate = new Date();
   }
@@ -109,7 +110,7 @@ async function getAnalyticsOverviewBundle(clientId, query = {}, options = {}) {
   const statsPromise = getTimelineStats(
     clientId,
     client,
-    { start: query.start, end: query.end, days: query.days },
+    { start: query.start, end: query.end, days: rawDays === 999 ? 90 : query.days },
     { timer }
   );
 

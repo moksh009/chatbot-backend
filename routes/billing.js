@@ -2,7 +2,14 @@ const express = require('express');
 const router = express.Router();
 const Subscription = require('../models/Subscription');
 const Client = require('../models/Client');
-const { resolvePlanLimits } = require('../config/planCatalog');
+const {
+  resolvePlanLimits,
+  resolveRequestedPlan,
+  getRazorpayPlanIdFromEnv,
+  getCheckoutMeta,
+  normalizePlanSlug,
+  PLAN_CHECKOUT,
+} = require('../config/planCatalog');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { verifyTenantScope } = require('../middleware/verifyTenantScope');
 const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
@@ -96,14 +103,19 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
       sub = await Subscription.findOne({ clientId: String(client._id) });
     }
     
-    // Master Plan from Client document
+    // ST-P1-04: Return canonical plan slug (diy_lite / dfy_*), not legacy Client.plan labels
     const masterPlan = client.plan || 'CX Agent (V1)';
     const trialActive = client.billing?.trialActive ?? client.trialActive ?? true;
+    const activeSubPlan = sub?.status === 'active' && sub?.plan ? sub.plan : null;
+    const planSlug =
+      trialActive && sub?.status !== 'active'
+        ? 'trial'
+        : normalizePlanSlug(activeSubPlan || masterPlan);
     const tier = client.tier || 'v1';
 
-    // Calculate Usage based on Client's usage tracker
-    const planLimits = resolvePlanLimits(masterPlan);
-    
+    // BL-P1-02: Client.usage is the single source for dashboard meters
+    const planLimits = resolvePlanLimits(planSlug);
+
     const usage = {
       contacts: {
         used: client.usage?.leadsCreated || 0,
@@ -123,7 +135,7 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
     };
 
     const { estimateTenantCost } = require('../services/billing/costEstimation');
-    const messagesSent = client.usage?.messagesSent || sub?.usageThisPeriod?.messages || 0;
+    const messagesSent = client.usage?.messagesSent || 0;
     const costEstimate = estimateTenantCost({
       usage: {
         whatsappSent: messagesSent,
@@ -144,7 +156,8 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
 
     res.json({
       success: true,
-      plan: masterPlan,
+      plan: planSlug,
+      planLegacy: masterPlan,
       status: sub?.status || (trialActive ? 'trial' : 'inactive'),
       tier: tier,
       daysLeft: client.trialEndsAt ? Math.ceil((new Date(client.trialEndsAt) - new Date()) / (1000 * 60 * 60 * 24)) : 0,
@@ -165,7 +178,7 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
 /**
  * GET /api/billing/:clientId/invoices
  */
-router.get('/:clientId/invoices', protect, async (req, res) => {
+router.get('/:clientId/invoices', protect, verifyTenantScope(), async (req, res) => {
     try {
         const { clientId } = req.params;
         const client = await Client.findOne({ clientId });
@@ -185,13 +198,30 @@ router.get('/:clientId/invoices', protect, async (req, res) => {
 });
 
 /**
- * POST /api/billing/subscribe
- * Creates a Razorpay Subscription
+ * GET /api/billing/plan-catalog
+ * Canonical checkout tiers (mirrors frontend BILLING_PLANS).
  */
+router.get('/plan-catalog', protect, (_req, res) => {
+  res.json({
+    success: true,
+    plans: PLAN_CHECKOUT.map((p) => ({
+      id: p.id,
+      line: p.line,
+      publicName: p.publicName,
+      blurb: p.blurb,
+      amountPaise: p.amountPaise,
+      highlight: p.highlight,
+      features: p.features,
+      checkoutAvailable: Boolean(getRazorpayPlanIdFromEnv(p.id)),
+    })),
+  });
+});
+
 router.post('/subscribe', protect, async (req, res) => {
   const { plan, cycle = 'monthly' } = req.body;
 
-  if (!['starter', 'growth', 'enterprise'].includes(plan)) {
+  const canonicalPlan = resolveRequestedPlan(plan);
+  if (!canonicalPlan) {
     return res.status(400).json({ success: false, message: 'Invalid plan' });
   }
 
@@ -199,18 +229,12 @@ router.post('/subscribe', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    // Plan IDs from .env (User must set these in Razorpay Dashboard)
-    const planIdMap = {
-      starter: process.env.RAZORPAY_PLAN_ID_STARTER,
-      growth: process.env.RAZORPAY_PLAN_ID_GROWTH,
-      enterprise: process.env.RAZORPAY_PLAN_ID_ENTERPRISE
-    };
-
-    const plan_id = planIdMap[plan];
-    if (!plan_id || plan_id.includes('PH_')) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Razorpay Plan ID not configured for ${plan}. Please contact support.` 
+    const plan_id = getRazorpayPlanIdFromEnv(canonicalPlan);
+    if (!plan_id) {
+      const meta = getCheckoutMeta(canonicalPlan);
+      return res.status(400).json({
+        success: false,
+        message: `Razorpay Plan ID not configured for ${meta.publicName}. Please contact support.`,
       });
     }
 
@@ -220,16 +244,19 @@ router.post('/subscribe', protect, async (req, res) => {
       total_count: 12, // 1 year of monthly billing
       notes: {
         clientId: client.clientId,
-        plan: plan
+        plan: canonicalPlan,
       }
     });
+
+    const checkoutMeta = getCheckoutMeta(canonicalPlan);
 
     res.json({
       success: true,
       subscriptionId: subscription.id,
       key: process.env.RAZORPAY_KEY_ID,
       name: 'TopEdge AI',
-      description: `${plan.toUpperCase()} Plan Subscription`,
+      description: `${checkoutMeta.publicName} subscription`,
+      plan: canonicalPlan,
       prefill: {
         name: client.name,
         email: client.email
@@ -261,12 +288,16 @@ router.post('/verify', protect, async (req, res) => {
     }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
-    
+    const canonicalPlan = resolveRequestedPlan(plan);
+    if (!canonicalPlan) {
+      return res.status(400).json({ success: false, message: 'Invalid plan' });
+    }
+
     // Update Subscription locally (Webhook will also confirm this later)
     const sub = await Subscription.findOneAndUpdate(
       { clientId: client._id },
       {
-        plan,
+        plan: canonicalPlan,
         status: 'active',
         razorpaySubId: razorpay_subscription_id,
         currentPeriodStart: new Date(),

@@ -49,8 +49,8 @@ V1 launch scope: reduce surface area and avoid smart-rules edge cases interferin
 ## How to re-enable (future work)
 
 1. Set env on API service: `SMART_RULES_ENGINE_ENABLED=true`
-2. Set frontend `src/config/featureRollout.js` → `smartRulesEngine: true`
-3. Remove or flip `navHidden` on sidebar `/automation-hub` item
+2. Dashboard picks up the flag automatically via `GET /workspace/:clientId/connection-status` → `featureRollout.smartRulesEngine` (no frontend file edit required; optional local override in `featureRollout.js` for offline dev)
+3. Sidebar `/automation-hub` is always visible — routing tab works when smart rules are off
 4. QA checklist:
    - Create rule → save → toggle active
    - `/api/rules/test` with sample message

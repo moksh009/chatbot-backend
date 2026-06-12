@@ -175,8 +175,16 @@ router.get('/transaction-history', protect, async (req, res) => {
   }
 });
 
+/**
+ * One-time maintenance: remove stale embedding token ledger rows.
+ * SUPER_ADMIN only — never call from merchant UI on tab load.
+ */
 router.post('/purge-embedding-noise', protect, async (req, res) => {
   try {
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Super admin only' });
+    }
+
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 

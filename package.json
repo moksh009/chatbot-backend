@@ -28,6 +28,7 @@
     "test:phase-3-e2e": "node tests/phase3E2eSmoke.test.js",
     "test:phase-3-perf": "node tests/phase3PerfGates.test.js",
     "test:phase-4-module1": "node tests/phase4Module1.test.js",
+    "test:security-sprint0": "node tests/security/sprint0Security.test.js",
     "test:security-cross-tenant": "node tests/security/crossTenantIsolation.test.js",
     "test:security-smoke": "node tests/security/securitySmoke.test.js",
     "test:security-routes": "node tests/security/routeHardeningCatalog.test.js",

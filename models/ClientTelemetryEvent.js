@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const KINDS = [
   'error',
   'api_failure',
+  'api_error',
   'page_view',
   'feature_click',
   'hub_tab_view',

@@ -929,6 +929,7 @@ router.post('/library/starter-pack', protect, async (req, res) => {
 });
 
 // ─── POST /api/auto-templates/library/cart-recovery-batch ─────────────────
+// V1: invoked from Cart Leads / onboarding — not Meta Manager library UI (MM-P1-04).
 router.post('/library/cart-recovery-batch', protect, async (req, res) => {
   try {
     const clientId = resolveClientId(req);

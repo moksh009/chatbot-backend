@@ -111,7 +111,7 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'No leads provided' });
     }
     
-    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
     const stepFailures = validateSequenceSteps(steps, client.syncedMetaTemplates || []);
     if (stepFailures.length) {
@@ -210,6 +210,10 @@ router.post('/:clientId', protect, async (req, res) => {
         });
       }
       enrolledSequences.push(sequence);
+    }
+
+    if (enrolledSequences.length > 0) {
+      await incrementUsage(client._id, 'sequences', enrolledSequences.length);
     }
 
     res.json({
@@ -318,150 +322,14 @@ router.get('/:clientId/:sequenceId', protect, async (req, res) => {
   }
 });
 
-// POST enroll from campaign
+// POST enroll from campaign — API reserved; no dashboard UI in V1 (MK-P1-04)
 router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId || clientId !== req.params.clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const { campaignId, templateId, condition } = req.body;
-    if (!campaignId || !templateId || !condition) {
-      return res.status(400).json({ success: false, message: 'Missing parameters' });
-    }
-
-    const campaign = await Campaign.findOne({ _id: campaignId, clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, message: 'Campaign not found' });
-    }
-
-    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
-    const limitCheck = await checkLimit(client?._id, 'sequences');
-    if (!limitCheck.allowed) {
-      return res.status(403).json({ success: false, message: limitCheck.reason });
-    }
-
-    if (isLegacyNicheAutomationBlocked() && isDeprecatedSequenceTemplateId(templateId)) {
-      return res.status(400).json({
-        success: false,
-        message:
-          'This template is deprecated for e-commerce by default. Set BLOCK_LEGACY_NICHE_AUTOMATION=false to enroll.',
-      });
-    }
-
-    const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId);
-    const templateFailures = validateSequenceSteps(template?.steps || [], client.syncedMetaTemplates || []);
-    if (templateFailures.length) {
-      console.warn('[Sequences][PlaybookTemplatePreflightFailed]', {
-        clientId,
-        templateId,
-        contextPurpose: 'sequence',
-        failures: templateFailures
-      });
-      return res.status(400).json({
-        success: false,
-        message: 'Selected playbook includes WhatsApp templates that are not approved/eligible.',
-        details: templateFailures
-      });
-    }
-    if (!template) {
-      return res.status(404).json({ success: false, message: 'Template not found' });
-    }
-
-    const { resolveCampaignEnrollTargets } = require('../utils/messaging/campaignEnrollTargets');
-    const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
-
-    const targets = await resolveCampaignEnrollTargets({
-      clientId,
-      campaignId: campaign._id,
-      condition,
-    });
-
-    if (targets.length === 0) {
-      return res.json({ success: true, message: 'No leads matched this condition', count: 0 });
-    }
-
-    const leads = [];
-    for (const t of targets) {
-      try {
-        const lead = await ensureLeadForSequence({
-          clientId,
-          phone: t.phone,
-          source: 'campaign_enroll',
-        });
-        leads.push(lead);
-      } catch (e) {
-        console.warn(`[Sequences] enroll skip ${t.phone}: ${e.message}`);
-      }
-    }
-
-    if (!leads.length) {
-      return res.json({ success: true, message: 'No valid leads found', count: 0 });
-    }
-
-    const enrolledSequences = [];
-    const errors = [];
-
-    let countMap = await activeSequenceCountMap(
-      clientId,
-      leads.map((l) => l._id)
-    );
-
-    // Enrollment loop
-    for (const lead of leads) {
-      const lid = String(lead._id);
-      let activeCount = countMap.get(lid) || 0;
-
-      if (activeCount >= MAX_ACTIVE_SEQUENCES) {
-        errors.push({ leadId: lead._id, message: 'Limit reached' });
-        continue;
-      }
-
-      let currentSendAt = moment();
-      const mappedSteps = template.steps.map(s => {
-        const normalizedUnit = normalizeDelayUnit(s.delayUnit);
-        const normalizedValue = normalizeDelayValue(s.delayValue);
-        currentSendAt = currentSendAt.add(normalizedValue, normalizedUnit);
-        return {
-           type: s.type || 'whatsapp',
-           templateId: s.templateId,
-           templateName: s.templateName,
-           subject: s.subject,
-           content: s.content,
-           delayValue: normalizedValue,
-           delayUnit: normalizedUnit,
-           condition: s.condition, // Store condition if template has one
-           sendAt: currentSendAt.toDate(),
-           status: "pending"
-        };
-      });
-
-      const sequence = new FollowUpSequence({
-        clientId,
-        leadId: lead._id,
-        phone: lead.phoneNumber,
-        email: lead.email,
-        name: template.name,
-        steps: mappedSteps
-      });
-
-      await sequence.save();
-      countMap.set(lid, activeCount + 1);
-      await AdLead.findByIdAndUpdate(lead._id, { $set: { "metaData.hasActiveSequence": true } });
-      enrolledSequences.push(sequence);
-    }
-
-    res.json({
-      success: true,
-      count: enrolledSequences.length,
-      skipped: errors.length,
-      errors: errors.length > 0 ? errors : undefined
-    });
-  } catch (error) {
-    console.error('Campaign sequence enrollment error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
+  return res.status(501).json({
+    success: false,
+    code: 'NOT_SHIPPED_V1',
+    message:
+      'Post-campaign sequence enrollment is not available in the dashboard V1. Use Marketing hub → Sequences to enroll contacts.',
+  });
 });
 
 // Enroll a sequence from imported CSV audience batch

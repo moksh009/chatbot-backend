@@ -92,12 +92,6 @@ const ConversationSchema = new mongoose.Schema({
   aiAuditFeedback: { type: String, default: "" },
   lastAuditedAt: { type: Date },
 
-  // WhatsApp Commerce — catalog cart context for agents + recovery
-  pendingCart: { type: mongoose.Schema.Types.Mixed, default: null },
-  lastCheckoutUrl: { type: String, default: '' },
-  lastCheckoutValue: { type: Number, default: 0 },
-  lastCheckoutAt: { type: Date },
-
   // Module 2: Intent Engine Live Context
   lastDetectedIntent: {
     intentName:      { type: String, default: null },

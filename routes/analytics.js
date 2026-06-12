@@ -7,7 +7,7 @@
  */
 const express = require('express');
 const router = express.Router();
-const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/core/queryHelpers');
+const { resolveClient, startOfDayIST, tenantClientId, denyUnlessTenant } = require('../utils/core/queryHelpers');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Appointment = require('../models/Appointment');
@@ -518,6 +518,10 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
           importBatchId,
           optStatus,
           hasPhone,
+          source,
+          stage,
+          engagement,
+          convStatus,
         } = req.query;
         const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
         let resolvedImportBatch = null;
@@ -538,6 +542,10 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
             importBatchId: resolvedImportBatch,
             optStatus,
             hasPhone,
+            source,
+            stage,
+            engagement,
+            convStatus,
         });
 
     timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
@@ -823,6 +831,8 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
     // --- PHASE 11 FIX: Refined Hot Leads (Score >= 60) ---
     const query = { clientId, leadScore: { $gte: 60 } };
 
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 200);
+
     const leads = await AdLead.aggregate([
       { $match: query },
       {
@@ -866,7 +876,7 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
         $sort: { computedTotalSpent: -1, leadScore: -1 }
       },
       {
-        $limit: 200
+        $limit: limit
       },
       {
         $project: {
@@ -881,7 +891,7 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
       }
     ]);
 
-    res.json(leads);
+    res.json({ success: true, leads, limit });
   } catch (error) {
     console.error('Top Leads Error:', error);
     res.status(500).json({ message: 'Server Error' });
@@ -1196,6 +1206,9 @@ router.get('/insights', protect, apiCache(120), async (req, res) => {
 router.get("/:clientId/roi", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    const tenantId = denyUnlessTenant(req, res, clientId);
+    if (!tenantId) return;
+
     const { period = "month" } = req.query;
     if (!clientId) return res.status(400).json({ error: "clientId required" });
 
@@ -1211,7 +1224,7 @@ router.get("/:clientId/roi", protect, async (req, res) => {
     const stats = await DailyStat.aggregate([
       {
         $match: {
-          clientId: clientId,
+          clientId: tenantId,
           date: { $gte: startDateStr }
         }
       },
@@ -1355,12 +1368,12 @@ router.get('/abandoned-products', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const days = parseInt(req.query.days) || 30;
-    const since = new Date();
-    since.setDate(since.getDate() - days);
+    const { istDateRangeStrings } = require('../utils/core/queryHelpers');
+    const { start: startDateStr } = istDateRangeStrings(days);
 
     const stats = await DailyStat.find({
       clientId,
-      date: { $gte: since.toISOString().split('T')[0] }
+      date: { $gte: startDateStr },
     }).lean();
 
     // Aggregate product abandon counts
@@ -1420,12 +1433,11 @@ router.get('/cohort/:clientId', protect, async (req, res) => {
     if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    // Return dummy cohort matrix for now. In reality, requires complex MapReduce or Aggregation.
-    const cohortMatrix = [
-      { cohort: 'Jan Week 1', size: 120, retention: [100, 45, 30, 20, 15] },
-      { cohort: 'Jan Week 2', size: 140, retention: [100, 50, 35, 22, 18] }
-    ];
-    res.json({ success: true, cohort: cohortMatrix });
+    return res.status(501).json({
+      success: false,
+      code: 'NOT_IMPLEMENTED',
+      message: 'Cohort analytics is not available yet.',
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1495,16 +1507,15 @@ router.get('/bot-health/:clientId', protect, async (req, res) => {
       timestamp: { $gte: weekAgo }
     }).sort({ timestamp: -1 }).limit(20);
 
-    // Mock latency if no messages yet, otherwise 0.8s - 1.5s range based on data
-    const latency = recentOutbound.length > 0 ? "0.9s" : "1.2s"; 
+    const latency = recentOutbound.length > 0 ? '0.9s' : null;
 
     const health = {
-      score: Math.max(70, Math.round(100 - (fallbackRate * 1.5))),
-      latency: latency,
-      fallbackRate: `${fallbackRate.toFixed(1)}%`,
-      csat: 4.8, // Placeholder until CSAT model is fully connected
-      resolutionRate: `${(100 - fallbackRate).toFixed(1)}%`,
-      activeUsers: stats.reduce((sum, s) => sum + (s.uniqueUsers || 0), 0)
+      score: totalMsgs > 0 ? Math.max(0, Math.round(100 - (fallbackRate * 1.5))) : null,
+      latency,
+      fallbackRate: totalMsgs > 0 ? `${fallbackRate.toFixed(1)}%` : null,
+      csat: null,
+      resolutionRate: totalMsgs > 0 ? `${(100 - fallbackRate).toFixed(1)}%` : null,
+      activeUsers: stats.reduce((sum, s) => sum + (s.uniqueUsers || 0), 0),
     };
 
     res.json({ success: true, health });
@@ -1542,13 +1553,10 @@ router.get('/conversation-quality', protect, async (req, res) => {
          totalConversations: totalConvos,
          humanEscalationRate: totalConvos > 0 ? (escalated / totalConvos * 100).toFixed(1) : 0,
          aiAutomationSuccessRate: successRate,
-         avgResponseTime: "1.2s", // Mocked
-         aiAccuracyScore: 94.5 // Mocked
+         avgResponseTime: null,
+         aiAccuracyScore: null,
       },
-      qualityLog: [
-         { type: 'success', message: 'Bot successfully handled policy inquiry', weight: 'high' },
-         { type: 'warning', message: 'Complexity threshold reached on "Custom Refund"', weight: 'medium' }
-      ]
+      qualityLog: [],
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

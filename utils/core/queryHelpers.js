@@ -11,6 +11,8 @@ const { auditSecurity } = require("../../middleware/securityAudit");
 function tenantClientId(req) {
   if (!req.user) return null;
   if (req.user.role === "SUPER_ADMIN") {
+    const impersonating = req.headers["x-admin-impersonating"];
+    if (impersonating) return String(impersonating).trim();
     return (
       req.params?.clientId ||
       req.query?.clientId ||

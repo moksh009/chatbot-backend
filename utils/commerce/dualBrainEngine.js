@@ -1500,6 +1500,33 @@ async function runDualBrainEngine(parsedMessage, client) {
               assigned = selectedAgent._id.toString();
               await User.findByIdAndUpdate(assigned, { lastAssignedTimestamp: new Date() });
            }
+        } else if (routingDirective.type === 'escalate') {
+           const NotificationService = require('../core/notificationService');
+           const DashboardLink = `https://dash.topedgeai.com/live-chat?phone=${encodeURIComponent(phone)}`;
+           await NotificationService.sendAdminAlert(client, {
+             customerPhone: phone,
+             conversationId: convo._id,
+             topic: '🚨 ROUTING ESCALATION — Attention Needed',
+             triggerSource: `Routing rule matched — escalate to management\n🔗 ${DashboardLink}`,
+             channel: 'both',
+             customerQuery: inboundText || '(routing rule)',
+           });
+           if (io) {
+             io.to(`client_${client.clientId}`).emit('attention_required', {
+               phone,
+               reason: 'Routing rule escalated — prioritize!',
+               priority: 'high',
+             });
+           }
+           await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({ status: 'HUMAN_TAKEOVER' }));
+           try {
+             await AdLead.findOneAndUpdate(
+               { phoneNumber: phone, clientId: client.clientId },
+               { $set: { pendingSupport: true } }
+             );
+             const { applyNeedHelpTag } = require('./needHelpTag');
+             await applyNeedHelpTag(client.clientId, phone);
+           } catch (_escErr) { /* non-blocking */ }
         }
         if (assigned && convo.assignedAgent !== assigned) {
            convo.assignedAgent = assigned;
@@ -4492,8 +4519,15 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'flow':
     case 'FlowNode':
     case 'whatsapp_flow': {
-      await sendWhatsAppFlow(client, phone, data.header, data.body || data.text, data.flowId, data.buttonLabel || data.flowCta, data.screen);
-      return true;
+      return await sendWhatsAppFlow(
+        client,
+        phone,
+        data.header,
+        data.body || data.text,
+        data.flowId,
+        data.buttonLabel || data.flowCta,
+        data.screen
+      );
     }
     case 'message':
     case 'MessageNode':
@@ -5862,7 +5896,10 @@ async function sendWhatsAppSmartTemplate(client, phone, templateName, variables 
 async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
-  if (!token || !phoneNumberId) return;
+  if (!token || !phoneNumberId) {
+    log.warn('sendWhatsAppFlow skipped: missing WhatsApp credentials', { clientId: client?.clientId });
+    return false;
+  }
 
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
@@ -5912,8 +5949,10 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
             { upsert: true }
         );
     } catch (err) { log.error('[Analytics] Flow send error:', { error: err.message }); }
+    return true;
   } catch (err) { 
     log.error('sendFlow error:', { error: err.response?.data || err.message });
+    return false;
   }
 }
 

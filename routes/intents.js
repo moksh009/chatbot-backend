@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const IntentApiController = require('../controllers/IntentApiController');
-const { verifyDashboardToken } = require('../middleware/DashboardAuthMiddleware');
+const { protect } = require('../middleware/auth');
 
 // HARDENING 2: Simple rate limiter for AI generation endpoint
 const rateLimitMap = new Map();
@@ -30,12 +30,12 @@ function aiRateLimit(maxRequests = 5, windowMs = 60000) {
 }
 
 // Dashboard intent engine routes (training inbox / quality analytics removed)
-router.post('/', verifyDashboardToken, IntentApiController.upsertIntent);
-router.get('/', verifyDashboardToken, IntentApiController.getIntents);
-router.get('/stats', verifyDashboardToken, IntentApiController.getIntentStats);
-router.post('/simulate', verifyDashboardToken, IntentApiController.simulateIntent);
-router.post('/generate-training', verifyDashboardToken, aiRateLimit(5, 60000), IntentApiController.generateTrainingData);
-router.patch('/:intentId/toggle', verifyDashboardToken, IntentApiController.toggleIntent);
-router.delete('/:intentId', verifyDashboardToken, IntentApiController.deleteIntent);
+router.post('/', protect, IntentApiController.upsertIntent);
+router.get('/', protect, IntentApiController.getIntents);
+router.get('/stats', protect, IntentApiController.getIntentStats);
+router.post('/simulate', protect, IntentApiController.simulateIntent);
+router.post('/generate-training', protect, aiRateLimit(5, 60000), IntentApiController.generateTrainingData);
+router.patch('/:intentId/toggle', protect, IntentApiController.toggleIntent);
+router.delete('/:intentId', protect, IntentApiController.deleteIntent);
 
 module.exports = router;

@@ -48,6 +48,46 @@ const {
 } = require('../utils/commerce/marketingConsent');
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 
+/** Hot-leads smart-send audience (leadScore ≥ 60, marketing-opt-in safe). */
+async function resolveHotLeadsAudience(clientId, limit, campaign) {
+  const optQ = audienceOptQueryForCampaign(campaign);
+  const leads = await AdLead.find({
+    clientId,
+    leadScore: { $gte: 60 },
+    phoneNumber: { $exists: true, $ne: '' },
+    ...optQ,
+  })
+    .sort({ leadScore: -1 })
+    .limit(Math.max(1, Number(limit) || 50))
+    .lean();
+  return leads.map((l) => ({
+    phone: l.phoneNumber,
+    email: l.email || '',
+    name: l.name || '',
+    _id: l._id,
+  }));
+}
+
+function parseCsvColumnMapping(raw) {
+  if (!raw) return {};
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function pickMappedCsvValue(row, mapping, field, fallbacks = []) {
+  if (mapping[field] && row[mapping[field]] != null) {
+    return String(row[mapping[field]]).trim();
+  }
+  for (const key of fallbacks) {
+    if (row[key] != null && String(row[key]).trim()) return String(row[key]).trim();
+  }
+  return '';
+}
+
 try {
   fs.mkdirSync('uploads', { recursive: true });
 } catch {}
@@ -82,8 +122,12 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
+    const tenantId = tenantClientId(req);
+    if (!tenantId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
     // Check subscription plan (using new validation limits)
-    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+    const client = await Client.findOne({ clientId: tenantId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
     if (!client || isV1) {
       try { fs.unlinkSync(req.file.path); } catch {}
@@ -111,15 +155,20 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       return res.status(400).json({ message: 'CSV too large. Maximum 5000 rows allowed.' });
     }
 
+    const mapping = parseCsvColumnMapping(req.body.mapping);
     const audience = [];
-    rows.forEach(row => {
-      const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      if (phone || row.email) {
+    rows.forEach((row) => {
+      const phone = normalizePhone(
+        pickMappedCsvValue(row, mapping, 'phone', ['phone', 'number', 'mobile', 'recipient', 'whatsapp'])
+      );
+      const email = pickMappedCsvValue(row, mapping, 'email', ['email', 'Email']);
+      const name = pickMappedCsvValue(row, mapping, 'name', ['name', 'customer', 'Name']);
+      if (phone || email) {
         audience.push({
-           phone,
-           email: row.email || row.Email || '',
-           name: row.name || '',
-           ...row // store full row data for variable mapping
+          phone,
+          email,
+          name,
+          ...row,
         });
       }
     });
@@ -127,7 +176,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
     const validCount = audience.length;
 
     const campaign = await Campaign.create({
-      clientId: req.user.clientId,
+      clientId: tenantId,
       name: req.body.name,
       templateName: req.body.templateName,
       status: 'DRAFT',
@@ -135,7 +184,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       audienceCount: validCount,
       audience // Store audience directly in document
     });
-    log.info(`Campaign CREATED: ${campaign.name} | clientId: ${req.user.clientId} | rows: ${validCount}`);
+    log.info(`Campaign CREATED: ${campaign.name} | clientId: ${tenantId} | rows: ${validCount}`);
     res.json(campaign);
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -148,11 +197,15 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
 router.post('/from-segment', protect, async (req, res) => {
     const { segmentId, name } = req.body;
     try {
-        const segment = await Segment.findOne({ _id: segmentId, clientId: req.user.clientId });
+        const tenantId = tenantClientId(req);
+        if (!tenantId) {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+        const segment = await Segment.findOne({ _id: segmentId, clientId: tenantId });
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
-        const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        const count = await AdLead.countDocuments({ ...segment.query, clientId: tenantId });
+        const client = await Client.findOne({ clientId: tenantId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -162,7 +215,7 @@ router.post('/from-segment', protect, async (req, res) => {
         await incrementUsage(client._id, 'campaigns', 1);
 
         const campaign = await Campaign.create({
-            clientId: req.user.clientId,
+            clientId: tenantId,
             name: name || `Segment: ${segment.name}`,
             status: 'DRAFT',
             audienceCount: count,
@@ -188,17 +241,17 @@ router.post('/from-imported-list', protect, async (req, res) => {
         // The frontend sends either ImportSession._id or ImportSession.batchId
         // (the BATCH_* string). Normalize before querying AdLead — the schema
         // there is ObjectId-typed and would otherwise crash with a CastError.
-        const resolvedId = await resolveImportBatchObjectId(importBatchId, req.user.clientId);
+        const resolvedId = await resolveImportBatchObjectId(importBatchId, tenantClientId(req));
         if (!resolvedId) {
             return res.status(404).json({ error: 'Import batch not found for this account' });
         }
 
-        const count = await AdLead.countDocuments({ importBatchId: resolvedId, clientId: req.user.clientId });
+        const count = await AdLead.countDocuments({ importBatchId: resolvedId, clientId: tenantClientId(req) });
         if (count === 0) {
             return res.status(400).json({ error: 'This import batch has no targetable contacts.' });
         }
 
-        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        const client = await Client.findOne({ clientId: tenantClientId(req) }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
         const limits = await checkLimit(client._id, 'campaigns');
@@ -209,7 +262,7 @@ router.post('/from-imported-list', protect, async (req, res) => {
         await incrementUsage(client._id, 'campaigns', 1);
 
         const campaign = await Campaign.create({
-            clientId: req.user.clientId,
+            clientId: tenantClientId(req),
             name: name || `Imported List Broadcast`,
             status: 'DRAFT',
             audienceCount: count,
@@ -247,7 +300,7 @@ router.post('/from-leads', protect, async (req, res) => {
             return res.status(400).json({ error: 'Maximum 10,000 leads per CRM broadcast' });
         }
 
-        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        const client = await Client.findOne({ clientId: tenantClientId(req) }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
         const limits = await checkLimit(client._id, 'campaigns');
@@ -257,7 +310,7 @@ router.post('/from-leads', protect, async (req, res) => {
 
         const leads = await AdLead.find({
             _id: { $in: objectIds },
-            clientId: req.user.clientId,
+            clientId: tenantClientId(req),
         }).lean();
 
         if (!leads.length) {
@@ -273,7 +326,7 @@ router.post('/from-leads', protect, async (req, res) => {
         await incrementUsage(client._id, 'campaigns', 1);
 
         const campaign = await Campaign.create({
-            clientId: req.user.clientId,
+            clientId: tenantClientId(req),
             name: name || `CRM · ${audience.length} contacts`,
             status: 'DRAFT',
             audience,
@@ -293,7 +346,7 @@ router.post('/from-leads', protect, async (req, res) => {
 router.post('/from-hot-leads', protect, async (req, res) => {
     const { name, count } = req.body;
     try {
-        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        const client = await Client.findOne({ clientId: tenantClientId(req) }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(403).json({ error: 'Client not found' });
 
         const limits = await checkLimit(client._id, 'campaigns');
@@ -310,7 +363,7 @@ router.post('/from-hot-leads', protect, async (req, res) => {
         await incrementUsage(client._id, 'campaigns', 1);
 
         const campaign = await Campaign.create({
-            clientId: req.user.clientId,
+            clientId: tenantClientId(req),
             name: name || `Hot Leads Targeting`,
             status: 'DRAFT',
             audienceCount: cappedCount,
@@ -326,11 +379,14 @@ router.post('/from-hot-leads', protect, async (req, res) => {
 });
 
 // @route   POST /api/campaigns/quick-send
-// @desc    Send a template message to multiple contacts (max 250)
+// @desc    Queue a template broadcast to multiple contacts (max 250) via CampaignMessage worker
 // @access  Private
-router.post('/quick-send', protect, async (req, res) => {
+router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
   const { leadId, leadIds, templateName, channel, strictValidation = true } = req.body;
-  const clientId = req.user.clientId;
+  const clientId = tenantClientId(req);
+  if (!clientId) {
+    return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
   if (!req.body.templateCategory) {
     return res.status(400).json({
       success: false,
@@ -365,7 +421,6 @@ router.post('/quick-send', protect, async (req, res) => {
     }
 
     const { resolveTemplateForSend } = require('../services/templateResolver');
-    const { sendForAutomation } = require('../services/templateSender');
     const resolved = await resolveTemplateForSend(clientId, { name: templateName });
     if (!resolved?.template) {
       return res.status(400).json({
@@ -407,92 +462,86 @@ router.post('/quick-send', protect, async (req, res) => {
       });
     }
 
+    const clientDoc = await Client.findOne({ clientId }).select('_id plan subscriptionPlan').lean();
+    const isV1 = clientDoc?.plan === 'CX Agent (V1)' || clientDoc?.subscriptionPlan === 'v1';
+    if (isV1) {
+      return res.status(403).json({
+        success: false,
+        message: 'Marketing broadcasting is locked for CX Agent (V1). Please upgrade to V2.',
+      });
+    }
+
+    const limits = await checkLimit(clientDoc?._id, 'messages');
+    if (!limits.allowed) {
+      return res.status(403).json({ success: false, message: limits.reason });
+    }
+
     const leads = await AdLead.find({ _id: { $in: finalLeadIds }, clientId });
     if (leads.length === 0) return res.status(404).json({ success: false, message: 'No valid leads found' });
 
-    let successCount = 0;
-    let failCount = 0;
+    const eligibleLeads = [];
     let skippedOptIn = 0;
-
     for (const lead of leads) {
       const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
       if (!eligibility.canSend) {
         skippedOptIn++;
         continue;
       }
-
-      try {
-        const sendResult = await sendForAutomation({
-          clientId,
-          phone: lead.phoneNumber,
-          metaName: templateName,
-          contextType: 'flow',
-          contextData: {
-            extra: {
-              first_name: lead.name || 'Customer',
-              leadName: lead.name || '',
-            },
-          },
-        });
-
-        if (sendResult?.whatsapp?.sent) {
-          await AdLead.findByIdAndUpdate(lead._id, {
-            $push: {
-              activityLog: {
-                action: 'quick_message_sent',
-                details: `Sent template: ${templateName}`,
-                timestamp: new Date(),
-              },
-            },
-          });
-          successCount++;
-        } else {
-          const reason =
-            sendResult?.whatsapp?.reason ||
-            sendResult?.whatsapp?.error ||
-            'send_failed';
-          log.warn(`[QuickSend] Skipped ${lead.phoneNumber}: ${reason}`);
-          failCount++;
-        }
-      } catch (err) {
-        log.error(`[QuickSend] Failed for ${lead.phoneNumber}:`, err.message);
-        failCount++;
-      }
-
-      if (finalLeadIds.length > 1) {
-        await new Promise((r) => setTimeout(r, 200));
-      }
+      eligibleLeads.push(lead);
     }
 
-    if (successCount === 0 && failCount === 0 && skippedOptIn > 0) {
+    if (eligibleLeads.length === 0) {
       return res.status(400).json({
         success: false,
         message:
-          'No messages sent — selected contacts opted out of marketing or could not be reached.',
-        successCount: 0,
-        failCount: 0,
+          'No messages queued — selected contacts opted out of marketing or could not be reached.',
+        enqueued: 0,
         skippedMarketingOptIn: skippedOptIn,
       });
     }
 
-    if (successCount === 0 && failCount > 0) {
-      return res.status(400).json({
+    const audienceRows = eligibleLeads.map((lead) => ({
+      _id: lead._id,
+      phone: lead.phoneNumber,
+      phoneNumber: lead.phoneNumber,
+      name: lead.name || 'Customer',
+      email: lead.email || '',
+    }));
+
+    const campaign = await Campaign.create({
+      clientId,
+      name: `Quick broadcast · ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+      templateName,
+      channel: 'whatsapp',
+      templateCategory: quickCampaign.templateCategory,
+      campaignType: 'STANDARD',
+      status: 'DRAFT',
+      audience: audienceRows,
+      variableMapping: { '1': 'name' },
+      languageCode: 'en',
+    });
+
+    const { launchCampaignDispatch } = require('../services/campaignLaunchService');
+    const { inserted, enqueued } = await launchCampaignDispatch(campaign, audienceRows);
+
+    if (!enqueued) {
+      await Campaign.findByIdAndDelete(campaign._id);
+      return res.status(500).json({
         success: false,
-        message: 'Broadcast failed for all recipients. Check template variables, media header, or WhatsApp connection.',
-        successCount,
-        failCount,
-        skippedMarketingOptIn: skippedOptIn,
+        message: 'Could not queue broadcast. Ensure campaign workers are running (RUN_WORKERS=true).',
       });
     }
-
-    await incrementStat(clientId, { totalConversations: successCount });
 
     res.json({
       success: true,
-      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}${skippedOptIn ? `, Skipped (opted out): ${skippedOptIn}` : ''}`,
-      successCount,
-      failCount,
+      queued: true,
+      campaignId: campaign._id,
+      enqueued,
+      inserted,
       skippedMarketingOptIn: skippedOptIn,
+      message: `Queued ${enqueued} message${enqueued === 1 ? '' : 's'}. Sending via the campaign worker with rate limits.`,
+      successCount: enqueued,
+      failCount: 0,
     });
   } catch (err) {
     log.error('[QuickSend] Error:', err.message);
@@ -505,7 +554,7 @@ router.post('/quick-send', protect, async (req, res) => {
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
     const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 }).lean();
     
     // Aggregate stats for all campaigns of this client to avoid N+1 queries
@@ -602,6 +651,7 @@ router.get('/templates', protect, async (req, res) => {
         hiddenNotApproved: hidden.notApproved,
         hiddenWrongCategory: hidden.wrongCategory,
         hiddenNonMarketing: contextPurpose === 'campaign' ? hidden.wrongCategory : 0,
+        deprecatedUse: '/api/templates/unified?contextPurpose=campaign',
       },
     });
   } catch (err) {
@@ -612,7 +662,7 @@ router.get('/templates', protect, async (req, res) => {
 
 router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
     const { source, segmentId, importBatchId, campaignId } = req.query;
-    const cid = req.user.clientId;
+    const cid = tenantClientId(req);
     let count = 0;
 
     try {
@@ -650,7 +700,7 @@ router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
 
 router.get('/audience-preview', protect, async (req, res) => {
   try {
-    const cid = req.user.clientId;
+    const cid = tenantClientId(req);
     const {
       source: sourceRaw,
       segmentId,
@@ -739,7 +789,7 @@ router.get('/audience-preview', protect, async (req, res) => {
 // @route   POST /api/campaigns/:id/pause
 router.post('/:id/pause', ...campaignMutate, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantClientId(req) });
     if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
     campaign.status = 'PAUSED';
     await campaign.save();
@@ -756,7 +806,7 @@ router.post('/:id/pause', ...campaignMutate, async (req, res) => {
 // @route   POST /api/campaigns/:id/cancel
 router.post('/:id/cancel', ...campaignMutate, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantClientId(req) });
     if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
     if (['CANCELLED', 'COMPLETED', 'FAILED'].includes(campaign.status)) {
       return res.status(400).json({ success: false, message: `Campaign already ${campaign.status}` });
@@ -871,7 +921,7 @@ router.post('/:id/cancel', ...campaignMutate, async (req, res) => {
 // @route   DELETE /api/campaigns/:id
 router.delete('/:id', ...campaignMutate, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantClientId(req) });
     if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
     if (['SENDING', 'QUEUED'].includes(campaign.status)) {
       return res.status(400).json({
@@ -882,7 +932,7 @@ router.delete('/:id', ...campaignMutate, async (req, res) => {
             : 'Wait for launch to finish or cancel the campaign first',
       });
     }
-    await Campaign.deleteOne({ _id: campaign._id, clientId: req.user.clientId });
+    await Campaign.deleteOne({ _id: campaign._id, clientId: tenantClientId(req) });
     return res.json({ success: true, message: 'Campaign deleted' });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
@@ -893,7 +943,7 @@ router.delete('/:id', ...campaignMutate, async (req, res) => {
 router.post('/:id/refresh-audience', ...campaignMutate, async (req, res) => {
   try {
     const { refreshCampaignAudience } = require('../services/campaignRefreshAudience');
-    const result = await refreshCampaignAudience(req.params.id, req.user.clientId);
+    const result = await refreshCampaignAudience(req.params.id, tenantClientId(req));
     if (!result.ok) {
       return res.status(result.status || 400).json({ success: false, message: result.message });
     }
@@ -911,7 +961,7 @@ router.post('/:id/refresh-audience', ...campaignMutate, async (req, res) => {
 // @route   POST /api/campaigns/:id/resume
 router.post('/:id/resume', ...campaignMutate, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantClientId(req) });
     if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
     campaign.status = 'SENDING';
     await campaign.save();
@@ -928,7 +978,7 @@ router.post('/:id/resume', ...campaignMutate, async (req, res) => {
 // @route   POST /api/campaigns/:id/send-winner
 router.post('/:id/send-winner', ...campaignMutate, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantClientId(req) });
     if (!campaign || !campaign.isAbTest) {
       return res.status(400).json({ success: false, message: 'Not an A/B campaign' });
     }
@@ -975,7 +1025,7 @@ router.post('/:id/send-winner', ...campaignMutate, async (req, res) => {
 // @access  Private
 router.post('/preflight', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
     const { campaignId, audienceCount: rawCount, channel: rawChannel, templateName } = req.body || {};
     const Campaign = require('../models/Campaign');
     const Client = require('../models/Client');
@@ -1148,7 +1198,11 @@ router.post('/start', protect, async (req, res) => {
     return res.status(400).json({ message: 'campaignId and templateType are required' });
   }
   try {
-    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
+    const tenantId = tenantClientId(req);
+    if (!tenantId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: tenantId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
 
     const startChannel = bodyChannel || String(campaign.channel || 'whatsapp').toLowerCase();
@@ -1177,7 +1231,7 @@ router.post('/start', protect, async (req, res) => {
         return res.status(400).json({ message: 'No audience attached to this campaign' });
     }
 
-    log.info(`Campaign START: campaignId=${campaignId} | clientId=${req.user.clientId} | templateType=${templateType}`);
+    log.info(`Campaign START: campaignId=${campaignId} | clientId=${tenantId} | templateType=${templateType}`);
     campaign.status = req.body.scheduledDate ? 'SCHEDULED' : 'SENDING';
     if (req.body.scheduledDate) {
         campaign.scheduledAt = new Date(req.body.scheduledDate);
@@ -1185,7 +1239,7 @@ router.post('/start', protect, async (req, res) => {
     await campaign.save();
 
     // Fetch client configuration
-    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+    const client = await Client.findOne({ clientId: tenantClientId(req) }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) {
         return res.status(404).json({ message: 'Client configuration not found' });
     }
@@ -1237,14 +1291,18 @@ router.post('/start', protect, async (req, res) => {
     const marketingOptQ = audienceOptQueryForCampaign(campaign);
     const isEmailChannel = campaign.channel === 'email';
     
-    // Resolve audience for Segments and Import Lists if not already set
+    // Resolve audience for Segments, Import Lists, and hot-leads smart-send
     if (!campaign.audience || campaign.audience.length === 0) {
-        if (campaign.segmentId) {
+        if (campaign.isSmartSend) {
+            const effectiveClientId = tenantClientId(req);
+            const limit = Math.max(1, Number(campaign.audienceCount) || 50);
+            campaign.audience = await resolveHotLeadsAudience(effectiveClientId, limit, campaign);
+        } else if (campaign.segmentId) {
             const segment = await Segment.findById(campaign.segmentId);
             if (segment) {
                 const leads = await AdLead.find({
                   ...segment.query,
-                  clientId: req.user.clientId,
+                  clientId: tenantClientId(req),
                   ...marketingOptQ,
                 }).lean();
                 campaign.audience = leads.map((l) => ({
@@ -1257,7 +1315,7 @@ router.post('/start', protect, async (req, res) => {
         } else if (campaign.importBatchId) {
             // Normalize whatever was stored (legacy BATCH_* string or canonical ObjectId hex)
             // before querying AdLead.importBatchId (ObjectId-typed).
-            const resolvedBatchId = await resolveImportBatchObjectId(campaign.importBatchId, req.user.clientId);
+            const resolvedBatchId = await resolveImportBatchObjectId(campaign.importBatchId, tenantClientId(req));
             if (!resolvedBatchId) {
                 campaign.status = 'FAILED';
                 await campaign.save();
@@ -1265,7 +1323,7 @@ router.post('/start', protect, async (req, res) => {
             }
             const leads = await AdLead.find({
                   importBatchId: resolvedBatchId,
-                  clientId: req.user.clientId,
+                  clientId: tenantClientId(req),
                   ...marketingOptQ,
                 }).lean();
                 campaign.audience = leads.map((l) => ({
@@ -1312,7 +1370,7 @@ router.post('/start', protect, async (req, res) => {
     }
 
     if (campaign.campaignType === 'RE_PERMISSION') {
-      const rpFiltered = await filterAudienceByOptStatus(req.user.clientId, filteredAudience, ['unknown', 'pending']);
+      const rpFiltered = await filterAudienceByOptStatus(tenantClientId(req), filteredAudience, ['unknown', 'pending']);
       campaign.audience = rpFiltered.rows;
       campaign.audienceCount = rpFiltered.rows.length;
       campaign.marketingOptInExcludedCount = rpFiltered.excluded;
@@ -1327,7 +1385,7 @@ router.post('/start', protect, async (req, res) => {
     }
 
     const optFiltered = await filterAudienceForMarketingOptIn(
-      req.user.clientId,
+      tenantClientId(req),
       campaign.campaignType === 'RE_PERMISSION' ? campaign.audience : filteredAudience,
       campaign
     );
@@ -1360,7 +1418,7 @@ router.post('/start', protect, async (req, res) => {
         });
         if (!preflight.ok) {
           log.warn('[CampaignStart][TemplatePreflightFailed]', {
-            clientId: req.user.clientId,
+            clientId: tenantClientId(req),
             campaignId: String(campaign._id),
             templateName: candidateTemplateName,
             contextPurpose: 'campaign',
@@ -1401,7 +1459,7 @@ router.post('/start', protect, async (req, res) => {
           holdbackPercent,
           winnerMetric: req.body.abTestConfig?.winnerMetric || 'reply_rate',
           holdbackHours,
-          autoSendWinner: false,
+          autoSendWinner: req.body.abTestConfig?.autoSendWinner !== false,
           holdbackProcessed: false,
         };
         campaign.abVariants = [
@@ -1483,16 +1541,16 @@ router.get('/:clientId/:campaignId/analytics', protect, async (req, res) => {
 // @desc    Re-permission conversion funnel
 router.get('/:campaignId/repermission-funnel', protect, async (req, res) => {
   try {
-    const campaign = await Campaign.findOne({ _id: req.params.campaignId, clientId: req.user.clientId }).lean();
+    const campaign = await Campaign.findOne({ _id: req.params.campaignId, clientId: tenantClientId(req) }).lean();
     if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
     if (campaign.campaignType !== 'RE_PERMISSION') {
       return res.status(400).json({ success: false, message: 'Not a re-permission campaign' });
     }
-    const sent = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['sent', 'delivered', 'read', 'replied'] } });
-    const delivered = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['delivered', 'read', 'replied'] } });
-    const opened = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['read', 'replied'] } });
-    const confirmedYes = await AdLead.countDocuments({ clientId: req.user.clientId, optInSource: 're_permission_campaign', optStatus: 'opted_in', updatedAt: { $gte: campaign.createdAt } });
-    const declinedNo = await AdLead.countDocuments({ clientId: req.user.clientId, optOutSource: 're_permission_campaign', updatedAt: { $gte: campaign.createdAt } });
+    const sent = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: tenantClientId(req), status: { $in: ['sent', 'delivered', 'read', 'replied'] } });
+    const delivered = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: tenantClientId(req), status: { $in: ['delivered', 'read', 'replied'] } });
+    const opened = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: tenantClientId(req), status: { $in: ['read', 'replied'] } });
+    const confirmedYes = await AdLead.countDocuments({ clientId: tenantClientId(req), optInSource: 're_permission_campaign', optStatus: 'opted_in', updatedAt: { $gte: campaign.createdAt } });
+    const declinedNo = await AdLead.countDocuments({ clientId: tenantClientId(req), optOutSource: 're_permission_campaign', updatedAt: { $gte: campaign.createdAt } });
     const noResponse = Math.max(0, delivered - confirmedYes - declinedNo);
     return res.json({
       success: true,
@@ -1508,24 +1566,12 @@ router.get('/:campaignId/repermission-funnel', protect, async (req, res) => {
 // @desc    Create an AB Test Campaign
 // @access  Private
 router.post('/:clientId/ab-test', protect, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    if (!denyUnlessTenant(req, res, clientId)) return;
-    // Dummy stub that just creates a campaign marked as AB Test
-    // Wait, the client will send variants in body
-    const { name, variants } = req.body;
-    const campaign = await Campaign.create({
-      clientId,
-      name,
-      templateName: "mixed",
-      isAbTest: true,
-      abVariants: variants || [],
-      status: "DRAFT"
-    });
-    res.json({ success: true, campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  return res.status(501).json({
+    success: false,
+    code: 'NOT_SHIPPED_V1',
+    message:
+      'A/B test campaigns are not available in the dashboard V1. Create a standard WhatsApp campaign in Marketing hub instead.',
+  });
 });
 
 
@@ -1663,207 +1709,24 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
   }
 });
 
-// @route   POST /api/campaigns/smart-send
-// @desc    Smart broadcast optimization with schedule/throttle execution (DB-queued)
-// @access  Private
+// @route   POST /api/campaigns/smart-send — legacy; no dashboard UI in V1 (MK-P2-03)
 router.post('/smart-send', protect, async (req, res) => {
-    try {
-        const { campaignId, config } = req.body;
-        if (!campaignId) return res.status(400).json({ success: false, message: 'Campaign ID required' });
-
-        const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
-        if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
-        
-        campaign.status = 'SENDING';
-        campaign.isSmartSend = true;
-        campaign.smartSendConfig = config;
-        await campaign.save();
-
-        const FollowUpSequence = require('../models/FollowUpSequence');
-        const AdLead = require('../models/AdLead');
-        const moment = require('moment');
-
-        let rows = [];
-        fs.createReadStream(campaign.csvFile)
-            .pipe(csv())
-            .on('data', (d) => rows.push(d))
-            .on('end', async () => {
-                 let queuedCount = 0;
-                 
-                 for (let i = 0; i < rows.length; i++) {
-                     const row = rows[i];
-                     const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-                     if (!phone) continue;
-                     
-                     const tName = campaign.templateName || req.body.templateName;
-                     if (!tName) continue;
-                     
-                     // Peak hour calculation logic
-                     let optimalSendAt = moment().add(Math.floor(Math.random() * 60) + 15, 'minutes'); // default jitter
-                     
-                     try {
-                         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: req.user.clientId });
-                         if (lead && lead.lastInteractionAt) {
-                             const interactionHour = moment(lead.lastInteractionAt).hour();
-                             // Try to target their previous interaction hour today or tomorrow
-                             const targetToday = moment().set({ hour: interactionHour, minute: 0, second: 0 });
-                             if (targetToday.isAfter(moment())) {
-                                 optimalSendAt = targetToday;
-                             } else {
-                                 optimalSendAt = targetToday.add(1, 'day');
-                             }
-                         } else {
-                             // E.g., assume timezone offset logic here (default to India 10 AM ~ 4 PM staggered)
-                             // Fallback: stagger based on list index across the next 6 hours
-                             optimalSendAt = moment().add((i % 360) + 10, 'minutes');
-                         }
-                     } catch(e) {}
-                     
-                     // Push to DB Queue via FollowUpSequence
-                     const seq = new FollowUpSequence({
-                         clientId: req.user.clientId,
-                         leadId: null, // Lead might not exist yet
-                         phone: phone,
-                         name: `Smart Broadcast: ${campaign.name}`,
-                         status: 'active',
-                         steps: [{
-                             type: 'whatsapp',
-                             templateName: tName,
-                             sendAt: optimalSendAt.toDate(),
-                             status: 'pending'
-                         }]
-                     });
-                     
-                     await seq.save();
-                     queuedCount++;
-                 }
-                 
-                 campaign.audienceCount = rows.length;
-                 campaign.status = 'COMPLETED'; // Marking the parsing as completed
-                 await campaign.save();
-                 log.success(`[SmartSend] FINISHED QUEUING ${campaignId} - Queued: ${queuedCount}`);
-            });
-
-        // Close request immediately with 200 OK
-        res.json({ success: true, message: 'Smart Send is analyzing and queueing via DB Engine.' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
+  return res.status(501).json({
+    success: false,
+    code: 'NOT_SHIPPED_V1',
+    message:
+      'Smart-send scheduling is not available in the dashboard V1. Launch a standard campaign or use quick broadcast instead.',
+  });
 });
 
-// @route   POST /api/campaigns/predictive-send
-// @desc    Phase 28 - AI-timed delivery using CustomerIntelligence peak hour data
-// @access  Private
+// @route   POST /api/campaigns/predictive-send — legacy; no dashboard UI in V1 (MK-P2-03)
 router.post('/predictive-send', protect, async (req, res) => {
-  try {
-    const { campaignId } = req.body;
-    if (!campaignId) return res.status(400).json({ success: false, message: 'campaignId required' });
-
-    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    // Build phone list from CSV or Segment
-    let rows = [];
-    if (campaign.csvFile) {
-      await new Promise((resolve, reject) => {
-        fs.createReadStream(campaign.csvFile)
-          .pipe(csv())
-          .on('data', d => rows.push(d))
-          .on('end', resolve)
-          .on('error', reject);
-      });
-    } else if (campaign.segmentId) {
-      const Segment = require('../models/Segment');
-      const segment = await Segment.findById(campaign.segmentId);
-      if (segment) {
-        const optQ = shouldRequireMarketingOptIn(campaign) ? mongoMarketingOptInOnly() : {};
-        const leads = await AdLead.find({
-          ...segment.query,
-          clientId: req.user.clientId,
-          ...optQ,
-        }).lean();
-        leads.forEach(l => rows.push({ phone: l.phoneNumber, name: l.name || 'Customer' }));
-      }
-    }
-
-    const csvPredictiveFiltered = campaign.csvFile
-      ? await filterAudienceForMarketingOptIn(req.user.clientId, rows, campaign)
-      : null;
-    if (csvPredictiveFiltered) {
-      rows = csvPredictiveFiltered.rows;
-      if (!rows.length) {
-        return res.status(400).json({
-          success: false,
-          message:
-            'No predictive recipients after removing opted-out contacts from this list.',
-          marketingOptInExcluded: csvPredictiveFiltered.excluded,
-        });
-      }
-    }
-
-    if (rows.length === 0) return res.status(400).json({ success: false, message: 'No recipients found' });
-
-    // Enrich with predictive send windows
-    const { getOptimalSendTimes } = require('../utils/commerce/predictiveSend');
-    const phones = rows.map(r => normalizePhone(r.phone || r.number || r.mobile || r.recipient || '')).filter(Boolean);
-    const sendWindows = await getOptimalSendTimes(req.user.clientId, phones);
-    const windowMap = {};
-    sendWindows.forEach(w => { windowMap[w.phone] = w; });
-
-    const FollowUpSequence = require('../models/FollowUpSequence');
-    const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
-    let queued = 0;
-    const tName = campaign.templateName;
-
-    for (const row of rows) {
-      const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      if (!phone || !tName) continue;
-
-      const lead = await ensureLeadForSequence({
-        clientId: req.user.clientId,
-        phone,
-        source: 'predictive_campaign',
-      });
-
-      const window = windowMap[phone];
-      const sendAt = window?.sendAt || new Date();
-
-      await FollowUpSequence.create({
-        clientId: req.user.clientId,
-        leadId: lead._id,
-        phone: lead.phoneNumber,
-        email: lead.email,
-        name: `Predictive Broadcast: ${campaign.name}`,
-        status: 'active',
-        steps: [{
-          type: 'whatsapp',
-          templateName: tName,
-          sendAt,
-          status: 'pending',
-          metadata: { reason: window?.reason, peakHour: window?.peakHour }
-        }]
-      });
-      queued++;
-    }
-
-    campaign.status = 'SCHEDULED';
-    campaign.isPredictiveSend = true;
-    await campaign.save();
-
-    log.info(`[PredictiveSend] Queued ${queued} messages for campaign ${campaignId}`);
-    res.json({
-      success: true,
-      queued,
-      message: `${queued} messages queued with AI-optimized send times.`,
-      marketingOptInExcluded: csvPredictiveFiltered?.excluded || 0,
-    });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  return res.status(501).json({
+    success: false,
+    code: 'NOT_SHIPPED_V1',
+    message:
+      'Predictive-send timing is not available in the dashboard V1. Use standard campaign launch with schedule options instead.',
+  });
 });
 
 module.exports = router;

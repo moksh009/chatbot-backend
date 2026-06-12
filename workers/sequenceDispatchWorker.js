@@ -12,6 +12,27 @@ const { classifyEnvelopeOutcome } = require('../utils/messaging/dispatch/dispatc
 const { enqueueSequenceStepJob } = require('../utils/messaging/queues/sequenceDispatchQueue');
 const { getConnection } = require('../utils/messaging/queues/queueConnection');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
+const { emitToClient } = require('../utils/core/socket');
+
+async function emitSequenceProgress(clientId, sequenceId) {
+  try {
+    const fresh = await FollowUpSequence.findById(sequenceId).select('status steps').lean();
+    if (!fresh) return;
+    const steps = fresh.steps || [];
+    const sent = steps.filter((s) => s.status === 'sent').length;
+    const failed = steps.filter((s) => s.status === 'failed').length;
+    const pending = steps.filter((s) =>
+      ['pending', 'queued', 'processing', 'retrying'].includes(s.status)
+    ).length;
+    emitToClient(clientId, 'sequence:progress', {
+      sequenceId: String(sequenceId),
+      status: fresh.status,
+      counts: { sent, failed, pending, total: steps.length },
+    });
+  } catch {
+    /* optional realtime */
+  }
+}
 
 const WORKER_ID = `${os.hostname()}:${process.pid}`;
 const CONCURRENCY = Number(process.env.PHASE3_SEQUENCE_CONCURRENCY || 100);
@@ -98,6 +119,7 @@ async function processSequenceDispatchJob(job) {
   } finally {
     if (hbKey) stopHeartbeat(hbKey);
     await release({ clientId, channel });
+    await emitSequenceProgress(clientId, sequenceId);
   }
 }
 
