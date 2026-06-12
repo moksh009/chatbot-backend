@@ -187,10 +187,16 @@ exports.getIntentStats = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized.' });
     }
     
-    const [activeIntents, analyticsStats] = await Promise.all([
+    const [activeIntents, analyticsStats, triggerAgg] = await Promise.all([
       IntentRule.countDocuments({ clientId, isActive: true }),
-      IntentAnalytics.find({ clientId }).sort({ date: -1 }).limit(30)
+      IntentAnalytics.find({ clientId }).sort({ date: -1 }).limit(30),
+      IntentRule.aggregate([
+        { $match: { clientId } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$totalTriggerCount', 0] } } } },
+      ]),
     ]);
+
+    const hitsFromRules = triggerAgg[0]?.total || 0;
 
     // Calculate totals from analytics
     const totals = analyticsStats.reduce((acc, curr) => ({
@@ -199,9 +205,12 @@ exports.getIntentStats = async (req, res) => {
       totalFallback: acc.totalFallback + (curr.fallbackCount || 0)
     }), { totalProcessed: 0, totalMatched: 0, totalFallback: 0 });
 
+    const totalLearningHits = totals.totalMatched > 0 ? totals.totalMatched : hitsFromRules;
+    const totalProcessed = totals.totalProcessed > 0 ? totals.totalProcessed : totalLearningHits;
+
     const accuracy =
-      totals.totalProcessed > 0
-        ? parseFloat(((totals.totalMatched / totals.totalProcessed) * 100).toFixed(1))
+      totalProcessed > 0
+        ? parseFloat(((totalLearningHits / totalProcessed) * 100).toFixed(1))
         : null;
 
     res.status(200).json({
@@ -209,9 +218,9 @@ exports.getIntentStats = async (req, res) => {
       stats: {
         activeIntents,
         pendingPhrases: 0,
-        totalLearningHits: totals.totalMatched,
+        totalLearningHits,
         accuracy,
-        totalProcessed: totals.totalProcessed,
+        totalProcessed,
       },
     });
   } catch (error) {
