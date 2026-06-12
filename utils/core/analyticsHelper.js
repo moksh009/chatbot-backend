@@ -404,17 +404,17 @@ async function enrichTopProductsWithShopifyImages(clientId, products, timer) {
  */
 async function getTopProducts(clientId, options = {}) {
   const timer = options.timer || noopTimer();
-  const { buildSuccessfulOrderMatch } = require('../commerce/customerOrderMetrics');
+  const { buildCustomerLtvOrderMatch } = require('../commerce/customerOrderMetrics');
   const rangeDays = options.days;
-  let match = buildSuccessfulOrderMatch(clientId);
+  let match = buildCustomerLtvOrderMatch(clientId);
   if (options.startDate && options.endDate) {
-    match = buildSuccessfulOrderMatch(clientId, {
+    match = buildCustomerLtvOrderMatch(clientId, {
       createdAt: { $gte: options.startDate, $lte: options.endDate },
     });
   } else if (rangeDays && Number(rangeDays) > 0) {
     const { start } = istDateRangeStrings(Number(rangeDays));
     const startDate = startOfDayForDateStrIST(start);
-    match = buildSuccessfulOrderMatch(clientId, { createdAt: { $gte: startDate } });
+    match = buildCustomerLtvOrderMatch(clientId, { createdAt: { $gte: startDate } });
   }
 
   const rowLimit = options.limit != null ? Number(options.limit) : 0;

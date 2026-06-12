@@ -1411,7 +1411,7 @@ router.get('/abandoned-products', protect, async (req, res) => {
       }
     }
 
-    // Fallback: aggregate product names from abandoned cart leads when DailyStat is empty
+    // Fallback: aggregate from abandoned cart leads when DailyStat is empty
     if (Object.keys(productMap).length === 0) {
       const rangeStart = startOfDayForDateStrIST(startDateStr);
       const AdLead = require('../models/AdLead');
@@ -1420,27 +1420,38 @@ router.get('/abandoned-products', protect, async (req, res) => {
         cartStatus: { $in: ['abandoned', 'active'] },
         updatedAt: { $gte: rangeStart },
       })
-        .select('cartItems lineItems')
+        .select('cartItems lineItems cartSnapshot cartValue')
         .limit(500)
         .lean();
+
+      const addItem = (item) => {
+        const name =
+          item?.title ||
+          item?.name ||
+          item?.product_title ||
+          item?.productTitle ||
+          null;
+        if (!name) return;
+        const qty = Number(item?.quantity || item?.qty) || 1;
+        productMap[name] = (productMap[name] || 0) + qty;
+      };
 
       for (const lead of leads) {
         const items = Array.isArray(lead.cartItems)
           ? lead.cartItems
           : Array.isArray(lead.lineItems)
             ? lead.lineItems
-            : [];
-        for (const item of items) {
-          const name =
-            item?.title ||
-            item?.name ||
-            item?.product_title ||
-            item?.productTitle ||
-            null;
-          if (!name) continue;
-          const qty = Number(item?.quantity) || 1;
-          productMap[name] = (productMap[name] || 0) + qty;
+            : Array.isArray(lead.cartSnapshot?.items)
+              ? lead.cartSnapshot.items
+              : [];
+        if (items.length) {
+          items.forEach(addItem);
+          continue;
         }
+        const titles = Array.isArray(lead.cartSnapshot?.titles) ? lead.cartSnapshot.titles : [];
+        titles.forEach((title) => {
+          if (title) productMap[title] = (productMap[title] || 0) + 1;
+        });
       }
     }
 
