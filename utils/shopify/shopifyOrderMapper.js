@@ -221,6 +221,7 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
   return {
     clientId,
     shopifyOrderId: String(data.id),
+    shopifyCustomerId: data.customer?.id != null ? String(data.customer.id) : '',
     orderId: data.name || `#${data.id}`,
     orderNumber: data.order_number != null ? String(data.order_number) : '',
     customerName: resolveCustomerDisplayName(data) || 'Shopify Customer',

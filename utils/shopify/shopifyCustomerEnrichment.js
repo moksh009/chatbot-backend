@@ -1,16 +1,12 @@
 'use strict';
 
 const { normalizePhone } = require('../core/helpers');
-
-function phoneSuffixKey(phone) {
-  const d = String(phone || '').replace(/\D/g, '');
-  return d.length >= 10 ? d.slice(-10) : '';
-}
-
-function normalizeEmailKey(email) {
-  const e = String(email || '').trim().toLowerCase();
-  return e && e.includes('@') ? e : '';
-}
+const {
+  phoneSuffixKey,
+  normalizeEmailKey,
+  loadWarrantySignalsByIdentity,
+  resolveWarrantyForCustomer,
+} = require('./shopifyCustomerWorkspaceSignals');
 
 function normalizeTagsArray(tags) {
   if (tags == null || tags === '') return [];
@@ -26,15 +22,31 @@ function normalizeTagsArray(tags) {
   return [];
 }
 
+function mergeWarrantyCounts(warrantyEnabled, canonical, legacyRecords) {
+  if (!warrantyEnabled) {
+    return { warrantyTotal: null, warrantyActive: null };
+  }
+  const legacyTotal = Array.isArray(legacyRecords) ? legacyRecords.length : 0;
+  const legacyActive = Array.isArray(legacyRecords)
+    ? legacyRecords.filter((w) => w.status === 'active').length
+    : 0;
+  const canonicalTotal = canonical?.total || 0;
+  const canonicalActive = canonical?.active || 0;
+  return {
+    warrantyTotal: Math.max(canonicalTotal, legacyTotal),
+    warrantyActive: Math.max(canonicalActive, legacyActive),
+  };
+}
+
 /**
  * Attach TopEdge workspace signals (warranty, lead) to Shopify customers.
+ * Warranty uses canonical WarrantyRecord + Contact, with legacy AdLead fallback.
  * @param {string} clientId
  * @param {object[]} shopifyCustomers
  */
-async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
-  if (!clientId || !Array.isArray(shopifyCustomers) || shopifyCustomers.length === 0) {
-    return shopifyCustomers;
-  }
+async function enrichShopifyCustomers(clientId, shopifyCustomers = [], preloadedWarrantyMaps = null) {
+  if (!clientId) return shopifyCustomers;
+  if (!Array.isArray(shopifyCustomers)) return [];
 
   const AdLead = require('../../models/AdLead');
   const Client = require('../../models/Client');
@@ -54,6 +66,16 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
     if (ps) suffixSet.add(ps);
     const em = normalizeEmailKey(c.email);
     if (em) emailSet.add(em);
+    for (const lp of c.linkedPhones || []) {
+      const n = normalizePhone(lp);
+      if (n) phoneSet.add(n);
+      const lps = phoneSuffixKey(lp);
+      if (lps) suffixSet.add(lps);
+    }
+    for (const le of c.linkedEmails || []) {
+      const ek = normalizeEmailKey(le);
+      if (ek) emailSet.add(ek);
+    }
   }
   const phones = [...phoneSet];
   const emails = [...emailSet];
@@ -72,7 +94,7 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
     phoneOr.push({ phoneNumber: { $regex: `${s}$` } });
   }
 
-  const [leadsByPhone, leadsByEmail] = await Promise.all([
+  const [leadsByPhone, leadsByEmail, warrantyMaps] = await Promise.all([
     phones.length || suffixes.length
       ? AdLead.find({ clientId, $or: phoneOr })
           .select('phoneNumber email name leadScore warrantyRecords tags')
@@ -83,6 +105,11 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
           .select('phoneNumber email name leadScore warrantyRecords tags')
           .lean()
       : [],
+    preloadedWarrantyMaps != null
+      ? Promise.resolve(preloadedWarrantyMaps)
+      : warrantyEnabled
+        ? loadWarrantySignalsByIdentity(clientId)
+        : Promise.resolve(null),
   ]);
 
   const leadByPhoneSuffix = new Map();
@@ -104,39 +131,44 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       (email && leadByEmail.get(email)) ||
       null;
 
-    const warrantyRecords = lead?.warrantyRecords || [];
-    const activeWarranty = warrantyRecords.filter((w) => w.status === 'active').length;
-
     const leadPhone = normalizePhone(lead?.phoneNumber);
     const shopifyPhone = normalizePhone(c.phone);
     const leadEmail = normalizeEmailKey(lead?.email);
     const linkedPhones = [];
-    if (leadPhone) {
-      linkedPhones.push(leadPhone);
-      if (shopifyPhone && phoneSuffixKey(shopifyPhone) === phoneSuffixKey(leadPhone)) {
-        linkedPhones.push(shopifyPhone);
-      }
-    } else if (shopifyPhone) {
-      linkedPhones.push(shopifyPhone);
-    }
+    if (shopifyPhone) linkedPhones.push(shopifyPhone);
+    if (leadPhone) linkedPhones.push(leadPhone);
     const linkedEmails = [...new Set([email, leadEmail].filter(Boolean))];
 
-    return {
+    const draft = {
       ...c,
-      phone: leadPhone || shopifyPhone || c.phone || null,
+      phone: shopifyPhone || leadPhone || c.phone || null,
       workspacePhone: leadPhone || shopifyPhone || null,
       linkedPhones: [...new Set(linkedPhones.filter(Boolean))],
       linkedEmails,
-      leadId: lead?._id ? String(lead._id) : null,
-      leadName: lead?.name || null,
-      leadScore: lead?.leadScore ?? null,
-      scoreStageName: resolveScoreStageName(lead?.leadScore ?? 0, scoreTiers),
-      tags: normalizeTagsArray(lead?.tags),
-      warrantyActive: warrantyEnabled ? activeWarranty : null,
-      warrantyTotal: warrantyEnabled ? warrantyRecords.length : null,
+    };
+
+    const canonicalWarranty = warrantyMaps
+      ? resolveWarrantyForCustomer(draft, warrantyMaps)
+      : null;
+    const { warrantyTotal, warrantyActive } = mergeWarrantyCounts(
+      warrantyEnabled,
+      canonicalWarranty,
+      lead?.warrantyRecords
+    );
+
+    return {
+      ...draft,
+      leadId: lead?._id ? String(lead._id) : c.leadId || null,
+      leadName: lead?.name || c.leadName || null,
+      leadScore: lead?.leadScore ?? c.leadScore ?? null,
+      scoreStageName: resolveScoreStageName(lead?.leadScore ?? c.leadScore ?? 0, scoreTiers),
+      tags: normalizeTagsArray(lead?.tags ?? c.tags),
+      contactId: canonicalWarranty?.contactId || c.contactId || null,
+      warrantyActive,
+      warrantyTotal,
       warrantyEnabled,
     };
   });
 }
 
-module.exports = { enrichShopifyCustomers };
+module.exports = { enrichShopifyCustomers, mergeWarrantyCounts };

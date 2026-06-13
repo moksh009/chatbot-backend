@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const OrderSchema = new mongoose.Schema({
   clientId: { type: String, required: true },
   shopifyOrderId: { type: String },
+  /** Shopify Admin customer id (data.customer.id) — authoritative order↔customer link */
+  shopifyCustomerId: { type: String, default: '' },
   orderId: { type: String, required: true },
   orderNumber: { type: String },
   customerName: { type: String },
@@ -113,5 +115,6 @@ OrderSchema.index({ clientId: 1, codConfirmationResponse: 1 });
 OrderSchema.index({ phone: 1 });
 OrderSchema.index({ clientId: 1, phone: 1 });
 OrderSchema.index({ clientId: 1, 'items.productId': 1 });
+OrderSchema.index({ clientId: 1, shopifyCustomerId: 1 });
 
 module.exports = mongoose.model('Order', OrderSchema);

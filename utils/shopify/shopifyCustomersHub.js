@@ -2,13 +2,28 @@
 
 const { withShopifyRetry } = require('./shopifyHelper');
 const { enrichShopifyCustomers } = require('./shopifyCustomerEnrichment');
+const {
+  loadWarrantySignalsByIdentity,
+  appendWorkspaceCustomers,
+} = require('./shopifyCustomerWorkspaceSignals');
 const { normalizePhone } = require('../core/helpers');
+const {
+  phoneSuffixKey: _phoneSuffixKey,
+  normalizeEmailKey: _normalizeEmailKey,
+  namesAreSimilar: _namesAreSimilar,
+  customerDisplayName: _customerDisplayName,
+  dedupeOrdersByNumber: _dedupeOrdersByNumber,
+  assignOrdersToCustomers,
+  applyAssignmentMetrics,
+  ordersForCustomerFromAssignment,
+  profilesLinkedByOrderEvidence,
+} = require('./customerOrderAttribution');
 
 async function loadClientOrdersForCustomerMetrics(clientId) {
   const Order = require('../../models/Order');
   return Order.find({ clientId })
     .select(
-      'orderId orderNumber shopifyOrderId phone customerPhone email customerEmail totalPrice amount status financialStatus fulfillmentStatus customerName shippingAddress createdAt'
+      'orderId orderNumber shopifyOrderId shopifyCustomerId phone customerPhone email customerEmail totalPrice amount status financialStatus fulfillmentStatus customerName shippingAddress createdAt'
     )
     .sort({ createdAt: -1 })
     .limit(15000)
@@ -16,15 +31,39 @@ async function loadClientOrdersForCustomerMetrics(clientId) {
 }
 
 function prepareCustomerList(source) {
-  const merged = mergeShopifyCustomersByIdentity(source || []);
-  return merged;
+  return mergeShopifyCustomersByIdentity(source || []);
+}
+
+async function hydrateCustomerSource(clientId, cacheSource = []) {
+  const Client = require('../../models/Client');
+  const client = await Client.findOne({ clientId }).select('enableWarranty').lean();
+  const warrantyEnabled = Boolean(client?.enableWarranty);
+  const emptyMaps = { byContactId: new Map(), byPhone: new Map(), byEmail: new Map() };
+  const warrantyMaps = warrantyEnabled
+    ? await loadWarrantySignalsByIdentity(clientId)
+    : emptyMaps;
+  const enriched = await enrichShopifyCustomers(clientId, cacheSource, warrantyMaps);
+  return appendWorkspaceCustomers(enriched, warrantyMaps);
+}
+
+async function buildCustomerOrderAssignment(clientId, customers) {
+  const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
+  let merged = mergeShopifyCustomersByIdentity(customers);
+  let { assignment } = assignOrdersToCustomers(merged, rawOrders);
+
+  const postMerged = mergeCustomersByOrderEvidence(merged, assignment);
+  if (postMerged.length < merged.length) {
+    merged = postMerged;
+    ({ assignment } = assignOrdersToCustomers(merged, rawOrders));
+  }
+
+  return { customers: merged, assignment, rawOrders };
 }
 
 async function attachOrderMetrics(clientId, customers) {
   if (!customers.length) return customers;
-  const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
-  const orderIndex = buildCustomerOrderIndex(rawOrders);
-  return applyOrderMetricsToCustomers(customers, orderIndex);
+  const { customers: merged, assignment } = await buildCustomerOrderAssignment(clientId, customers);
+  return applyAssignmentMetrics(merged, assignment);
 }
 
 function phoneMatchQuery(phone) {
@@ -129,7 +168,7 @@ function filterCustomers(list, { tier, topedge, search }) {
     if (topedge === 'has_score') {
       out = out.filter((c) => c.leadScore != null && Number(c.leadScore) > 0);
     } else if (topedge === 'has_warranty') {
-      out = out.filter((c) => (c.warrantyTotal || 0) > 0);
+      out = out.filter((c) => Number(c.warrantyTotal || 0) > 0);
     }
   }
 
@@ -241,26 +280,37 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
     .lean();
 
   let source = client?.shopifyCustomersCache || [];
-  const needsSync = source.length === 0;
+  const cacheWasEmpty = source.length === 0;
+  let syncError = null;
 
-  if (needsSync) {
+  if (cacheWasEmpty) {
     try {
       const synced = await syncShopifyCustomersForClient(clientId);
       source = synced.customers;
     } catch (err) {
-      return {
-        customers: [],
-        total: 0,
-        hasMore: false,
-        nextCursor: null,
-        needsSync: true,
-        syncedAt: null,
-        error: err.message,
-      };
+      syncError = err.message;
+      source = [];
     }
   }
 
-  const sorted = sortCustomers(await attachOrderMetrics(clientId, prepareCustomerList(source)), query.sort || 'spend');
+  source = await hydrateCustomerSource(clientId, source);
+
+  if (!source.length && cacheWasEmpty && syncError) {
+    return {
+      customers: [],
+      total: 0,
+      hasMore: false,
+      nextCursor: null,
+      needsSync: true,
+      syncedAt: null,
+      error: syncError,
+    };
+  }
+
+  const sorted = sortCustomers(
+    await attachOrderMetrics(clientId, prepareCustomerList(source)),
+    query.sort || 'spend'
+  );
   const filtered = filterCustomers(sorted, query);
   const page = paginateCustomers(filtered, {
     cursor: query.cursor,
@@ -273,7 +323,7 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
     summary: summarizeCustomers(filtered, whatsappChatPhones),
     syncedAt: client?.customersSyncedAt || null,
     cacheCount: client?.shopifyCustomersCacheCount ?? source.length,
-    needsSync: false,
+    needsSync: cacheWasEmpty && source.length === 0,
   };
 }
 
@@ -302,13 +352,12 @@ async function getShopifyCustomerDetail(clientId, customerId) {
     .lean();
   if (!client) return null;
 
-  const merged = await attachOrderMetrics(clientId, prepareCustomerList(client.shopifyCustomersCache || []));
+  const source = await hydrateCustomerSource(clientId, client.shopifyCustomersCache || []);
+  const { customers: merged, assignment } = await buildCustomerOrderAssignment(clientId, source);
   const customer = findMergedCustomer(merged, customerId);
   if (!customer) return null;
 
-  const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
-  const orderIndex = buildCustomerOrderIndex(rawOrders);
-  const { orders, orders_count, total_spent } = ordersForCustomer(customer, orderIndex);
+  const { orders, orders_count, total_spent } = ordersForCustomerFromAssignment(customer.id, assignment);
 
   return {
     customer: {
@@ -333,16 +382,6 @@ async function getShopifyCustomerDetail(clientId, customerId) {
 
 // --- Customer identity merge + order metrics (inlined) ---
 
-function _phoneSuffixKey(phone) {
-  const d = String(phone || '').replace(/\D/g, '');
-  return d.length >= 10 ? d.slice(-10) : '';
-}
-
-function _normalizeEmailKey(email) {
-  const e = String(email || '').trim().toLowerCase();
-  return e && e.includes('@') ? e : '';
-}
-
 function _uniqueStrings(list) {
   const out = [];
   const seen = new Set();
@@ -360,44 +399,22 @@ function _normalizeOrderNumberKey(order) {
   return raw || null;
 }
 
-function _orderRichnessScore(doc) {
-  let s = 0;
-  const ship = doc.shippingAddress;
-  if (ship && (ship.address1 || ship.city || ship.province || ship.province_code)) s += 5;
-  if (doc.customerName && String(doc.customerName).trim().length > 3) s += 3;
-  if (doc.customerPhone || doc.phone) s += 2;
-  if (doc.financialStatus) s += 2;
-  if (doc.fulfillmentStatus && doc.fulfillmentStatus !== 'unfulfilled') s += 2;
-  if (doc.isCOD) s += 1;
-  if (doc.shopifyOrderId) s += 1;
-  return s;
-}
-
-function _dedupeOrdersByNumber(orders) {
-  if (!Array.isArray(orders) || orders.length === 0) return orders;
-  const byKey = new Map();
-  for (const o of orders) {
-    const num = _normalizeOrderNumberKey(o);
-    const k = num ? `n:${num}` : o.shopifyOrderId ? `sid:${String(o.shopifyOrderId)}` : `id:${String(o._id)}`;
-    const prev = byKey.get(k);
-    if (!prev || _orderRichnessScore(o) >= _orderRichnessScore(prev)) byKey.set(k, o);
+function _collectEmailKeys(customer) {
+  const keys = new Set();
+  const emails = _uniqueStrings([customer.email, ...(customer.linkedEmails || [])]);
+  for (const em of emails) {
+    const ek = _normalizeEmailKey(em);
+    if (ek) keys.add(`email:${ek}`);
   }
-  return Array.from(byKey.values()).sort(
-    (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-  );
+  return keys;
 }
 
-function _collectIdentityKeys(customer) {
+function _collectPhoneKeys(customer) {
   const keys = new Set();
   const phones = _uniqueStrings([customer.phone, customer.workspacePhone, ...(customer.linkedPhones || [])]);
   for (const ph of phones) {
     const ps = _phoneSuffixKey(ph);
     if (ps) keys.add(`phone:${ps}`);
-  }
-  const emails = _uniqueStrings([customer.email, ...(customer.linkedEmails || [])]);
-  for (const em of emails) {
-    const ek = _normalizeEmailKey(em);
-    if (ek) keys.add(`email:${ek}`);
   }
   return keys;
 }
@@ -491,13 +508,48 @@ function mergeShopifyCustomersByIdentity(customers) {
     const rb = find(b);
     if (ra !== rb) parent[rb] = ra;
   };
-  const keyToIdx = new Map();
+
+  const emailKeyToIdx = new Map();
   customers.forEach((c, i) => {
-    for (const k of _collectIdentityKeys(c)) {
-      if (keyToIdx.has(k)) union(i, keyToIdx.get(k));
-      else keyToIdx.set(k, i);
+    for (const k of _collectEmailKeys(c)) {
+      if (emailKeyToIdx.has(k)) union(i, emailKeyToIdx.get(k));
+      else emailKeyToIdx.set(k, i);
     }
   });
+
+  const phoneKeyToIndices = new Map();
+  customers.forEach((c, i) => {
+    for (const k of _collectPhoneKeys(c)) {
+      if (!phoneKeyToIndices.has(k)) phoneKeyToIndices.set(k, []);
+      phoneKeyToIndices.get(k).push(i);
+    }
+  });
+  for (const indices of phoneKeyToIndices.values()) {
+    for (let a = 0; a < indices.length; a += 1) {
+      for (let b = a + 1; b < indices.length; b += 1) {
+        const i = indices[a];
+        const j = indices[b];
+        if (_namesAreSimilar(_customerDisplayName(customers[i]), _customerDisplayName(customers[j]))) {
+          union(i, j);
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      const lastA = String(customers[i].last_name || '').trim().toLowerCase();
+      const lastB = String(customers[j].last_name || '').trim().toLowerCase();
+      if (
+        lastA.length >= 2 &&
+        lastA === lastB &&
+        _namesAreSimilar(_customerDisplayName(customers[i]), _customerDisplayName(customers[j]))
+      ) {
+        union(i, j);
+      }
+    }
+  }
+
   const groups = new Map();
   customers.forEach((c, i) => {
     const r = find(i);
@@ -507,63 +559,41 @@ function mergeShopifyCustomersByIdentity(customers) {
   return Array.from(groups.values()).map(_mergeCustomerGroup).filter(Boolean);
 }
 
-function _orderMatchesCustomer(order, customer) {
-  const phoneKeys = new Set();
-  const emailKeys = new Set();
-  for (const ph of [customer.phone, customer.workspacePhone, ...(customer.linkedPhones || [])]) {
-    const ps = _phoneSuffixKey(ph);
-    if (ps) phoneKeys.add(ps);
+function mergeCustomersByOrderEvidence(customers, assignment) {
+  if (!Array.isArray(customers) || customers.length <= 1) {
+    return customers;
   }
-  for (const em of [customer.email, ...(customer.linkedEmails || [])]) {
-    const ek = _normalizeEmailKey(em);
-    if (ek) emailKeys.add(ek);
-  }
-  for (const ph of [order.phone, order.customerPhone]) {
-    const ps = _phoneSuffixKey(ph);
-    if (ps && phoneKeys.has(ps)) return true;
-  }
-  for (const em of [order.email, order.customerEmail]) {
-    const ek = _normalizeEmailKey(em);
-    if (ek && emailKeys.has(ek)) return true;
-  }
-  return false;
-}
+  const n = customers.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (i) => {
+    let r = i;
+    while (parent[r] !== r) {
+      parent[r] = parent[parent[r]];
+      r = parent[r];
+    }
+    return r;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
 
-function buildCustomerOrderIndex(orders) {
-  const deduped = _dedupeOrdersByNumber(orders);
-  const byKey = new Map();
-  for (const o of deduped) {
-    const k = _normalizeOrderNumberKey(o) || String(o._id);
-    byKey.set(k, o);
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      if (profilesLinkedByOrderEvidence(customers[i], customers[j], assignment)) {
+        union(i, j);
+      }
+    }
   }
-  return { deduped, byKey };
-}
 
-function ordersForCustomer(customer, orderIndex) {
-  const { deduped, byKey } = orderIndex;
-  const matchedKeys = new Set();
-  for (const o of deduped) {
-    if (!_orderMatchesCustomer(o, customer)) continue;
-    matchedKeys.add(_normalizeOrderNumberKey(o) || String(o._id));
-  }
-  const orders = [...matchedKeys]
-    .map((k) => byKey.get(k))
-    .filter(Boolean)
-    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-  const totalSpent = orders.reduce((sum, o) => sum + (Number(o.totalPrice ?? o.amount) || 0), 0);
-  return { orders, orders_count: orders.length, total_spent: Math.round(totalSpent) };
-}
-
-function applyOrderMetricsToCustomers(customers, orderIndex) {
-  return customers.map((c) => {
-    const metrics = ordersForCustomer(c, orderIndex);
-    return {
-      ...c,
-      orders_count: metrics.orders_count,
-      total_spent: String(metrics.total_spent),
-      orderMetricsSource: 'workspace_orders',
-    };
+  const groups = new Map();
+  customers.forEach((c, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(c);
   });
+  return Array.from(groups.values()).map(_mergeCustomerGroup).filter(Boolean);
 }
 
 function findMergedCustomer(customers, customerId) {
@@ -587,4 +617,7 @@ module.exports = {
   sortCustomers,
   filterCustomers,
   paginateCustomers,
+  mergeShopifyCustomersByIdentity,
+  mergeCustomersByOrderEvidence,
+  buildCustomerOrderAssignment,
 };
