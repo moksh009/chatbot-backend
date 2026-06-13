@@ -437,7 +437,9 @@ async function handleGetTemplateList(req, res) {
             ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
             : [],
         }));
-        if (contextPurpose) {
+        const isUnified = req.query.unified === '1' || req.query.unified === 'true';
+        // Purpose pre-filter only for legacy /list — unified context uses filterTemplatesForContext.
+        if (contextPurpose && !isUnified) {
           merged = merged.filter((tpl) => {
             const primary = normalizePurpose(tpl.primaryPurpose || 'utility');
             const secondary = Array.isArray(tpl.secondaryPurposes)
@@ -446,7 +448,6 @@ async function handleGetTemplateList(req, res) {
             return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
           });
         }
-        const isUnified = req.query.unified === '1' || req.query.unified === 'true';
         let responseData = merged;
         let meta = null;
 
