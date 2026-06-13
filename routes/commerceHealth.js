@@ -9,6 +9,7 @@ const Order = require('../models/Order');
 const ShopifyProduct = require('../models/ShopifyProduct');
 const PixelEvent = require('../models/PixelEvent');
 const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
+const { hasScopeEffective } = require('../utils/shopify/shopifyScopeUtils');
 
 function relTime(date) {
   if (!date) return null;
@@ -83,7 +84,11 @@ router.get('/:clientId/health', protect, async (req, res) => {
         },
         scopes: {
           raw: client.shopifyScopes || '',
-          hasInventoryLocations: String(client.shopifyScopes || '').includes('read_locations'),
+          hasInventoryLocations: hasScopeEffective(client.shopifyScopes, 'read_locations'),
+          hasWriteInventory: hasScopeEffective(client.shopifyScopes, 'write_inventory'),
+          canEditInventory:
+            hasScopeEffective(client.shopifyScopes, 'write_inventory') &&
+            hasScopeEffective(client.shopifyScopes, 'read_locations'),
         },
         pixel: {
           state: pixelState,
