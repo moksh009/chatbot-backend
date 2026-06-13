@@ -1,4 +1,5 @@
 const AdLead = require('../../models/AdLead');
+const { ABANDONED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const log = require('../core/logger')('JourneyTracker');
 
 /**
@@ -27,8 +28,8 @@ async function trackEvent(clientId, phone, eventType, details = {}, options = {}
             updateSet.$set = { status: 'purchased', cartStatus: 'purchased' };
             tagsToAdd.push('converted');
         } else if (eventType === 'cart_abandoned') {
-            updateSet.$set = { cartStatus: 'active' };
-            tagsToAdd.push('abandoned_cart');
+            updateSet.$set = { cartStatus: 'abandoned', cartAbandonedAt: new Date() };
+            tagsToAdd.push(ABANDONED_CART_TAG);
         } else if (eventType === 'warranty_registered') {
             tagsToAdd.push('warranty_holder');
         } else if (eventType === 'negative_review') {
