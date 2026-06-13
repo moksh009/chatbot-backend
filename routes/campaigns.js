@@ -1632,6 +1632,13 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
     const pulseOnly =
       req.query.pulse === '1' || req.query.pulse === 'true' || req.query.mode === 'pulse';
 
+    const rawDays = parseInt(req.query.days, 10);
+    const periodDays =
+      rawDays === 999 ? 90 : Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 90) : null;
+    const periodSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
+    const messageMatch = { clientId };
+    if (periodSince) messageMatch.sentAt = { $gte: periodSince };
+
     const clientDoc = await Client.findOne({ clientId })
       .select(
         'complianceConfig whatsappToken phoneNumberId wabaId plan subscriptionPlan'
@@ -1653,9 +1660,13 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
     }
 
     const [campaigns, statsArray, activeCampaigns] = await Promise.all([
-      Campaign.find({ clientId }).sort({ createdAt: -1 }).limit(50).lean().maxTimeMS(8000),
+      Campaign.find(periodSince ? { clientId, createdAt: { $gte: periodSince } } : { clientId })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean()
+        .maxTimeMS(8000),
       CampaignMessage.aggregate([
-        { $match: { clientId } },
+        { $match: messageMatch },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).option({ maxTimeMS: OVERVIEW_AGG_MAX_MS }),
       Campaign.countDocuments({ clientId, status: 'SENDING' }).maxTimeMS(4000),

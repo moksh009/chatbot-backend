@@ -125,7 +125,9 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             isOrderPlaced: true,
             cartStatus: recoveryAttempt?.recoveredViaWhatsapp ? 'recovered' : 'purchased',
             lastPurchaseDate: orderDate,
+            lastOrderAt: orderDate,
             lastOrderId,
+            source: 'shopify',
             isRtoRisk: false,
             recoveredAt: orderDate,
             abandonedCartRecoveredAt: orderDate,
@@ -135,7 +137,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
             ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
           },
-          $pull: { tags: ABANDONED_CART_TAG },
+          $pull: { tags: { $in: [ABANDONED_CART_TAG, 'Imported'] } },
           $addToSet: { tags: RECOVERED_CART_TAG },
           $inc: {
             ordersCount: 1,

@@ -16,6 +16,15 @@ function orderRevenue(order) {
   return Number(v) || 0;
 }
 
+/** Orders counted in analytics period KPIs (includes COD / pending — not only paid). */
+function buildAnalyticsPeriodOrderMatch(clientId, extra = {}) {
+  return {
+    clientId,
+    ...extra,
+    status: { $nin: EXCLUDE_ORDER_STATUSES },
+  };
+}
+
 /** Mongo match for paid/successful orders (excludes pending, cancelled, refunded). */
 function buildSuccessfulOrderMatch(clientId, extra = {}) {
   return {
@@ -282,6 +291,7 @@ module.exports = {
   SUCCESS_FINANCIAL_STATUSES,
   EXCLUDE_ORDER_STATUSES,
   buildSuccessfulOrderMatch,
+  buildAnalyticsPeriodOrderMatch,
   buildCustomerLtvOrderMatch,
   orderRevenue,
   calculateCustomerLTV,

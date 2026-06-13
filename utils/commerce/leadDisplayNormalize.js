@@ -14,7 +14,8 @@ const SOURCE_LABELS = {
   website: 'Website',
   website_widget: 'Website widget',
   web_widget: 'Website widget',
-  shopify: 'Shopify',
+  shopify: 'Shopify order',
+  shopify_native: 'Shopify checkout',
   shopify_checkout: 'Shopify checkout',
   form: 'Form',
   import: 'CSV import',
@@ -46,7 +47,28 @@ function formatSourceLabel(raw) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function hasShopifyOrderSignal(lead) {
+  if (!lead || typeof lead !== 'object') return false;
+  if (lead.isOrderPlaced === true) return true;
+  if (Number(lead.ordersCount) > 0) return true;
+  if (Number(lead.totalSpent) > 0 || Number(lead.lifetimeValue) > 0) return true;
+  return false;
+}
+
+function filterDisplayTags(lead) {
+  const tags = Array.isArray(lead?.tags) ? lead.tags : [];
+  if (!hasShopifyOrderSignal(lead)) return tags;
+  return tags.filter((t) => {
+    const s = String(t || '').trim();
+    if (!s) return false;
+    if (/^imported$/i.test(s)) return false;
+    if (/^import_/i.test(s)) return false;
+    return true;
+  });
+}
+
 function hasImportSignal(lead) {
+  if (hasShopifyOrderSignal(lead)) return false;
   if (lead?.importBatchId) return true;
   const tags = Array.isArray(lead?.tags) ? lead.tags : [];
   return tags.some((t) => /^import/i.test(String(t || '')));
@@ -64,6 +86,13 @@ function hasWhatsAppInbound(lead) {
  */
 function resolveAcquisitionSource(lead) {
   if (!lead || typeof lead !== 'object') return null;
+
+  if (hasShopifyOrderSignal(lead)) {
+    const rawSource = normalizeKey(lead.source);
+    if (rawSource === 'shopify_native' || rawSource === 'shopify_checkout') return rawSource;
+    if (rawSource === 'shopify') return 'shopify';
+    return 'shopify';
+  }
 
   if (hasImportSignal(lead)) return 'csv_import';
 
@@ -113,7 +142,13 @@ function resolveAdChannel(lead) {
 }
 
 function resolveLastSeenAt(lead) {
-  const candidates = [lead?.lastInboundAt, lead?.lastInteraction, lead?.lastMessageAt, lead?.lastActivityAt]
+  const candidates = [
+    lead?.conversationLastMessageAt,
+    lead?.lastInboundAt,
+    lead?.lastInteraction,
+    lead?.lastMessageAt,
+    lead?.lastActivityAt,
+  ]
     .map((d) => (d ? new Date(d) : null))
     .filter((d) => d && !Number.isNaN(d.getTime()));
   if (!candidates.length) return null;
@@ -178,7 +213,9 @@ function normalizeLeadForDisplay(lead, { orders } = {}) {
 
   return {
     ...base,
+    tags: filterDisplayTags(base),
     lastPurchaseDate: lastPurchaseDate || base.lastPurchaseDate || null,
+    lastOrderAt: lastPurchaseDate || base.lastOrderAt || null,
     lastMessageAt: lastSeenAt,
     displaySource: acquisitionKey,
     displaySourceLabel: acquisitionKey ? formatSourceLabel(acquisitionKey) : null,
@@ -186,6 +223,7 @@ function normalizeLeadForDisplay(lead, { orders } = {}) {
     displayAdChannelLabel: adKey ? formatSourceLabel(adKey) : null,
     displayAov: aov,
     displayLastSeenAt: lastSeenAt,
+    hasOrders: (Number(base.ordersCount) || 0) > 0 || Boolean(lastPurchaseDate),
   };
 }
 

@@ -323,8 +323,7 @@ async function getRealtimeStats(clientId, client, daysInput, options = {}) {
       whatsappRecoveriesPurchased: stats.whatsappRecoveriesPurchased,
       adminFollowupsPurchased: stats.adminFollowupsPurchased,
     },
-    attribution:
-      attributionAgg.length > 0 ? attributionAgg : [{ source: 'Direct/Organic', count: 1 }],
+    attribution: attributionAgg,
     sentiment: stats.sentimentCounts || {
       Positive: 0,
       Neutral: 0,
@@ -399,22 +398,70 @@ async function enrichTopProductsWithShopifyImages(clientId, products, timer) {
   });
 }
 
+async function aggregateTopProductsFromOrders(clientId, match, limit = 8) {
+  const orders = await Order.find(match)
+    .select('items orderNumber orderId totalPrice amount')
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+
+  const map = new Map();
+  for (const order of orders) {
+    const items = (Array.isArray(order.items) ? order.items : []).filter(
+      (item) => item && String(item.name || item.title || '').trim()
+    );
+
+    if (items.length === 0) {
+      const rev = Number(order.totalPrice ?? order.amount) || 0;
+      if (rev <= 0) continue;
+      const name = order.orderNumber
+        ? `Order #${order.orderNumber}`
+        : `Order ${order.orderId || 'purchase'}`;
+      const prev = map.get(name) || { name, revenue: 0, sold: 0, image: '', productId: '' };
+      prev.revenue += rev;
+      prev.sold += 1;
+      map.set(name, prev);
+      continue;
+    }
+
+    for (const item of items) {
+      const name = String(item.name || item.title || '').trim();
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const price = Number(item.price) || 0;
+      const key = `${name}::${item.productId || ''}`;
+      const prev = map.get(key) || {
+        name,
+        productId: item.productId || '',
+        revenue: 0,
+        sold: 0,
+        image: item.image || '',
+      };
+      prev.revenue += price * qty;
+      prev.sold += qty;
+      if (!prev.image && item.image) prev.image = item.image;
+      map.set(key, prev);
+    }
+  }
+
+  return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, limit);
+}
+
 /**
  * @returns {Promise<Array>} Top products array (same shape as GET /api/analytics/top-products)
  */
 async function getTopProducts(clientId, options = {}) {
   const timer = options.timer || noopTimer();
-  const { buildCustomerLtvOrderMatch } = require('../commerce/customerOrderMetrics');
+  const { buildAnalyticsPeriodOrderMatch } = require('../commerce/customerOrderMetrics');
   const rangeDays = options.days;
-  let match = buildCustomerLtvOrderMatch(clientId);
+  let match = buildAnalyticsPeriodOrderMatch(clientId);
   if (options.startDate && options.endDate) {
-    match = buildCustomerLtvOrderMatch(clientId, {
+    match = buildAnalyticsPeriodOrderMatch(clientId, {
       createdAt: { $gte: options.startDate, $lte: options.endDate },
     });
   } else if (rangeDays && Number(rangeDays) > 0) {
     const { start } = istDateRangeStrings(Number(rangeDays));
     const startDate = startOfDayForDateStrIST(start);
-    match = buildCustomerLtvOrderMatch(clientId, { createdAt: { $gte: startDate } });
+    match = buildAnalyticsPeriodOrderMatch(clientId, { createdAt: { $gte: startDate } });
   }
 
   const rowLimit = options.limit != null ? Number(options.limit) : 0;
@@ -423,7 +470,8 @@ async function getTopProducts(clientId, options = {}) {
   const topProducts = await timer.time('Order.aggregate_top_products', () =>
     Order.aggregate([
       { $match: match },
-      { $unwind: '$items' },
+      { $unwind: { path: '$items', preserveNullAndEmptyArrays: false } },
+      { $match: { 'items.name': { $exists: true, $nin: [null, ''] } } },
       {
         $group: {
           _id: {
@@ -452,6 +500,14 @@ async function getTopProducts(clientId, options = {}) {
 
   if (topProducts.length > 0) {
     return enrichTopProductsWithShopifyImages(clientId, topProducts, timer);
+  }
+
+  const fallbackLimit = rowLimit > 0 ? rowLimit : 8;
+  const fallbackProducts = await timer.time('Order.fallback_top_products', () =>
+    aggregateTopProductsFromOrders(clientId, match, fallbackLimit)
+  );
+  if (fallbackProducts.length > 0) {
+    return enrichTopProductsWithShopifyImages(clientId, fallbackProducts, timer);
   }
 
   const apptProducts = await timer.time('Appointment.aggregate_top_services', () =>
@@ -595,6 +651,109 @@ function resolveTimelineRange(range = {}) {
 }
 
 /**
+ * Live per-day commerce overlays — reconciles stale DailyStat rows with Orders / pixels / link taps.
+ */
+async function fetchCommerceDailyOverlays(clientId, startDate, endDate) {
+  const PixelEvent = require('../../models/PixelEvent');
+  const LinkClickEvent = require('../../models/LinkClickEvent');
+  const { buildSuccessfulOrderMatch } = require('../commerce/customerOrderMetrics');
+  const clientIdQuery = { clientId };
+
+  const [orders, cartEvents, linkClickEvents] = await Promise.all([
+    Order.aggregate([
+      {
+        $match: buildSuccessfulOrderMatch(clientId, {
+          createdAt: { $gte: startDate, $lte: endDate },
+        }),
+      },
+      {
+        $addFields: {
+          orderUnits: {
+            $sum: {
+              $map: {
+                input: { $ifNull: ['$items', []] },
+                as: 'it',
+                in: { $ifNull: ['$$it.quantity', 0] },
+              },
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          count: { $sum: 1 },
+          revenue: {
+            $sum: { $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }] },
+          },
+          units: { $sum: '$orderUnits' },
+        },
+      },
+    ]).option({ maxTimeMS: 12_000 }),
+    PixelEvent.aggregate([
+      {
+        $match: {
+          ...clientIdQuery,
+          eventName: {
+            $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'],
+          },
+          timestamp: { $gte: startDate, $lte: endDate },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
+          count: { $sum: 1 },
+        },
+      },
+    ]).option({ maxTimeMS: 10_000 }),
+    LinkClickEvent.aggregate([
+      { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
+          count: { $sum: 1 },
+        },
+      },
+    ]).option({ maxTimeMS: 10_000 }),
+  ]);
+
+  return {
+    ordersByDate: new Map(orders.map((row) => [row._id, row])),
+    cartsByDate: new Map(cartEvents.map((row) => [row._id, row.count || 0])),
+    linksByDate: new Map(linkClickEvents.map((row) => [row._id, row.count || 0])),
+  };
+}
+
+function mergeCommerceOverlayIntoTimelineRow(row, overlays) {
+  if (!row || !overlays) return row;
+  const dayOrder = overlays.ordersByDate.get(row.date);
+  const liveOrders = dayOrder?.count || 0;
+  const liveRevenue = dayOrder?.revenue || 0;
+  const liveUnits = dayOrder?.units || 0;
+  const liveCarts = overlays.cartsByDate.get(row.date) || 0;
+  const liveLinks = overlays.linksByDate.get(row.date) || 0;
+
+  const orders = Math.max(Number(row.orders) || 0, liveOrders);
+  const orderRevenue = Math.max(Number(row.orderRevenue) || 0, liveRevenue);
+  const unitsSold = Math.max(Number(row.unitsSold) || 0, liveUnits);
+  const addToCarts = Math.max(Number(row.addToCarts) || 0, liveCarts);
+  const linkClicks = Math.max(Number(row.linkClicks) || 0, liveLinks);
+  const apptRevenue = Number(row.apptRevenue) || 0;
+  const revenue = Math.max(Number(row.revenue) || 0, orderRevenue + apptRevenue);
+
+  return {
+    ...row,
+    orders,
+    orderRevenue,
+    unitsSold,
+    addToCarts,
+    linkClicks,
+    revenue,
+  };
+}
+
+/**
  * Phase 3 — read timeline from DailyStat rollup + live patch for today (+ optional GCal).
  */
 async function getTimelineStatsFromRollup(clientId, client, ctx, options = {}) {
@@ -658,9 +817,15 @@ async function getTimelineStatsFromRollup(clientId, client, ctx, options = {}) {
     );
   }
 
-  const stats = dates.map((date) =>
+  let stats = dates.map((date) =>
     dailyStatToTimelineRow(date, byDate.get(date), gcalCounts[date] || 0, date === today ? liveToday : null)
   );
+
+  const overlays = await timer.time('commerce_daily_overlay', () =>
+    fetchCommerceDailyOverlays(clientId, startDate, endDate)
+  );
+  stats = stats.map((row) => mergeCommerceOverlayIntoTimelineRow(row, overlays));
+
   timer.checkpoint('stats_merge_done', { rows: stats.length, path: 'rollup' });
   return stats;
 }

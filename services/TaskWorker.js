@@ -173,7 +173,6 @@ async function handleImportLeads(data, job) {
             const setObj = {
                 clientId,
                 phoneNumber,
-                importBatchId: session._id,
                 meta: {
                     lastImportId: batchId,
                     importedAt: new Date(),
@@ -187,6 +186,7 @@ async function handleImportLeads(data, job) {
             
             const setOnInsertObj = {
                 source: 'CSV_Import',
+                importBatchId: session._id,
                 ...buildDefaultOptInSetFields('csv_import'),
                 name: `Guest contact (from ${filename.split('.')[0]})`
             };
@@ -215,6 +215,16 @@ async function handleImportLeads(data, job) {
             }
 
             batch.push({ setObj, setOnInsertObj, addToSetObj });
+
+            if (processed % 25 === 0 || processed === 1) {
+                const percent = Math.max(1, Math.min(99, Math.floor((fileStream.bytesRead / fileSize) * 100)));
+                if (percent > lastReportedPercent) {
+                    lastReportedPercent = percent;
+                    emitProgress(clientId, batchId, processed, processed, percent);
+                }
+                session.processedRows = processed;
+                await session.save().catch(() => {});
+            }
 
             if (batch.length >= BATCH_SIZE) {
                 await processBatch(batch);

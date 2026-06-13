@@ -1,7 +1,10 @@
 'use strict';
 
 const AdLead = require('../../models/AdLead');
+const Conversation = require('../../models/Conversation');
 const { normalizeLeadForDisplay } = require('./leadDisplayNormalize');
+const { findOrdersForLead } = require('../customer360/leadLookupHelpers');
+const { phoneVariants } = require('../messaging/cancelAllAutomationsFor');
 
 const LEAD_LIST_PROJECTION = {
   name: 1,
@@ -32,6 +35,7 @@ const LEAD_LIST_PROJECTION = {
   optStatus: 1,
   inboundMessageCount: 1,
   importBatchId: 1,
+  isOrderPlaced: 1,
   channelConsent: 1,
   lastOrderAt: 1,
 };
@@ -82,7 +86,19 @@ function buildLeadsListQuery(
   }
   if (tag) query.tags = tag;
   if (source) {
-    query.source = { $regex: new RegExp(`^${escapeRegex(source)}$`, 'i') };
+    const src = String(source).trim().toLowerCase();
+    if (src === 'import' || src === 'csv_import') {
+      query.$and = (query.$and || []).concat([
+        {
+          $or: [
+            { source: { $regex: /^csv_import$/i } },
+            { importBatchId: { $exists: true, $ne: null } },
+          ],
+        },
+      ]);
+    } else {
+      query.source = { $regex: new RegExp(`^${escapeRegex(source)}$`, 'i') };
+    }
   }
   if (segmentScore) {
     const [min, max] = segmentScore.split('-').map(Number);
@@ -132,18 +148,20 @@ function buildLeadsListQuery(
 }
 
 function sortStage(sortBy) {
-  if (sortBy === 'score') return { leadScore: -1, _id: -1 };
-  if (sortBy === 'ltv') return { totalSpent: -1, _id: -1 };
-  if (sortBy === 'name') return { name: 1, _id: -1 };
-  if (sortBy === 'clicks') return { linkClicks: -1, _id: -1 };
-  if (sortBy === 'lastPurchase') return { lastPurchaseDate: -1, _id: -1 };
-  if (sortBy === 'orders') return { ordersCount: -1, _id: -1 };
-  if (sortBy === 'cartValue') return { cartValue: -1, _id: -1 };
+  const key = sortBy === 'spend' ? 'ltv' : sortBy;
+  if (key === 'score') return { leadScore: -1, _id: -1 };
+  if (key === 'ltv') return { totalSpent: -1, _id: -1 };
+  if (key === 'name') return { name: 1, _id: -1 };
+  if (key === 'clicks') return { linkClicks: -1, _id: -1 };
+  if (key === 'lastPurchase') return { lastPurchaseDate: -1, _id: -1 };
+  if (key === 'orders') return { ordersCount: -1, _id: -1 };
+  if (key === 'cartValue') return { cartValue: -1, _id: -1 };
   return { lastInteraction: -1, _id: -1 };
 }
 
 function leadsPagePipeline(query, sortBy, skip, limitNum) {
-  if (sortBy === 'aov') {
+  const normalizedSort = sortBy === 'spend' ? 'ltv' : sortBy;
+  if (normalizedSort === 'aov') {
     return [
       { $match: query },
       {
@@ -165,11 +183,46 @@ function leadsPagePipeline(query, sortBy, skip, limitNum) {
   }
   return [
     { $match: query },
-    { $sort: sortStage(sortBy) },
+    { $sort: sortStage(normalizedSort) },
     { $skip: skip },
     { $limit: limitNum },
     { $project: LEAD_LIST_PROJECTION },
   ];
+}
+
+async function enrichLeadRow(clientId, row) {
+  if (!row?.phoneNumber) return normalizeLeadForDisplay(row);
+
+  const variants = phoneVariants(row.phoneNumber);
+  const [orders, conversation] = await Promise.all([
+    findOrdersForLead(clientId, row.phoneNumber, { limit: 50 }),
+    variants.length
+      ? Conversation.findOne(
+          { clientId, phone: { $in: variants } },
+          { lastMessageAt: 1 }
+        ).lean()
+      : Promise.resolve(null),
+  ]);
+
+  let merged = row;
+  if (conversation?.lastMessageAt) {
+    merged = { ...row, conversationLastMessageAt: conversation.lastMessageAt };
+  }
+
+  const normalized = normalizeLeadForDisplay(merged, { orders });
+
+  if (conversation?.lastMessageAt) {
+    const convMs = new Date(conversation.lastMessageAt).getTime();
+    const seenMs = normalized.displayLastSeenAt
+      ? new Date(normalized.displayLastSeenAt).getTime()
+      : 0;
+    if (convMs > seenMs) {
+      normalized.displayLastSeenAt = conversation.lastMessageAt;
+      normalized.lastMessageAt = conversation.lastMessageAt;
+    }
+  }
+
+  return normalized;
 }
 
 /**
@@ -191,6 +244,7 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     stage,
     engagement,
     convStatus,
+    periodDays: periodDaysInput,
   } = opts;
 
   const pageNum = parseInt(page, 10) || 1;
@@ -210,8 +264,43 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     convStatus,
   });
 
+  const periodDays = Math.min(Math.max(parseInt(periodDaysInput, 10) || 0, 0), 90);
+  const periodSince =
+    periodDays > 0 ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
+
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
+
+  const activeTodayCond = { $gte: ['$lastInboundAt', dayStart] };
+  const activeInPeriodCond = periodSince
+    ? {
+        $or: [
+          { $gte: ['$lastInboundAt', periodSince] },
+          { $gte: ['$lastSeen', periodSince] },
+        ],
+      }
+    : activeTodayCond;
+  const convInPeriodCond = periodSince
+    ? {
+        $and: [
+          {
+            $or: [
+              { $and: [{ $ne: ['$chatSummary', null] }, { $ne: ['$chatSummary', ''] }] },
+              { $and: [{ $ne: ['$lastMessageContent', null] }, { $ne: ['$lastMessageContent', ''] }] },
+            ],
+          },
+          { $gte: ['$lastSeen', periodSince] },
+        ],
+      }
+    : {
+        $or: [
+          { $and: [{ $ne: ['$chatSummary', null] }, { $ne: ['$chatSummary', ''] }] },
+          { $and: [{ $ne: ['$lastMessageContent', null] }, { $ne: ['$lastMessageContent', ''] }] },
+        ],
+      };
+  const hotInPeriodCond = periodSince
+    ? { $and: [{ $gt: ['$linkClicks', 5] }, { $gte: ['$lastSeen', periodSince] }] }
+    : { $gt: ['$linkClicks', 5] };
 
   const [facetOut] = await AdLead.aggregate([
     {
@@ -227,25 +316,21 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
               _id: null,
               activeToday: {
                 $sum: {
-                  $cond: [{ $gte: ['$lastInboundAt', dayStart] }, 1, 0],
+                  $cond: [activeTodayCond, 1, 0],
+                },
+              },
+              activeInPeriod: {
+                $sum: {
+                  $cond: [activeInPeriodCond, 1, 0],
                 },
               },
               withConversation: {
                 $sum: {
-                  $cond: [
-                    {
-                      $or: [
-                        { $and: [{ $ne: ['$chatSummary', null] }, { $ne: ['$chatSummary', ''] }] },
-                        { $and: [{ $ne: ['$lastMessageContent', null] }, { $ne: ['$lastMessageContent', ''] }] },
-                      ],
-                    },
-                    1,
-                    0,
-                  ],
+                  $cond: [convInPeriodCond, 1, 0],
                 },
               },
               highEngagement: {
-                $sum: { $cond: [{ $gt: ['$linkClicks', 5] }, 1, 0] },
+                $sum: { $cond: [hotInPeriodCond, 1, 0] },
               },
             },
           },
@@ -254,7 +339,8 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     },
   ]).allowDiskUse(true);
 
-  const leads = (facetOut?.page || []).map((row) => normalizeLeadForDisplay(row));
+  const rawPage = facetOut?.page || [];
+  const leads = await Promise.all(rawPage.map((row) => enrichLeadRow(clientId, row)));
   const total = facetOut?.pageTotal?.[0]?.n ?? 0;
   const summaryRow = facetOut?.summary?.[0] || {};
   const totalPages = Math.max(1, Math.ceil(total / limitNum));
@@ -266,6 +352,7 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     totalLeads: total,
     summary: {
       activeToday: summaryRow.activeToday || 0,
+      activeInPeriod: summaryRow.activeInPeriod || summaryRow.activeToday || 0,
       withConversation: summaryRow.withConversation || 0,
       highEngagement: summaryRow.highEngagement || 0,
     },

@@ -111,14 +111,15 @@ async function buildPriorCommercePeriodKpis(clientId, daysInput, opts = {}) {
   const { endOfDayForDateStrIST } = require('./queryHelpers');
   const startDate = startOfDayForDateStrIST(start);
   const endDate = endOfDayForDateStrIST(end);
-  const [dailyKpis, liveOrders, attemptTotals] = await Promise.all([
+  const [dailyKpis, liveOrders, liveEngagement, attemptTotals] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
     aggregateLiveOrdersForRange(clientId, startDate, endDate),
+    aggregateLiveEngagementForRange(clientId, startDate, endDate),
     require('../commerce/cartRecoveryAttemptService')
       .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
       .catch(() => null),
   ]);
-  const kpis = reconcileKpis({}, dailyKpis, liveOrders);
+  const kpis = reconcileKpis({}, dailyKpis, liveOrders, liveEngagement);
   if (attemptTotals?.recoveredCarts != null) {
     kpis.cartsRecovered = Number(attemptTotals.recoveredCarts) || 0;
   }
@@ -243,8 +244,28 @@ async function aggregateLiveOrdersForRange(clientId, startDate, endDate = null) 
   };
 }
 
+async function aggregateLiveEngagementForRange(clientId, startDate, endDate) {
+  const LinkClickEvent = require('../../models/LinkClickEvent');
+  const PixelEvent = require('../../models/PixelEvent');
+  const [linkClicks, addToCarts] = await Promise.all([
+    LinkClickEvent.countDocuments({
+      clientId,
+      timestamp: { $gte: startDate, $lte: endDate },
+    }),
+    PixelEvent.countDocuments({
+      clientId,
+      eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] },
+      timestamp: { $gte: startDate, $lte: endDate },
+    }),
+  ]);
+  return {
+    linkClicks: Number(linkClicks) || 0,
+    addToCarts: Number(addToCarts) || 0,
+  };
+}
+
 /** Pick authoritative commerce counts (timeline + DailyStat + live orders). */
-function reconcileKpis(timelineKpis, dailyKpis, liveOrders) {
+function reconcileKpis(timelineKpis, dailyKpis, liveOrders, liveEngagement = {}) {
   const pickMax = (a, b, c) => Math.max(Number(a) || 0, Number(b) || 0, Number(c) || 0);
 
   const orders = pickMax(timelineKpis.orders, dailyKpis.orders, liveOrders.orders);
@@ -266,8 +287,16 @@ function reconcileKpis(timelineKpis, dailyKpis, liveOrders) {
       timelineKpis.totalMessagesExchanged,
       dailyKpis.totalMessagesExchanged
     ),
-    linkClicks: pickMax(timelineKpis.linkClicks, dailyKpis.linkClicks),
-    addToCarts: pickMax(timelineKpis.addToCarts, dailyKpis.addToCarts),
+    linkClicks: pickMax(
+      timelineKpis.linkClicks,
+      dailyKpis.linkClicks,
+      liveEngagement.linkClicks
+    ),
+    addToCarts: pickMax(
+      timelineKpis.addToCarts,
+      dailyKpis.addToCarts,
+      liveEngagement.addToCarts
+    ),
     checkouts: pickMax(timelineKpis.checkouts, dailyKpis.checkouts),
     abandonedCartSent: pickMax(timelineKpis.abandonedCartSent, dailyKpis.abandonedCartSent),
     abandonedCartClicks: pickMax(
@@ -332,16 +361,17 @@ async function buildCommercePeriodKpis(opts) {
   const { endOfDayForDateStrIST } = require('./queryHelpers');
   const endDate = endOfDayForDateStrIST(end);
 
-  const [dailyKpis, liveOrders, attemptTotals] = await Promise.all([
+  const [dailyKpis, liveOrders, liveEngagement, attemptTotals] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
     aggregateLiveOrdersForRange(clientId, startDate, endDate),
+    aggregateLiveEngagementForRange(clientId, startDate, endDate),
     require('../commerce/cartRecoveryAttemptService')
       .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
       .catch(() => null),
   ]);
 
   const timelineKpis = sumTimelineKpis(timeline || []);
-  const kpis = reconcileKpis(timelineKpis, dailyKpis, liveOrders);
+  const kpis = reconcileKpis(timelineKpis, dailyKpis, liveOrders, liveEngagement);
 
   // Canonical cart recovery counts — CartRecoveryAttempt (same as recovered-summary + cart workspace).
   if (attemptTotals?.recoveredCarts != null) {

@@ -67,7 +67,32 @@ async function createMessage(data) {
       lastMessageAt: messageTimestamp,
       lastInteraction: messageTimestamp,
     };
-    await Conversation.findByIdAndUpdate(data.conversationId, { $set: convoPatch });
+    const conversation = await Conversation.findByIdAndUpdate(
+      data.conversationId,
+      { $set: convoPatch },
+      { new: false }
+    )
+      .select('phone clientId')
+      .lean();
+
+    if (conversation?.phone && conversation?.clientId) {
+      const AdLead = require('../../models/AdLead');
+      const { phoneVariants } = require('../messaging/cancelAllAutomationsFor');
+      const variants = phoneVariants(conversation.phone);
+      if (variants.length) {
+        const leadPatch = {
+          lastInteraction: messageTimestamp,
+          lastMessageContent: body.substring(0, 500),
+        };
+        if (normalized.direction === 'incoming') {
+          leadPatch.lastInboundAt = messageTimestamp;
+        }
+        await AdLead.updateOne(
+          { clientId: conversation.clientId, phoneNumber: { $in: variants } },
+          { $set: leadPatch }
+        ).catch(() => {});
+      }
+    }
     if (normalized.direction === 'incoming') {
       await Conversation.updateOne(
         { _id: data.conversationId, firstInboundAt: { $exists: false } },

@@ -522,6 +522,7 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
           stage,
           engagement,
           convStatus,
+          periodDays,
         } = req.query;
         const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
         let resolvedImportBatch = null;
@@ -546,6 +547,7 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
             stage,
             engagement,
             convStatus,
+            periodDays: periodDays ? parseInt(periodDays, 10) : undefined,
         });
 
     timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
@@ -1858,7 +1860,14 @@ router.get('/optin-overview', protect, async (req, res) => {
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const period = String(req.query.period || '30d').toLowerCase();
-    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+    const days =
+      period === 'today' || period === '1d'
+        ? 1
+        : period === '7d'
+          ? 7
+          : period === '90d'
+            ? 90
+            : 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     const [statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
