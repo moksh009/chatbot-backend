@@ -176,7 +176,6 @@ router.post('/:clientId', protect, async (req, res) => {
 
     const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
-    const hasEmailSteps = (steps || []).some((s) => String(s.type || '').toLowerCase() === 'email');
     const onlyEmailSteps = hasEmailSteps && (steps || []).every((s) => String(s.type || '').toLowerCase() === 'email');
 
     for (const leadInput of leads) {
