@@ -83,35 +83,63 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
-function validateSequenceSteps(steps, syncedMetaTemplates = []) {
+function validateSequenceSteps(steps, syncedMetaTemplates = [], clientId = null) {
   const failures = [];
-  (steps || []).forEach((step, idx) => {
-    const type = String(step?.type || 'whatsapp').toLowerCase();
-    if (type === 'email') {
-      if (!String(step?.subject || '').trim()) {
-        failures.push({ step: idx + 1, type: 'email', reasons: ['Email subject is required'] });
+  const resolveOne = async (templateName) => {
+    let template = syncedMetaTemplates.find((t) => t?.name === templateName);
+    if (template) return template;
+    if (!clientId) return null;
+    try {
+      const { resolveTemplateForSend } = require('../services/templateResolver');
+      const resolved = await resolveTemplateForSend(clientId, { name: templateName });
+      if (!resolved?.template) return null;
+      const row = resolved.template;
+      return {
+        name: templateName,
+        status: 'APPROVED',
+        category: row.category || row.metaCategory || 'MARKETING',
+        components: row.components || [],
+        primaryPurpose: row.primaryPurpose || 'marketing',
+        secondaryPurposes: Array.isArray(row.secondaryPurposes)
+          ? row.secondaryPurposes
+          : ['sequence', 'campaign', 'marketing'],
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  return (async () => {
+    for (let idx = 0; idx < (steps || []).length; idx += 1) {
+      const step = steps[idx];
+      const type = String(step?.type || 'whatsapp').toLowerCase();
+      if (type === 'email') {
+        if (!String(step?.subject || '').trim()) {
+          failures.push({ step: idx + 1, type: 'email', reasons: ['Email subject is required'] });
+        }
+        if (!String(step?.content || '').trim()) {
+          failures.push({ step: idx + 1, type: 'email', reasons: ['Email body is required'] });
+        }
+        continue;
       }
-      if (!String(step?.content || '').trim()) {
-        failures.push({ step: idx + 1, type: 'email', reasons: ['Email body is required'] });
+      const templateName = step?.templateName;
+      if (!templateName) {
+        failures.push({ step: idx + 1, type: 'whatsapp', reasons: ['WhatsApp template is required'] });
+        continue;
       }
-      return;
+      const template = await resolveOne(templateName);
+      const eligibility = validateTemplateEligibility({
+        template,
+        contextPurpose: 'sequence',
+        availableFields: ['1', '2', '3', '4', '5', '6', 'name', 'phone', 'email'],
+        strict: true,
+      });
+      if (!eligibility.ok) {
+        failures.push({ step: idx + 1, templateName, reasons: eligibility.reasons });
+      }
     }
-    const templateName = step?.templateName;
-    if (!templateName) {
-      failures.push({ step: idx + 1, type: 'whatsapp', reasons: ['WhatsApp template is required'] });
-      return;
-    }
-    const template = syncedMetaTemplates.find((t) => t?.name === templateName);
-    const eligibility = validateTemplateEligibility({
-      template,
-      contextPurpose: 'sequence',
-      strict: true
-    });
-    if (!eligibility.ok) {
-      failures.push({ step: idx + 1, templateName, reasons: eligibility.reasons });
-    }
-  });
-  return failures;
+    return failures;
+  })();
 }
 
 router.post('/:clientId', protect, async (req, res) => {
@@ -149,7 +177,7 @@ router.post('/:clientId', protect, async (req, res) => {
       }
     }
 
-    const stepFailures = validateSequenceSteps(steps, client.syncedMetaTemplates || []);
+    const stepFailures = await validateSequenceSteps(steps, client.syncedMetaTemplates || [], clientId);
     if (stepFailures.length) {
       console.warn('[Sequences][TemplatePreflightFailed]', {
         clientId,
@@ -425,7 +453,7 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
     }
 
     const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
-    const templateFailures = validateSequenceSteps(template?.steps || [], client?.syncedMetaTemplates || []);
+    const templateFailures = await validateSequenceSteps(template?.steps || [], client.syncedMetaTemplates || [], clientId);
     if (templateFailures.length) {
       console.warn('[Sequences][ImportedPlaybookTemplatePreflightFailed]', {
         clientId,

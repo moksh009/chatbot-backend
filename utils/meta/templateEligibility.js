@@ -60,6 +60,19 @@ function validateTemplateEligibility({
         `Template "${template.name}" must be a MARKETING category template for broadcasts.`
       );
     }
+  } else if (normalizedPurpose === 'sequence') {
+    const cat = String(template?.category || template?.metaCategory || '').toUpperCase();
+    const purposeOk =
+      cat === 'MARKETING' ||
+      cat === 'UTILITY' ||
+      allowedPurposes.has('sequence') ||
+      allowedPurposes.has('marketing') ||
+      allowedPurposes.has('campaign');
+    if (!purposeOk) {
+      reasons.push(
+        `Template "${template.name}" must be an approved marketing or utility template for sequences.`
+      );
+    }
   } else if (!allowedPurposes.has(normalizedPurpose) && normalizedPurpose !== 'utility') {
     reasons.push(`Template "${template.name}" is not tagged for ${normalizedPurpose} use.`);
   }
