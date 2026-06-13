@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 
 /**
  * Per-IP + per-clientId rate limit for public third-party checkout webhooks.
@@ -13,7 +14,7 @@ const thirdPartyWebhookLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     const clientId = req.params?.clientId || 'unknown';
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const ip = ipKeyGenerator(req.ip || 'unknown');
     return `tp_webhook:${clientId}:${ip}`;
   },
   message: { success: false, message: 'Webhook rate limit exceeded. Try again shortly.' },
