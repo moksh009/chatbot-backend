@@ -1,6 +1,7 @@
 'use strict';
 
 const { normalizePhone } = require('../core/helpers');
+const { phoneSuffixKey, normalizeEmailKey } = require('./customerIdentityMerge');
 
 function normalizeTagsArray(tags) {
   if (tags == null || tags === '') return [];
@@ -36,14 +37,18 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
 
   const phoneSet = new Set();
   const emailSet = new Set();
+  const suffixSet = new Set();
   for (const c of shopifyCustomers) {
     const p = normalizePhone(c.phone);
     if (p) phoneSet.add(p);
-    const em = String(c.email || '').trim().toLowerCase();
+    const ps = phoneSuffixKey(c.phone);
+    if (ps) suffixSet.add(ps);
+    const em = normalizeEmailKey(c.email);
     if (em) emailSet.add(em);
   }
   const phones = [...phoneSet];
   const emails = [...emailSet];
+  const suffixes = [...suffixSet];
 
   const ScoreTierConfig = require('../../models/ScoreTierConfig');
   const { resolveScoreStageName } = require('../commerce/customerOrderMetrics');
@@ -53,9 +58,14 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
     ? tierDoc.tiers
     : ScoreTierConfig.getDefaultConfig(clientId).tiers;
 
+  const phoneOr = [{ phoneNumber: { $in: phones } }];
+  for (const s of suffixes) {
+    phoneOr.push({ phoneNumber: { $regex: `${s}$` } });
+  }
+
   const [leadsByPhone, leadsByEmail] = await Promise.all([
-    phones.length
-      ? AdLead.find({ clientId, phoneNumber: { $in: phones } })
+    phones.length || suffixes.length
+      ? AdLead.find({ clientId, $or: phoneOr })
           .select('phoneNumber email name leadScore warrantyRecords tags')
           .lean()
       : [],
@@ -66,28 +76,48 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       : [],
   ]);
 
-  const leadByPhone = new Map();
+  const leadByPhoneSuffix = new Map();
   for (const lead of leadsByPhone || []) {
-    const p = normalizePhone(lead.phoneNumber);
-    if (p) leadByPhone.set(p, lead);
+    const ps = phoneSuffixKey(lead.phoneNumber);
+    if (ps && !leadByPhoneSuffix.has(ps)) leadByPhoneSuffix.set(ps, lead);
   }
   const leadByEmail = new Map();
   for (const lead of leadsByEmail || []) {
-    const em = String(lead.email || '').trim().toLowerCase();
+    const em = normalizeEmailKey(lead.email);
     if (em && !leadByEmail.has(em)) leadByEmail.set(em, lead);
   }
 
   return shopifyCustomers.map((c) => {
     const phone = normalizePhone(c.phone);
-    const email = String(c.email || '').trim().toLowerCase();
-    const lead = (phone && leadByPhone.get(phone)) || (email && leadByEmail.get(email)) || null;
+    const email = normalizeEmailKey(c.email);
+    const lead =
+      (phoneSuffixKey(phone) && leadByPhoneSuffix.get(phoneSuffixKey(phone))) ||
+      (email && leadByEmail.get(email)) ||
+      null;
 
     const warrantyRecords = lead?.warrantyRecords || [];
     const activeWarranty = warrantyRecords.filter((w) => w.status === 'active').length;
 
+    const leadPhone = normalizePhone(lead?.phoneNumber);
+    const shopifyPhone = normalizePhone(c.phone);
+    const leadEmail = normalizeEmailKey(lead?.email);
+    const linkedPhones = [];
+    if (leadPhone) {
+      linkedPhones.push(leadPhone);
+      if (shopifyPhone && phoneSuffixKey(shopifyPhone) === phoneSuffixKey(leadPhone)) {
+        linkedPhones.push(shopifyPhone);
+      }
+    } else if (shopifyPhone) {
+      linkedPhones.push(shopifyPhone);
+    }
+    const linkedEmails = [...new Set([email, leadEmail].filter(Boolean))];
+
     return {
       ...c,
-      workspacePhone: phone || normalizePhone(lead?.phoneNumber) || null,
+      phone: leadPhone || shopifyPhone || c.phone || null,
+      workspacePhone: leadPhone || shopifyPhone || null,
+      linkedPhones: [...new Set(linkedPhones.filter(Boolean))],
+      linkedEmails,
       leadId: lead?._id ? String(lead._id) : null,
       leadName: lead?.name || null,
       leadScore: lead?.leadScore ?? null,

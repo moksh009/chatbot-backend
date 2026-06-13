@@ -17,7 +17,7 @@ const { getShopifyClient } = require('../../utils/shopify/shopifyHelper');
 const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopify/shopifyOrderMapper');
 const { syncWhatsAppTemplates } = require('../../utils/meta/whatsappHelpers');
 const commerceAutomationService = require('../../utils/commerce/commerceAutomationService');
-const FlowAnalytics = require('../../models/FlowAnalytics');
+const { dedupeOrdersByShopifyKey } = require('../../utils/shopify/orderDedupe');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -1358,31 +1358,6 @@ async function syncOrderStatusToShopifyAPI({ clientId, order, status, trackingNu
         console.error('[ShopifySync] status push failed:', typeof detail === 'object' ? JSON.stringify(detail) : detail);
         return { ok: false, error: detail };
     }
-}
-
-function dedupeOrdersByShopifyKey(orders) {
-    if (!Array.isArray(orders) || orders.length === 0) return orders;
-    const score = (doc) => {
-        let s = 0;
-        if (doc.shopifyOrderId) s += 8;
-        const ship = doc.shippingAddress;
-        if (ship && (ship.address1 || ship.city || ship.province || ship.province_code)) s += 4;
-        if (doc.financialStatus) s += 2;
-        if (doc.customerName && String(doc.customerName).trim().length > 5) s += 1;
-        return s;
-    };
-    const keyOf = (o) => {
-        if (o.shopifyOrderId) return `sid:${String(o.shopifyOrderId)}`;
-        const raw = String(o.orderNumber || o.orderId || '').replace(/^#/, '').trim();
-        return raw ? `n:${raw}` : `id:${String(o._id)}`;
-    };
-    const byKey = new Map();
-    for (const o of orders) {
-        const k = keyOf(o);
-        const prev = byKey.get(k);
-        if (!prev || score(o) >= score(prev)) byKey.set(k, o);
-    }
-    return Array.from(byKey.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
 const updateOrderStatus = async (req, res) => {

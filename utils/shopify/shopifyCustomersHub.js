@@ -3,6 +3,36 @@
 const { withShopifyRetry } = require('./shopifyHelper');
 const { enrichShopifyCustomers } = require('./shopifyCustomerEnrichment');
 const { normalizePhone } = require('../core/helpers');
+const {
+  mergeShopifyCustomersByIdentity,
+  buildCustomerOrderIndex,
+  ordersForCustomer,
+  applyOrderMetricsToCustomers,
+  findMergedCustomer,
+} = require('./customerIdentityMerge');
+
+async function loadClientOrdersForCustomerMetrics(clientId) {
+  const Order = require('../../models/Order');
+  return Order.find({ clientId })
+    .select(
+      'orderId orderNumber shopifyOrderId phone customerPhone email customerEmail totalPrice amount status financialStatus fulfillmentStatus customerName shippingAddress createdAt'
+    )
+    .sort({ createdAt: -1 })
+    .limit(15000)
+    .lean();
+}
+
+function prepareCustomerList(source) {
+  const merged = mergeShopifyCustomersByIdentity(source || []);
+  return merged;
+}
+
+async function attachOrderMetrics(clientId, customers) {
+  if (!customers.length) return customers;
+  const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
+  const orderIndex = buildCustomerOrderIndex(rawOrders);
+  return applyOrderMetricsToCustomers(customers, orderIndex);
+}
 
 function phoneMatchQuery(phone) {
   const norm = normalizePhone(phone);
@@ -237,7 +267,7 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
     }
   }
 
-  const sorted = sortCustomers(source, query.sort || 'spend');
+  const sorted = sortCustomers(await attachOrderMetrics(clientId, prepareCustomerList(source)), query.sort || 'spend');
   const filtered = filterCustomers(sorted, query);
   const page = paginateCustomers(filtered, {
     cursor: query.cursor,
@@ -273,34 +303,26 @@ function formatAddressLine(order) {
 
 async function getShopifyCustomerDetail(clientId, customerId) {
   const Client = require('../../models/Client');
-  const Order = require('../../models/Order');
 
   const client = await Client.findOne({ clientId })
     .select('shopifyCustomersCache customersSyncedAt')
     .lean();
   if (!client) return null;
 
-  const idStr = String(customerId);
-  let customer = (client.shopifyCustomersCache || []).find((c) => String(c.id) === idStr);
+  const merged = await attachOrderMetrics(clientId, prepareCustomerList(client.shopifyCustomersCache || []));
+  const customer = findMergedCustomer(merged, customerId);
   if (!customer) return null;
 
-  const phone = normalizePhone(customer.phone || customer.workspacePhone);
-  let orders = [];
-  if (phone) {
-    orders = await Order.find({
-      clientId,
-      ...phoneMatchQuery(phone),
-    })
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .select(
-        'orderId orderNumber customerName name phone customerPhone email customerEmail totalPrice amount status financialStatus fulfillmentStatus paymentMethod items shippingAddress billingAddress address city state zip createdAt trackingNumber trackingUrl'
-      )
-      .lean();
-  }
+  const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
+  const orderIndex = buildCustomerOrderIndex(rawOrders);
+  const { orders, orders_count, total_spent } = ordersForCustomer(customer, orderIndex);
 
   return {
-    customer,
+    customer: {
+      ...customer,
+      orders_count,
+      total_spent: String(total_spent),
+    },
     syncedAt: client.customersSyncedAt || null,
     orders: orders.map((o) => ({
       ...o,
