@@ -1,7 +1,16 @@
 'use strict';
 
 const { normalizePhone } = require('../core/helpers');
-const { phoneSuffixKey, normalizeEmailKey } = require('./customerIdentityMerge');
+
+function phoneSuffixKey(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : '';
+}
+
+function normalizeEmailKey(email) {
+  const e = String(email || '').trim().toLowerCase();
+  return e && e.includes('@') ? e : '';
+}
 
 function normalizeTagsArray(tags) {
   if (tags == null || tags === '') return [];

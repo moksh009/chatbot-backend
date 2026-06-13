@@ -26,11 +26,12 @@ function dispatchSignature(newStatus, trackingUrl, trackingNumber) {
  */
 function legacyStatusToSharedKey(newStatus) {
   const s = String(newStatus || '').toLowerCase();
-  if (s === 'paid' || s === 'partially_paid') return `financial_status_${s}`;
+  if (s === 'paid' || s === 'partially_paid' || s === 'confirmed') return `financial_status_${s === 'confirmed' ? 'paid' : s}`;
   if (s === 'pending' || s === 'authorized' || s === 'refunded' || s === 'voided' || s === 'partially_refunded') {
     return `financial_status_${s}`;
   }
   if (s === 'shipped' || s === 'fulfilled') return 'fulfillment_status_fulfilled';
+  if (s === 'out_for_delivery') return 'shipment_status_out_for_delivery';
   /** WS-2 fix: `delivered` is a DISTINCT customer event from `shipped`/
    *  `fulfilled`. Sharing the same dedup key suppressed the delivered
    *  message whenever the order had already been marked fulfilled. */

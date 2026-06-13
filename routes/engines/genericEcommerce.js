@@ -17,7 +17,7 @@ const { getShopifyClient } = require('../../utils/shopify/shopifyHelper');
 const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopify/shopifyOrderMapper');
 const { syncWhatsAppTemplates } = require('../../utils/meta/whatsappHelpers');
 const commerceAutomationService = require('../../utils/commerce/commerceAutomationService');
-const { dedupeOrdersByShopifyKey } = require('../../utils/shopify/orderDedupe');
+const { pushOrderStatusToShopify, extractShopifyError } = require('../../utils/shopify/shopifyFulfillmentSync');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -1247,117 +1247,76 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
  * 3PL-driven updates flow the opposite direction (Shopify → webhooks → us).
  */
 async function syncOrderStatusToShopifyAPI({ clientId, order, status, trackingNumber, trackingUrl, nicheData }) {
-    if (!order.shopifyOrderId) return { ok: true, skipped: true };
+    if (!order.shopifyOrderId) return { ok: true, skipped: true, reason: 'no_shopify_order_id' };
     let shopifyApi;
     try {
         shopifyApi = await getShopifyClient(clientId);
     } catch (e) {
         return { ok: false, error: 'Unable to reach Shopify (credentials or network).' };
     }
+    return pushOrderStatusToShopify({
+        shopifyApi,
+        shopifyOrderId: order.shopifyOrderId,
+        status,
+        trackingNumber: trackingNumber || order.trackingNumber || '',
+        trackingUrl: trackingUrl || order.trackingUrl || '',
+        nicheData: nicheData || {},
+    });
+}
+
+function applyLocalStatusFields(order, status) {
     const st = String(status || '').toLowerCase();
-    const nd = nicheData || {};
-    const shopifyOrderId = order.shopifyOrderId;
-
-    async function resolveLocationId() {
-        let activeLocId = nd.shopifyLocationId;
-        if (!activeLocId) {
-            try {
-                const locRes = await shopifyApi.get('/locations.json');
-                activeLocId = locRes.data.locations?.[0]?.id;
-            } catch (locErr) {
-                console.error('[ShopifySync] locations fetch:', locErr.message);
-            }
+    order.status = st;
+    if (st === 'confirmed' || st === 'paid') {
+        if (order.isCOD && st === 'confirmed') {
+            order.financialStatus = order.financialStatus || 'pending';
+        } else if (st === 'paid') {
+            order.financialStatus = 'paid';
         }
-        return activeLocId || null;
+        order.fulfillmentStatus = order.fulfillmentStatus || 'unfulfilled';
+    } else if (st === 'shipped' || st === 'fulfilled') {
+        order.fulfillmentStatus = 'fulfilled';
+        order.status = 'shipped';
+    } else if (st === 'out_for_delivery') {
+        order.fulfillmentStatus = 'fulfilled';
+        order.status = 'out_for_delivery';
+    } else if (st === 'delivered') {
+        order.fulfillmentStatus = 'fulfilled';
+        order.status = 'delivered';
+    } else if (st === 'cancelled') {
+        order.fulfillmentStatus = order.fulfillmentStatus || 'unfulfilled';
+        order.financialStatus = order.financialStatus || 'voided';
     }
+}
 
-    async function createFulfillmentIfNeeded() {
-        const { data: fulData } = await shopifyApi.get(`/orders/${shopifyOrderId}/fulfillments.json`);
-        const fulfillments = fulData?.fulfillments || [];
-        const tn = trackingNumber || order.trackingNumber;
-        const tu = trackingUrl || order.trackingUrl;
-        if (fulfillments.length > 0) {
-            if (tn || tu) {
-                const latest = fulfillments[fulfillments.length - 1];
-                if (latest?.id) {
-                    try {
-                        await shopifyApi.put(`/orders/${shopifyOrderId}/fulfillments/${latest.id}.json`, {
-                            fulfillment: {
-                                tracking_number: tn || latest.tracking_number || undefined,
-                                tracking_urls: tu ? [tu] : latest.tracking_urls,
-                            },
-                        });
-                    } catch (trackErr) {
-                        console.error('[ShopifySync] fulfillment tracking update:', trackErr.message);
-                    }
-                }
-            }
-            return fulfillments;
-        }
-        const activeLocId = await resolveLocationId();
-        const urls = tu ? [tu] : [];
-        const createRes = await shopifyApi.post(`/orders/${shopifyOrderId}/fulfillments.json`, {
-            fulfillment: {
-                location_id: activeLocId,
-                tracking_number: tn || undefined,
-                tracking_urls: urls,
-                notify_customer: false,
-            },
-        });
-        return createRes.data?.fulfillment ? [createRes.data.fulfillment] : [];
-    }
+function normalizeOrderNumberKey(order) {
+    const raw = String(order?.orderNumber || order?.orderId || '').replace(/^#+/g, '').trim();
+    return raw || null;
+}
 
-    try {
-        if (st === 'paid') {
-            const { data: shopData } = await shopifyApi.get(`/orders/${shopifyOrderId}.json`);
-            const shopOrder = shopData?.order;
-            if (!shopOrder) return { ok: false, error: 'Order not found on Shopify' };
-            const fin = String(shopOrder.financial_status || '').toLowerCase();
-            if (fin === 'paid' || fin === 'partially_paid') {
-                return { ok: true, skipped: true };
-            }
-            const amount = shopOrder.total_price || shopOrder.current_total_price;
-            await shopifyApi.post(`/orders/${shopifyOrderId}/transactions.json`, {
-                transaction: {
-                    kind: 'sale',
-                    status: 'success',
-                    amount,
-                    currency: shopOrder.currency || 'INR',
-                    gateway: 'manual',
-                    source: 'external',
-                },
-            });
-            return { ok: true };
-        }
-        if (st === 'shipped' || st === 'fulfilled') {
-            await createFulfillmentIfNeeded();
-            return { ok: true };
-        }
-        if (st === 'delivered') {
-            const fulfillments = await createFulfillmentIfNeeded();
-            const latest = fulfillments[fulfillments.length - 1];
-            if (!latest?.id) {
-                return { ok: false, error: 'Could not create fulfillment on Shopify' };
-            }
-            const shipmentStatus = String(latest.shipment_status || '').toLowerCase();
-            if (shipmentStatus === 'delivered') {
-                return { ok: true, skipped: true };
-            }
-            await shopifyApi.post(`/orders/${shopifyOrderId}/fulfillments/${latest.id}/events.json`, {
-                event: { status: 'delivered' },
-            });
-            return { ok: true };
-        }
-        if (st === 'cancelled') {
-            await shopifyApi.post(`/orders/${shopifyOrderId}/cancel.json`, { reason: 'customer' });
-            return { ok: true };
-        }
-        return { ok: true, skipped: true };
-    } catch (err) {
-        const detail = err.response?.data || err.message;
-        console.error('[ShopifySync] status push failed:', typeof detail === 'object' ? JSON.stringify(detail) : detail);
-        return { ok: false, error: detail };
+function orderRichnessScore(doc) {
+    let s = 0;
+    const ship = doc.shippingAddress;
+    if (ship && (ship.address1 || ship.city || ship.province || ship.province_code)) s += 5;
+    if (doc.customerName && String(doc.customerName).trim().length > 3) s += 3;
+    if (doc.customerPhone || doc.phone) s += 2;
+    if (doc.financialStatus) s += 2;
+    if (doc.fulfillmentStatus && doc.fulfillmentStatus !== 'unfulfilled') s += 2;
+    if (doc.isCOD) s += 1;
+    if (doc.shopifyOrderId) s += 1;
+    return s;
+}
+
+function dedupeOrdersByShopifyKey(orders) {
+    if (!Array.isArray(orders) || orders.length === 0) return orders;
+    const byKey = new Map();
+    for (const o of orders) {
+        const num = normalizeOrderNumberKey(o);
+        const k = num ? `n:${num}` : o.shopifyOrderId ? `sid:${String(o.shopifyOrderId)}` : `id:${String(o._id)}`;
+        const prev = byKey.get(k);
+        if (!prev || orderRichnessScore(o) >= orderRichnessScore(prev)) byKey.set(k, o);
     }
+    return Array.from(byKey.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
 const updateOrderStatus = async (req, res) => {
@@ -1380,6 +1339,7 @@ const updateOrderStatus = async (req, res) => {
             return res.json({ success: true, order, whatsapp: { skipped: true, reason: 'no_op' } });
         }
 
+        let shopifySyncSkipped = false;
         if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
             const sync = await syncOrderStatusToShopifyAPI({
                 clientId,
@@ -1390,16 +1350,24 @@ const updateOrderStatus = async (req, res) => {
                 nicheData: nicheData || {},
             });
             if (!sync.ok) {
-                return res.status(502).json({
-                    error: 'Shopify rejected this status update. Your dashboard was not changed.',
-                    shopifySyncFailed: true,
-                    details: sync.error,
-                    order,
-                });
+                if (sync.allowLocalFallback) {
+                    shopifySyncSkipped = true;
+                } else {
+                    const detailMsg =
+                        typeof sync.error === 'string'
+                            ? sync.error
+                            : extractShopifyError({ response: { data: sync.error } });
+                    return res.status(502).json({
+                        error: `Shopify rejected this status update: ${detailMsg}`,
+                        shopifySyncFailed: true,
+                        details: sync.error,
+                        order,
+                    });
+                }
             }
         }
 
-        order.status = status;
+        applyLocalStatusFields(order, status);
         if (trackingNumber) order.trackingNumber = trackingNumber;
         if (trackingUrl) order.trackingUrl = trackingUrl;
         await order.save();
@@ -1430,6 +1398,7 @@ const updateOrderStatus = async (req, res) => {
             order: refreshed || order,
             whatsapp: dispatchResult.whatsapp || {},
             dispatch: dispatchResult,
+            shopifySyncSkipped,
         });
         timer.finish('200 ok');
     } catch (error) {
