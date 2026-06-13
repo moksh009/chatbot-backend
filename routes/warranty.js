@@ -12,6 +12,7 @@ const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 const { normalizePhone } = require('../utils/core/helpers');
 const { tenantClientId } = require('../utils/core/queryHelpers');
+const { sendNotifications } = require('../utils/commerce/warrantyService');
 
 function normalizeProductRules(body = {}) {
     const { productRules, shopifyProductIds, durationMonths } = body;
@@ -888,6 +889,14 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
             status: 'active'
         });
 
+        const client = await Client.findOne({ clientId }).lean();
+        if (client) {
+            await sendNotifications(client, normalizedPhone, {
+                productName: record.productName,
+                expiryDate: record.expiryDate,
+            }).catch(() => {});
+        }
+
         return res.status(201).json({ success: true, record });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
@@ -1020,6 +1029,16 @@ router.post('/assign-order', protect, featureWarranty, async (req, res) => {
                     : 'Nothing to assign.',
                 skipped,
             });
+        }
+
+        const client = await Client.findOne({ clientId }).lean();
+        if (client) {
+            for (const record of created) {
+                await sendNotifications(client, normalizedPhone, {
+                    productName: record.productName,
+                    expiryDate: record.expiryDate,
+                }).catch(() => {});
+            }
         }
 
         return res.status(201).json({ success: true, records: created, skipped, count: created.length });

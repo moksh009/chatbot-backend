@@ -11,6 +11,7 @@ const { startHeartbeat, stopHeartbeat } = require('../utils/messaging/concurrenc
 const { classifyEnvelopeOutcome } = require('../utils/messaging/dispatch/dispatchOutcomeHandler');
 const { enqueueSequenceStepJob } = require('../utils/messaging/queues/sequenceDispatchQueue');
 const { getConnection } = require('../utils/messaging/queues/queueConnection');
+const { mergeEmailForLead } = require('../utils/core/emailMergeFields');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { emitToClient } = require('../utils/core/socket');
 
@@ -36,6 +37,30 @@ async function emitSequenceProgress(clientId, sequenceId) {
 
 const WORKER_ID = `${os.hostname()}:${process.pid}`;
 const CONCURRENCY = Number(process.env.PHASE3_SEQUENCE_CONCURRENCY || 100);
+
+async function maybeFinalizeSequence(sequenceId, clientId) {
+  const fresh = await FollowUpSequence.findById(sequenceId).lean();
+  if (!fresh || fresh.status !== 'active') return;
+
+  const steps = fresh.steps || [];
+  const hasPending = steps.some((s) =>
+    ['pending', 'queued', 'processing', 'retrying'].includes(s.status)
+  );
+  if (hasPending) return;
+
+  await FollowUpSequence.findByIdAndUpdate(sequenceId, { $set: { status: 'completed' } });
+
+  if (fresh.leadId) {
+    const count = await FollowUpSequence.countDocuments({
+      clientId,
+      leadId: fresh.leadId,
+      status: 'active',
+    });
+    await AdLead.findByIdAndUpdate(fresh.leadId, {
+      $set: { 'metaData.hasActiveSequence': count > 0 },
+    });
+  }
+}
 
 async function processSequenceDispatchJob(job) {
   const { sequenceId, stepIdx, clientId, channel = 'whatsapp' } = job.data;
@@ -76,9 +101,15 @@ async function processSequenceDispatchJob(job) {
       payload = { templateName: step.templateName, templateLanguage: 'en', components: [] };
     } else if (step.type === 'email') {
       intent = 'marketing';
+      const merged = mergeEmailForLead(
+        step.subject || 'Follow up',
+        step.content || '',
+        lead || {},
+        client
+      );
       payload = {
-        subject: step.subject || 'Follow up',
-        html: step.content || '',
+        subject: merged.subject,
+        html: merged.html,
       };
     } else {
       payload = { text: step.content || '' };
@@ -102,6 +133,7 @@ async function processSequenceDispatchJob(job) {
         lockedBy: null,
         lockedAt: null,
       });
+      await maybeFinalizeSequence(sequenceId, clientId);
     } else if (outcome.action === 'retry') {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'retrying', {
         nextAttemptAt: new Date(Date.now() + outcome.delaySec * 1000),
@@ -113,9 +145,19 @@ async function processSequenceDispatchJob(job) {
         failureReason: outcome.reason || 'failed',
         errorLog: outcome.reason,
       });
+      await maybeFinalizeSequence(sequenceId, clientId);
     }
   } catch (err) {
     log.warn(`Sequence job ${sequenceId}:${stepIdx}: ${err.message}`);
+    try {
+      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+        failureReason: err.message || 'dispatch_error',
+        errorLog: err.message,
+      });
+      await maybeFinalizeSequence(sequenceId, clientId);
+    } catch (transitionErr) {
+      log.warn(`Sequence fail transition ${sequenceId}:${stepIdx}: ${transitionErr.message}`);
+    }
   } finally {
     if (hbKey) stopHeartbeat(hbKey);
     await release({ clientId, channel });

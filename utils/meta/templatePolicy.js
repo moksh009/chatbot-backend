@@ -47,8 +47,8 @@ function hasPurpose(template, purpose) {
 function isCampaignEligible(template) {
   if (isSystemExcluded(template)) return false;
   if (normalizeStatus(template) !== 'APPROVED') return false;
-  if (templateCategory(template) !== 'MARKETING') return false;
-  return hasPurpose(template, 'campaign') || primaryPurpose(template) === 'marketing';
+  // Any approved Meta MARKETING template can power broadcasts (purpose tags are optional).
+  return templateCategory(template) === 'MARKETING';
 }
 
 function isSequenceEligible(template) {

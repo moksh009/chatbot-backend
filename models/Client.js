@@ -132,6 +132,8 @@ const WizardFeaturesSchema = new mongoose.Schema({
 
   // Service & post-purchase
   enableWarranty:          { type: Boolean, default: false },
+  /** When warranty was last turned on — orders before this are not auto-assigned */
+  warrantyEnabledAt:       { type: Date, default: null },
   warrantyGeneratePdf:     { type: Boolean, default: true  },
   warrantyDuration:        { type: String,  default: "1 Year" },
   warrantySupportPhone:    { type: String,  default: "" },

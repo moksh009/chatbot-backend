@@ -343,6 +343,34 @@ async function processMessages(messages, metadata, contacts) {
         }
       }).catch(e => log.error('Campaign reply update failed', { error: e.message }));
 
+      // 3b. Track quick-reply / interactive button taps on recent campaign messages
+      if (message.type === 'button' || message.type === 'interactive') {
+        const interactiveType = message.interactive?.type;
+        const clickType =
+          message.type === 'button' || interactiveType === 'button_reply' || interactiveType === 'list_reply'
+            ? 'button'
+            : 'link';
+        CampaignMessage.findOneAndUpdate(
+          { phone: from, status: { $in: ['sent', 'delivered', 'read', 'replied'] } },
+          { $set: { 'metadata.clickedAt': new Date(), 'metadata.clickType': clickType } },
+          { sort: { createdAt: -1 } }
+        )
+          .then(async (msg) => {
+            if (!msg?.campaignId) return;
+            const inc =
+              clickType === 'link' ? { websiteClicks: 1 } : { buttonClicks: 1 };
+            await Campaign.findByIdAndUpdate(msg.campaignId, { $inc: inc });
+            if (msg.clientId) {
+              const AdLead = require('../models/AdLead');
+              AdLead.pushJourneyEvent(msg.clientId, from, 'campaign_clicked', {
+                campaignId: msg.campaignId,
+                clickType,
+              }).catch(() => {});
+            }
+          })
+          .catch((e) => log.error('Campaign click update failed', { error: e.message }));
+      }
+
       // B2. Handle WA Catalog Orders
       if (message.type === 'order') {
         try {

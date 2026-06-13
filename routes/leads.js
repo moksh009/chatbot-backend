@@ -105,6 +105,39 @@ router.get('/cart-workspace', protect, logPersonalDataAccess, async (req, res) =
     }
 });
 
+// POST /api/leads/batch-lookup — resolve lead IDs for current tenant (fixed path; avoids :param shadowing)
+router.post('/batch-lookup', protect, logPersonalDataAccess, async (req, res) => {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+        return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { leadIds } = req.body || {};
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'leadIds array is required' });
+    }
+
+    try {
+        const oids = leadIds
+            .filter((id) => mongoose.Types.ObjectId.isValid(String(id)))
+            .map((id) => new mongoose.Types.ObjectId(String(id)));
+
+        const leads = await AdLead.find({ clientId, _id: { $in: oids } })
+            .select('name email phoneNumber optStatus leadScore tags cartSnapshot checkoutUrl')
+            .lean();
+
+        return res.json({
+            success: true,
+            leads,
+            requested: leadIds.length,
+            found: leads.length,
+        });
+    } catch (err) {
+        console.error('[batch-lookup]', err);
+        return res.status(500).json({ success: false, message: err.message || 'Lookup failed' });
+    }
+});
+
 // POST /api/leads/:clientId/request-reconsent — queue utility template for Shopify customers without marketing opt-in
 router.post('/:clientId/request-reconsent', protect, logAction('REQUEST_RECONSENT'), async (req, res) => {
     const { clientId } = req.params;
@@ -287,6 +320,37 @@ router.delete('/:clientId/import/:batchId', protect, logAction('DELETE_IMPORT'),
     }
 });
 
+// POST /api/leads/:clientId/batch-lookup — resolve selected lead IDs (tenant-scoped)
+router.post('/:clientId/batch-lookup', protect, logPersonalDataAccess, async (req, res) => {
+    const { clientId } = req.params;
+    if (!denyUnlessTenant(req, res, clientId)) return;
+
+    const { leadIds } = req.body || {};
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'leadIds array is required' });
+    }
+
+    try {
+        const oids = leadIds
+            .filter((id) => mongoose.Types.ObjectId.isValid(String(id)))
+            .map((id) => new mongoose.Types.ObjectId(String(id)));
+
+        const leads = await AdLead.find({ clientId, _id: { $in: oids } })
+            .select('name email phoneNumber optStatus leadScore tags cartSnapshot checkoutUrl')
+            .lean();
+
+        return res.json({
+            success: true,
+            leads,
+            requested: leadIds.length,
+            found: leads.length,
+        });
+    } catch (err) {
+        console.error('[batch-lookup]', err);
+        return res.status(500).json({ success: false, message: err.message || 'Lookup failed' });
+    }
+});
+
 // POST /api/leads/:clientId/bulk-email — SMTP broadcast with {{merge}} fields
 router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (req, res) => {
     const { clientId } = req.params;
@@ -365,11 +429,17 @@ router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (re
         }
 
         return res.json({
-            success: true,
+            success: sent.length > 0,
+            partial: sent.length > 0 && (skipped.length > 0 || failed.length > 0),
             sent: sent.length,
             skipped,
             failed,
-            message: `Sent ${sent.length} of ${leadIds.length} selected. ${skipped.length} skipped, ${failed.length} failed.`
+            message:
+                sent.length > 0
+                    ? `Delivered ${sent.length} of ${leadIds.length} selected.${skipped.length ? ` ${skipped.length} skipped (no email).` : ''}${failed.length ? ` ${failed.length} failed.` : ''}`
+                    : failed.length > 0
+                      ? `No emails delivered — ${failed.length} failed. Check Gmail connection in Settings → Email.`
+                      : `No emails sent — ${skipped.length || leadIds.length} selected contact(s) have no email address.`
         });
     } catch (err) {
         console.error('[bulk-email]', err);

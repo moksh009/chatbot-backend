@@ -53,12 +53,15 @@ function validateTemplateEligibility({
     reasons.push(`Template "${template.name}" is ${normalizedStatus}, not APPROVED.`);
   }
 
-  if (!allowedPurposes.has(normalizedPurpose) && normalizedPurpose !== 'utility') {
-    const tagHint =
-      normalizedPurpose === 'campaign'
-        ? ' Tag it as MARKETING in Meta Manager, or add marketing as a secondary purpose.'
-        : '';
-    reasons.push(`Template "${template.name}" is not tagged for ${normalizedPurpose} use.${tagHint}`);
+  if (normalizedPurpose === 'campaign') {
+    const cat = String(template?.category || template?.metaCategory || '').toUpperCase();
+    if (cat !== 'MARKETING') {
+      reasons.push(
+        `Template "${template.name}" must be a MARKETING category template for broadcasts.`
+      );
+    }
+  } else if (!allowedPurposes.has(normalizedPurpose) && normalizedPurpose !== 'utility') {
+    reasons.push(`Template "${template.name}" is not tagged for ${normalizedPurpose} use.`);
   }
 
   const requiredVariableCount = getBodyVariableCount(template);

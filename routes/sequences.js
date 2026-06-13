@@ -42,6 +42,18 @@ async function activeSequenceCountMap(clientId, leadIds) {
   return m;
 }
 
+async function syncLeadHasActiveSequence(clientId, leadId) {
+  if (!leadId || !mongoose.Types.ObjectId.isValid(String(leadId))) return;
+  const count = await FollowUpSequence.countDocuments({
+    clientId,
+    leadId,
+    status: 'active',
+  });
+  await AdLead.findByIdAndUpdate(leadId, {
+    $set: { 'metaData.hasActiveSequence': count > 0 },
+  });
+}
+
 function normalizeDelayUnit(unit) {
   const raw = String(unit || 'm').toLowerCase().trim();
   if (raw === 'm' || raw === 'min' || raw === 'mins' || raw === 'minute' || raw === 'minutes') return 'm';
@@ -74,9 +86,21 @@ router.get('/', protect, async (req, res) => {
 function validateSequenceSteps(steps, syncedMetaTemplates = []) {
   const failures = [];
   (steps || []).forEach((step, idx) => {
-    if (String(step?.type || '').toLowerCase() !== 'whatsapp') return;
+    const type = String(step?.type || 'whatsapp').toLowerCase();
+    if (type === 'email') {
+      if (!String(step?.subject || '').trim()) {
+        failures.push({ step: idx + 1, type: 'email', reasons: ['Email subject is required'] });
+      }
+      if (!String(step?.content || '').trim()) {
+        failures.push({ step: idx + 1, type: 'email', reasons: ['Email body is required'] });
+      }
+      return;
+    }
     const templateName = step?.templateName;
-    if (!templateName) return;
+    if (!templateName) {
+      failures.push({ step: idx + 1, type: 'whatsapp', reasons: ['WhatsApp template is required'] });
+      return;
+    }
     const template = syncedMetaTemplates.find((t) => t?.name === templateName);
     const eligibility = validateTemplateEligibility({
       template,
@@ -111,8 +135,20 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'No leads provided' });
     }
     
-    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
+    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected').lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const hasEmailSteps = (steps || []).some((s) => String(s.type || '').toLowerCase() === 'email');
+    if (hasEmailSteps) {
+      const { isWorkspaceEmailReady } = require('../utils/core/emailService');
+      if (!isWorkspaceEmailReady(client)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Connect Gmail in Settings before enrolling sequences with email steps.',
+        });
+      }
+    }
+
     const stepFailures = validateSequenceSteps(steps, client.syncedMetaTemplates || []);
     if (stepFailures.length) {
       console.warn('[Sequences][TemplatePreflightFailed]', {
@@ -122,7 +158,7 @@ router.post('/:clientId', protect, async (req, res) => {
       });
       return res.status(400).json({
         success: false,
-        message: 'One or more WhatsApp sequence steps have invalid/unapproved templates.',
+        message: 'One or more sequence steps are invalid. Check WhatsApp templates and email subject/body.',
         details: stepFailures
       });
     }
@@ -140,6 +176,9 @@ router.post('/:clientId', protect, async (req, res) => {
 
     const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
+    const hasEmailSteps = (steps || []).some((s) => String(s.type || '').toLowerCase() === 'email');
+    const onlyEmailSteps = hasEmailSteps && (steps || []).every((s) => String(s.type || '').toLowerCase() === 'email');
+
     for (const leadInput of leads) {
       let { leadId, phone, email } = leadInput;
       if (!leadId && phone) {
@@ -156,6 +195,11 @@ router.post('/:clientId', protect, async (req, res) => {
 
       if (!leadId) {
         errors.push({ phone, message: 'Could not resolve lead for enrollment' });
+        continue;
+      }
+
+      if (onlyEmailSteps && !String(email || '').trim()) {
+        errors.push({ leadId, message: 'Contact has no email address' });
         continue;
       }
 
@@ -289,11 +333,16 @@ router.get('/:clientId/:sequenceId', protect, async (req, res) => {
         index: idx + 1,
         type: s.type || 'whatsapp',
         templateName: s.templateName,
+        subject: s.subject,
         content: s.content,
         delayValue: s.delayValue,
         delayUnit: s.delayUnit,
         sendAt: s.sendAt,
+        sentAt: s.sentAt,
         status,
+        errorLog: s.errorLog,
+        failureReason: s.failureReason,
+        attempts: s.attempts,
         isCurrent: sequence.currentStepIndex === idx,
       };
     });
@@ -477,12 +526,20 @@ router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const seq = await FollowUpSequence.findOneAndUpdate(
-      { _id: sequenceId, clientId },
-      { $set: { status: 'cancelled' } },
-      { new: true }
-    );
-    
+    const seq = await FollowUpSequence.findOne({ _id: sequenceId, clientId });
+    if (!seq) {
+      return res.status(404).json({ success: false, message: 'Sequence not found' });
+    }
+
+    seq.status = 'cancelled';
+    (seq.steps || []).forEach((step) => {
+      if (['pending', 'queued', 'retrying'].includes(step.status)) {
+        step.status = 'cancelled';
+      }
+    });
+    await seq.save();
+    if (seq.leadId) await syncLeadHasActiveSequence(clientId, seq.leadId);
+
     res.json({ success: true, sequence: seq });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -523,7 +580,13 @@ router.delete('/:clientId/:sequenceId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
+    const seq = await FollowUpSequence.findOne({ _id: sequenceId, clientId });
+    if (!seq) {
+      return res.status(404).json({ success: false, message: 'Sequence not found' });
+    }
+    const leadId = seq.leadId;
     await FollowUpSequence.findOneAndDelete({ _id: sequenceId, clientId });
+    if (leadId) await syncLeadHasActiveSequence(clientId, leadId);
     res.json({ success: true, message: "Sequence deleted" });
   } catch (error) {
     console.error('Sequence delete error:', error);

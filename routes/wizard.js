@@ -14,6 +14,8 @@ const { syncPlatformVarsToFlows } = require('../utils/core/platformVarsSync');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 const { generateText, generateTextFast } = require('../utils/core/gemini');
 const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet, syncAutomationFlowsFromFeatures } = require('../utils/flow/wizardMapper');
+const { isWarrantyEnabled } = require('../utils/core/featureFlags');
+const { backfillWarrantyFromRecentOrders } = require('../utils/commerce/warrantyEngine');
 const { emitToClient } = require('../utils/core/socket');
 const log = require('../utils/core/logger')("Wizard");
 const { tenantClientId } = require('../utils/core/queryHelpers');
@@ -1610,7 +1612,17 @@ router.patch("/:clientId/features", protect, async (req, res) => {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
+    const prevClient = await Client.findOne({ clientId }).select('wizardFeatures').lean();
+    const wasWarrantyOff = prevClient ? !isWarrantyEnabled(prevClient) : true;
+
     const $set = mapFeatureToggle(features);
+
+    if (features.enableWarranty === true && wasWarrantyOff) {
+      $set['wizardFeatures.warrantyEnabledAt'] = new Date();
+    }
+    if (features.enableWarranty === false) {
+      $set['wizardFeatures.warrantyEnabledAt'] = null;
+    }
 
     // Additional profile fields that merchants need in the same UX surface.
     if (profile.supportEmail !== undefined)          $set["platformVars.supportEmail"] = profile.supportEmail || "";
@@ -1669,6 +1681,24 @@ router.patch("/:clientId/features", protect, async (req, res) => {
       }
     }
 
+    let warrantyBackfill = null;
+    if (features.enableWarranty === true && wasWarrantyOff) {
+      setImmediate(() => {
+        Client.findOne({ clientId })
+          .then((fresh) => {
+            if (!fresh) return null;
+            return backfillWarrantyFromRecentOrders(fresh);
+          })
+          .then((result) => {
+            if (result?.assigned > 0) {
+              log.info(`[Features] Warranty backfill assigned ${result.assigned} for ${clientId}`);
+            }
+          })
+          .catch((err) => log.warn(`[Features] Warranty backfill failed for ${clientId}: ${err.message}`));
+      });
+      warrantyBackfill = { queued: true };
+    }
+
     res.json({
       success: true,
       features: client.wizardFeatures,
@@ -1679,7 +1709,8 @@ router.patch("/:clientId/features", protect, async (req, res) => {
         warrantyDuration: client.brand?.warrantyDefaultDuration || client.wizardFeatures?.warrantyDuration || "1 Year",
         warrantyPolicy: client.policies?.warrantyPolicy || "",
       },
-      regen: regenSummary
+      regen: regenSummary,
+      warrantyBackfill,
     });
   } catch (err) {
     log.error(`[Features] PATCH failed for ${clientId}: ${err.message}`);

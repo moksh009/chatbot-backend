@@ -1,6 +1,7 @@
 const WarrantyBatch = require('../../models/WarrantyBatch');
 const WarrantyRecord = require('../../models/WarrantyRecord');
 const Contact = require('../../models/Contact');
+const Order = require('../../models/Order');
 const { normalizePhone } = require('../core/helpers');
 const { sendNotifications } = require('./warrantyService');
 const { isWarrantyEnabled } = require('../core/featureFlags');
@@ -11,6 +12,52 @@ function durationMonthsForProduct(batch, productId) {
     const rule = (batch.productRules || []).find((r) => String(r.shopifyProductId) === id);
     if (rule?.durationMonths) return Number(rule.durationMonths);
     return Number(batch.durationMonths) || 12;
+}
+
+function orderEligibleAfterWarrantyEnabled(client, orderDate) {
+    const enabledAt = client?.wizardFeatures?.warrantyEnabledAt;
+    if (!enabledAt) return true;
+    const placed = new Date(orderDate);
+    const since = new Date(enabledAt);
+    if (Number.isNaN(placed.getTime()) || Number.isNaN(since.getTime())) return true;
+    return placed >= since;
+}
+
+function orderDocToShopifyPayload(order = {}) {
+    const orderName =
+        order.shopifyOrderId ||
+        order.orderNumber ||
+        order.name ||
+        order.orderId ||
+        '';
+    return {
+        name: orderName,
+        id: order.orderId || order.shopifyOrderId,
+        created_at: order.createdAt || new Date(),
+        phone: order.customerPhone || order.phone,
+        email: order.customerEmail || order.email,
+        customer: {
+            phone: order.customerPhone || order.phone,
+            email: order.customerEmail || order.email,
+            first_name: String(order.customerName || order.name || 'Customer').split(' ')[0],
+            last_name: String(order.customerName || order.name || '')
+                .split(' ')
+                .slice(1)
+                .join(' '),
+        },
+        billing_address: { phone: order.customerPhone || order.phone },
+        line_items: (order.items || []).map((item) => ({
+            product_id: item.productId || item.product_id,
+            title: item.name || item.title || 'Product',
+            image_url: item.image || item.image_url || null,
+            quantity: item.quantity || 1,
+        })),
+    };
+}
+
+function isPaidShopifyOrder(data = {}) {
+    const fin = String(data.financial_status || '').toLowerCase();
+    return fin === 'paid' || fin === 'partially_paid';
 }
 
 /**
@@ -34,6 +81,14 @@ async function processWarrantyAutoAssignment(client, data) {
 
         const cleanPhone = normalizePhone(phoneRaw);
         const orderDate = new Date(data.created_at || Date.now());
+
+        if (!orderEligibleAfterWarrantyEnabled(client, orderDate)) {
+            log.debug(
+                `[Warranty] Order ${data.name || data.id} is before warranty was enabled. Skipping.`
+            );
+            return;
+        }
+
         const productIdsInOrder = data.line_items?.map(item => String(item.product_id)) || [];
 
         // 1. Find active batches matching products in this order
@@ -120,6 +175,56 @@ async function processWarrantyAutoAssignment(client, data) {
     }
 }
 
+/**
+ * Process recent synced orders that match active batches (run after warranty is turned on).
+ */
+async function backfillWarrantyFromRecentOrders(client, { limit = 120 } = {}) {
+    if (!isWarrantyEnabled(client)) return { assigned: 0, scanned: 0 };
+
+    const activeBatchCount = await WarrantyBatch.countDocuments({
+        clientId: client.clientId,
+        status: 'active',
+        shopifyProductIds: { $exists: true, $ne: [] },
+    });
+    if (!activeBatchCount) {
+        log.debug(`[Warranty] No active batches for ${client.clientId}; skip backfill`);
+        return { assigned: 0, scanned: 0, reason: 'no_batches' };
+    }
+
+    const orders = await Order.find({ clientId: client.clientId })
+        .sort({ createdAt: -1 })
+        .limit(Math.max(1, Math.min(limit, 200)))
+        .lean();
+
+    let assigned = 0;
+    for (const order of orders) {
+        try {
+            const payload = orderDocToShopifyPayload(order);
+            if (!payload.line_items?.length) continue;
+            const orderKeys = [payload.name, String(payload.id || '')].filter(Boolean);
+            const before = await WarrantyRecord.countDocuments({
+                clientId: client.clientId,
+                shopifyOrderId: { $in: orderKeys },
+            });
+            await processWarrantyAutoAssignment(client, payload);
+            const after = await WarrantyRecord.countDocuments({
+                clientId: client.clientId,
+                shopifyOrderId: { $in: orderKeys },
+            });
+            if (after > before) assigned += after - before;
+        } catch (err) {
+            log.warn(`[Warranty] Backfill order skip: ${err.message}`);
+        }
+    }
+
+    log.info(`[Warranty] Backfill for ${client.clientId}: scanned=${orders.length} newRecords=${assigned}`);
+    return { assigned, scanned: orders.length };
+}
+
 module.exports = {
-    processWarrantyAutoAssignment
+    processWarrantyAutoAssignment,
+    backfillWarrantyFromRecentOrders,
+    orderDocToShopifyPayload,
+    isPaidShopifyOrder,
+    orderEligibleAfterWarrantyEnabled,
 };

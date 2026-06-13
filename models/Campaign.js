@@ -59,6 +59,7 @@ const CampaignSchema = new mongoose.Schema({
   processingCount: { type: Number, default: 0 },
   queuedCount:     { type: Number, default: 0 },
   websiteClicks:   { type: Number, default: 0 },
+  buttonClicks:    { type: Number, default: 0 },
   revenueAttributed: { type: Number, default: 0 },
   
   channel:         { type: String, enum: ['whatsapp', 'sms', 'email'], default: 'whatsapp' },

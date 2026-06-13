@@ -26,12 +26,15 @@ async function sendWhatsApp({ client, to, payload }) {
 }
 
 async function sendEmailMessage({ client, to, payload }) {
-  await sendEmail(client, {
+  const ok = await sendEmail(client, {
     to,
     subject: payload.subject || 'Store update',
     html: payload.html || payload.text || '',
     headers: payload.headers || {},
   });
+  if (!ok) {
+    throw new Error('email_send_failed');
+  }
   return { messageId: null };
 }
 

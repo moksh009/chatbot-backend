@@ -445,6 +445,16 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       contextPurpose: 'campaign',
       strict: strictValidation !== false,
     });
+
+    if (preflight.requiredVariableCount > 1) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Quick broadcast supports templates with 0 or 1 variable (customer name). Create a simpler marketing template.',
+        requiredVariableCount: preflight.requiredVariableCount,
+      });
+    }
+
     if (!preflight.ok) {
       log.warn('[QuickSend][TemplatePreflightFailed]', {
         clientId,
@@ -517,7 +527,8 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       campaignType: 'STANDARD',
       status: 'DRAFT',
       audience: audienceRows,
-      variableMapping: { '1': 'name' },
+      variableMapping:
+        preflight.requiredVariableCount > 0 ? { '1': 'name' } : {},
       languageCode: 'en',
     });
 
@@ -1659,7 +1670,7 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
       });
     }
 
-    const [campaigns, statsArray, activeCampaigns] = await Promise.all([
+    const [campaigns, statsArray, activeCampaigns, billingByCategory] = await Promise.all([
       Campaign.find(periodSince ? { clientId, createdAt: { $gte: periodSince } } : { clientId })
         .sort({ createdAt: -1 })
         .limit(50)
@@ -1670,6 +1681,26 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).option({ maxTimeMS: OVERVIEW_AGG_MAX_MS }),
       Campaign.countDocuments({ clientId, status: 'SENDING' }).maxTimeMS(4000),
+      CampaignMessage.aggregate([
+        { $match: { ...messageMatch, status: { $in: ['sent', 'delivered', 'read', 'replied'] } } },
+        {
+          $lookup: {
+            from: 'campaigns',
+            localField: 'campaignId',
+            foreignField: '_id',
+            as: 'camp',
+          },
+        },
+        { $unwind: '$camp' },
+        {
+          $group: {
+            _id: {
+              $ifNull: ['$camp.templateCategory', 'MARKETING'],
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ]).option({ maxTimeMS: OVERVIEW_AGG_MAX_MS }),
     ]);
 
     const statsMap = statsArray.reduce((acc, curr) => {
@@ -1688,6 +1719,43 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
     const readRate = totalDelivered > 0 ? Math.round((totalRead / totalDelivered) * 100) : 0;
     const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0;
 
+    const { estimateMetaBreakdown } = require('../services/billing/costEstimation');
+    const { normalizeCategory } = require('../constants/metaWhatsAppPricing');
+    const {
+      aggregateCampaignStatsById,
+      enrichCampaignRow,
+    } = require('../utils/commerce/campaignOverviewMetrics');
+
+    let marketingCount = 0;
+    let utilityCount = 0;
+    for (const row of billingByCategory || []) {
+      const cat = normalizeCategory(row._id);
+      const count = Number(row.count) || 0;
+      if (cat === 'UTILITY' || cat === 'AUTHENTICATION') utilityCount += count;
+      else marketingCount += count;
+    }
+    const billingBreakdown = estimateMetaBreakdown({ marketingCount, utilityCount });
+
+    const campaignIds = campaigns.map((c) => c._id);
+    const perCampaignStats = await aggregateCampaignStatsById(clientId, campaignIds);
+
+    const totalRevenue = campaigns.reduce(
+      (sum, c) => sum + Number(c.revenueAttributed || 0),
+      0
+    );
+    const totalButtonClicks = campaigns.reduce(
+      (sum, c) => sum + Number(c.buttonClicks || 0),
+      0
+    );
+    const totalLinkClicks = campaigns.reduce(
+      (sum, c) => sum + Number(c.websiteClicks || 0),
+      0
+    );
+
+    const recentCampaigns = campaigns.slice(0, 10).map((c) =>
+      enrichCampaignRow(c, perCampaignStats.get(String(c._id)) || {})
+    );
+
     const metaHealth = await fetchMetaHealthForOverview(clientDoc || client);
 
     res.json({
@@ -1702,11 +1770,16 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
         deliveryRate,
         readRate,
         replyRate,
+        totalRevenue,
+        totalBillingInr: billingBreakdown.meta_subtotal_inr,
+        totalButtonClicks,
+        totalLinkClicks,
+        billingBreakdown,
       },
       metaHealth,
       activeCampaigns,
       throttledWhatsApp,
-      recentCampaigns: campaigns.slice(0, 10),
+      recentCampaigns,
     });
   } catch (error) {
     if (error?.name === 'MongoTimeoutError' || /maxTimeMS/i.test(String(error.message))) {

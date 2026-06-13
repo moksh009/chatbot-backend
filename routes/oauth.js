@@ -6,6 +6,7 @@ const router  = express.Router();
 const Client  = require("../models/Client");
 
 const { protect } = require("../middleware/auth");
+const { denyUnlessTenant } = require('../utils/core/queryHelpers');
 const { checkLimit } = require('../utils/core/planLimits');
 const { decrypt } = require('../utils/core/encryption');
 const {
@@ -497,6 +498,7 @@ router.get("/meta-ads/callback", async (req, res) => {
 router.get("/google/start/:clientId", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    if (!denyUnlessTenant(req, res, clientId)) return;
     
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
@@ -605,6 +607,7 @@ router.get("/google/callback", async (req, res) => {
 router.post("/google/disconnect/:clientId", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    if (!denyUnlessTenant(req, res, clientId)) return;
 
     await Client.findOneAndUpdate(
       { clientId },

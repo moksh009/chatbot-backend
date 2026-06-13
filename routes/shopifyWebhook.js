@@ -302,6 +302,13 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   order: orderPayload,
                   options: { skipOrderStatusRules: true },
                 }).catch((e) => log.error(`Commerce automations ${statusEvent} SKU failed:`, e.message));
+
+                if (isPaid) {
+                    const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
+                    await processWarrantyAutoAssignment(client, data).catch((e) =>
+                        log.error('[Warranty] Auto-assignment orders/create failed:', e.message)
+                    );
+                }
                 break;
             }
             case 'orders/cancelled':
@@ -337,6 +344,16 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   source: 'shopify_webhook:orders/updated',
                 }).catch((e) => log.error(`OrderStatus automation orders/updated failed: ${e.message}`));
                 await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
+                {
+                    const fin = String(data.financial_status || '').toLowerCase();
+                    const isPaidUpdate = fin === 'paid' || fin === 'partially_paid';
+                    if (isPaidUpdate) {
+                        const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
+                        await processWarrantyAutoAssignment(client, data).catch((e) =>
+                            log.error('[Warranty] Auto-assignment orders/updated failed:', e.message)
+                        );
+                    }
+                }
                 break;
             case 'fulfillments/create':
             case 'fulfillments/update': {
@@ -860,6 +877,27 @@ async function handleOrder(client, data, storeKey = '') {
         { upsert: true, new: true, setDefaultsOnInsert: true }
     );
     const isCODOrder = !!newOrder.isCOD || detectCodFromShopify(data);
+
+    try {
+      const fin = String(data.financial_status || newOrder.financialStatus || '').toLowerCase();
+      const successStatuses = ['paid', 'fulfilled', 'delivered', 'partially_fulfilled'];
+      if (successStatuses.includes(fin)) {
+        const { attributeRevenueToCampaign } = require('../utils/commerce/campaignStatsHelper');
+        await attributeRevenueToCampaign(
+          {
+            clientId: client.clientId,
+            customerPhone: cleanPhone,
+            totalPrice: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
+            amount: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
+            orderId: data.name || String(data.id),
+            createdAt: new Date(data.created_at || newOrder.createdAt || Date.now()),
+          },
+          lead
+        );
+      }
+    } catch (attrErr) {
+      log.warn(`[ShopifyWebhook] campaign revenue attribution skipped: ${attrErr.message}`);
+    }
 
     try {
       const fin = String(data.financial_status || newOrder.financialStatus || '').toLowerCase();
