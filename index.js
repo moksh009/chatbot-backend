@@ -171,7 +171,14 @@ function shouldSkipStrictCors(req) {
 const corsBaseOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'X-Admin-Impersonating',
+  ],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
 };
 
