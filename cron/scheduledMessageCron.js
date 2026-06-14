@@ -145,12 +145,22 @@ async function runScheduledMessageTick() {
         continue;
       }
 
-      const lead = await AdLead.findOne({
-        phoneNumber: msg.phone,
-        clientId: client.clientId,
-      })
-        .select('_id lastInteraction linkClicks')
-        .lean();
+      const lead =
+        msg.channel === 'email'
+          ? await AdLead.findOne({
+              clientId: client.clientId,
+              email: String(msg.content?.toEmail || msg.phone || '')
+                .trim()
+                .toLowerCase(),
+            })
+              .select('_id email lastInteraction linkClicks')
+              .lean()
+          : await AdLead.findOne({
+              phoneNumber: msg.phone,
+              clientId: client.clientId,
+            })
+              .select('_id lastInteraction linkClicks')
+              .lean();
 
       if (msg.cancelIf && lead) {
         let shouldCancel = false;
@@ -202,10 +212,19 @@ async function runScheduledMessageTick() {
           if (recipient) {
             const isHubSend = contentSource === 'routes/email-hub:send';
             if (isHubSend) {
+              const MessageEnvelope = require('../models/MessageEnvelope');
               const { dispatchTrackedEmail } = require('../utils/core/dispatchTrackedEmail');
               const leadRecord = lead?.email
                 ? lead
                 : await AdLead.findOne({ clientId: client.clientId, email: recipient }).lean();
+              const existingEnvelope = await MessageEnvelope.findOne({
+                clientId: client.clientId,
+                channel: 'email',
+                status: 'queued',
+                'context.scheduledMessageId': String(msg._id),
+              })
+                .select('_id idempotencyKey')
+                .lean();
               const out = await dispatchTrackedEmail({
                 client,
                 clientId: client.clientId,
@@ -220,7 +239,10 @@ async function runScheduledMessageTick() {
                   source: 'cron/scheduledMessageCron',
                   scheduledMessageId: String(msg._id),
                 },
-                idempotencyKey: idempotencyScheduled({ scheduledMessageId: String(msg._id) }),
+                idempotencyKey:
+                  existingEnvelope?.idempotencyKey ||
+                  idempotencyScheduled({ scheduledMessageId: String(msg._id) }),
+                existingEnvelopeId: existingEnvelope?._id || null,
                 templateName: subject,
               });
               sentSuccess = out.success;

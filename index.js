@@ -499,6 +499,19 @@ const RUN_CRONS =
 
 if (!RUN_CRONS) {
   log.info('[Boot] RUN_CRONS=false — cron jobs not started');
+  // Single-process deploys (e.g. Contabo): still deliver scheduled Email Hub messages.
+  if (RUN_API && process.env.EMAIL_SCHEDULE_TICK_ON_API !== 'false') {
+    const cron = require('node-cron');
+    const scheduleScheduled = require('./cron/scheduledMessageCron');
+    cron.schedule('*/2 * * * *', () => {
+      if (scheduleScheduled.runTick) {
+        scheduleScheduled.runTick().catch((err) => {
+          log.error('[Boot] Scheduled message tick failed', { message: err.message });
+        });
+      }
+    });
+    log.info('[Boot] Scheduled message tick on API process (RUN_CRONS=false)');
+  }
 } else {
   const { registerAllCrons } = require('./cron/cronBootstrap');
   registerAllCrons();

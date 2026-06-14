@@ -23,6 +23,7 @@ async function dispatchTrackedEmail({
   templateName = '',
   consentSnapshot = null,
   skipRateLimit = false,
+  existingEnvelopeId = null,
 }) {
   const cid = clientId || client?.clientId;
   const recipient = String(to || '').trim().toLowerCase();
@@ -50,17 +51,35 @@ async function dispatchTrackedEmail({
     idempotencyKey ||
     `tracked:${cid}:${recipient}:${String(subject || '').slice(0, 40)}:${Date.now()}`;
 
-  const envelope = await MessageEnvelope.create({
-    clientId: cid,
-    contactId: contactId || undefined,
-    channel: 'email',
-    intent,
-    status: 'queued',
-    templateName: templateName || subject || '',
-    idempotencyKey: key,
-    context: { ...context, subject, recipientEmail: recipient },
-    consentSnapshot,
-  });
+  let envelope = null;
+  if (existingEnvelopeId) {
+    envelope = await MessageEnvelope.findOne({
+      _id: existingEnvelopeId,
+      clientId: cid,
+      channel: 'email',
+      status: 'queued',
+    });
+    if (envelope) {
+      envelope.context = { ...(envelope.context || {}), ...context, subject, recipientEmail: recipient };
+      envelope.templateName = templateName || subject || envelope.templateName || '';
+      if (contactId) envelope.contactId = contactId;
+      await envelope.save();
+    }
+  }
+
+  if (!envelope) {
+    envelope = await MessageEnvelope.create({
+      clientId: cid,
+      contactId: contactId || undefined,
+      channel: 'email',
+      intent,
+      status: 'queued',
+      templateName: templateName || subject || '',
+      idempotencyKey: key,
+      context: { ...context, subject, recipientEmail: recipient },
+      consentSnapshot,
+    });
+  }
 
   const trackedHtml = prepareTrackedEmailHtml({
     html,
