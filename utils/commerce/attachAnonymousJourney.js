@@ -2,6 +2,7 @@
 
 const PixelEvent = require('../../models/PixelEvent');
 const AdLead = require('../../models/AdLead');
+const VisitorIdentity = require('../../models/VisitorIdentity');
 const log = require('../core/logger')('AttachAnonymousJourney');
 
 const JOURNEY_EVENT_LABELS = {
@@ -29,15 +30,17 @@ function formatJourneyLogEntry(ev) {
   const meta = ev.metadata || {};
   let product = meta.product?.title || meta.product?.name;
   const path = humanizeUrl(ev.url);
-  
+
   if (!product && ev.eventName === 'page_view' && ev.url && ev.url.includes('/products/')) {
     try {
       const u = new URL(ev.url);
-      const match = u.pathname.match(/\/products\/([^\/]+)/);
+      const match = u.pathname.match(/\/products\/([^/]+)/);
       if (match && match[1]) {
-        product = match[1].replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        product = match[1].replace(/-/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
       }
-    } catch (_) {}
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   let details = base;
@@ -53,19 +56,42 @@ function formatJourneyLogEntry(ev) {
 
 /**
  * Retroactively attach anonymous PixelEvents to a lead when identity is known.
+ * Matches sessionId, visitorId, and checkoutToken (checkout funnel + VisitorIdentity lookup).
  */
 async function attachAnonymousJourneyToLead({
   clientId,
   leadId,
   visitorId,
   sessionId,
+  checkoutToken,
   maxEvents = 40,
 }) {
   if (!clientId || !leadId) return { attached: 0 };
 
   const or = [];
+  const token = checkoutToken ? String(checkoutToken).trim() : '';
+  let resolvedVisitorId = visitorId ? String(visitorId).trim() : '';
+
   if (sessionId) or.push({ sessionId: String(sessionId) });
-  if (visitorId) or.push({ 'metadata.visitorId': String(visitorId) });
+  if (resolvedVisitorId) or.push({ 'metadata.visitorId': resolvedVisitorId });
+
+  if (token) {
+    or.push({ 'metadata.checkoutToken': token });
+  }
+
+  if (token && !resolvedVisitorId) {
+    const visitor = await VisitorIdentity.findOne({
+      clientId,
+      checkoutTokens: token,
+    })
+      .select('visitorId')
+      .lean();
+    if (visitor?.visitorId) {
+      resolvedVisitorId = String(visitor.visitorId);
+      or.push({ 'metadata.visitorId': resolvedVisitorId });
+      or.push({ sessionId: resolvedVisitorId });
+    }
+  }
 
   if (!or.length) return { attached: 0 };
 

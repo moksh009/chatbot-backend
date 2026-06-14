@@ -323,6 +323,7 @@ async function upsertAbandonedCartLead(client, data = {}) {
       leadId: lead._id,
       visitorId: data.visitorId,
       sessionId: data.sessionId,
+      checkoutToken: data.checkoutToken || data.token || cartToken,
     }).catch(() => {});
   }
 

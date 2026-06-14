@@ -208,28 +208,6 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
       ...(email ? { email } : {}),
       ...(phone ? { phone } : {}),
     };
-    // #region agent log
-    log.info('[DEBUG-f2f95b] pixel event received', {
-      hypothesisId: 'H3',
-      clientId,
-      eventName: eventName || null,
-      origin: req.headers.origin || null,
-      hasEmail: Boolean(email || eventData.email),
-      hasPhone: Boolean(phone || eventData.phone),
-    });
-    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-      body: JSON.stringify({
-        sessionId: 'f2f95b',
-        hypothesisId: 'H3',
-        location: 'shopifyPixel.js:event',
-        message: 'pixel event POST',
-        data: { clientId, eventName: eventName || null, origin: req.headers.origin || null },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     if (eventData.captureMode === 'live_ui_extension') {
       log.info('[CheckoutCapture] live_ui_extension event', {
         clientId,
@@ -845,6 +823,64 @@ async function buildPixelStatusPayload(clientId, req) {
   }
   const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
 
+  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent] = await Promise.all([
+    AdLead.findOne({ clientId, source: 'shopify_native' })
+      .sort({ lastCartEventAt: -1 })
+      .select('lastCartEventAt')
+      .lean(),
+    PixelEvent.findOne({
+      clientId,
+      eventName: 'checkout_contact_identified',
+      'metadata.captureMode': 'live_ui_extension',
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp metadata')
+      .lean(),
+    PixelEvent.findOne({
+      clientId,
+      eventName: 'contact_identified',
+      'metadata.captureMode': { $in: ['live_theme', 'live'] },
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp')
+      .lean(),
+  ]);
+
+  const extensionEnvEnabled = process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED !== 'false';
+  const liveExtensionRecent =
+    lastLiveExtensionEvent &&
+    moment(lastLiveExtensionEvent.timestamp).isAfter(sevenDaysAgo);
+  const liveThemeRecent =
+    lastLiveThemeEvent && moment(lastLiveThemeEvent.timestamp).isAfter(sevenDaysAgo);
+  const webhookCaptureRecent =
+    lastWebhookLead?.lastCartEventAt &&
+    moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo);
+
+  const liveTypingCapture = {
+    status: liveExtensionRecent
+      ? 'live_extension'
+      : liveThemeRecent
+        ? 'live_theme'
+        : 'pending',
+    statusLabel: liveExtensionRecent
+      ? 'Checkout live typing active'
+      : liveThemeRecent
+        ? 'Storefront live typing active'
+        : extensionEnvEnabled
+          ? 'Live typing ready — add checkout extension in Editor'
+          : 'Deploy app extensions for checkout live typing',
+    extensionEnvEnabled,
+    lastWebhookCaptureAt: lastWebhookLead?.lastCartEventAt || null,
+    lastLiveExtensionAt: lastLiveExtensionEvent?.timestamp || null,
+    lastLiveThemeAt: lastLiveThemeEvent?.timestamp || null,
+    checkoutWebhookActive: Boolean(webhookCaptureRecent),
+    hint: liveExtensionRecent
+      ? 'Phone and email are captured while the shopper types in checkout — no Continue click needed.'
+      : liveThemeRecent
+        ? 'Contact fields on storefront pages send while typing.'
+        : 'Install the TopEdge checkout capture block in Checkout Editor for instant phone/email capture.',
+  };
+
   let storefrontHint;
   if (webPixelScopeMissing) {
     storefrontHint =
@@ -908,6 +944,7 @@ async function buildPixelStatusPayload(clientId, req) {
     scriptTag,
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
+    liveTypingCapture,
     statusHint: storefrontHint,
   };
 }
