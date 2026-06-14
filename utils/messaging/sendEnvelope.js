@@ -35,6 +35,15 @@ async function persistEnvelope(doc) {
   }
 }
 
+function buildPersistContext(input, contact) {
+  const base = { ...(input.context || {}) };
+  if (input.channel === 'email') {
+    base.subject = input?.payload?.subject || base.subject || '';
+    base.recipientEmail = contact?.email || base.recipientEmail || '';
+  }
+  return base;
+}
+
 async function sendEnvelope(input = {}) {
   const redis = getAppRedis();
   const valid = validateInput(input);
@@ -81,7 +90,7 @@ async function sendEnvelope(input = {}) {
       reason: idem.reason,
       templateName: input?.payload?.templateName || '',
       idempotencyKey: idemKey,
-      context: input.context || {},
+      context: buildPersistContext(input, contact),
     });
     return buildResult('duplicate', { blockedBy: 'idempotency', reason: idem.reason });
   }
@@ -107,7 +116,7 @@ async function sendEnvelope(input = {}) {
       reason: consent.reason,
       templateName: input?.payload?.templateName || '',
       idempotencyKey: idemKey,
-      context: input.context || {},
+      context: buildPersistContext(input, contact),
       consentSnapshot: consent.consentSnapshot || null,
     });
     return buildResult('blocked', {
@@ -212,7 +221,7 @@ async function sendEnvelope(input = {}) {
       reason: '',
       templateName: input?.payload?.templateName || '',
       idempotencyKey: idemKey,
-      context: input.context || {},
+      context: buildPersistContext(input, contact),
       consentSnapshot: consent.consentSnapshot || null,
       messageId: dispatchResult?.messageId || '',
       sentAt: new Date(),
@@ -249,7 +258,7 @@ async function sendEnvelope(input = {}) {
       reason: err.message,
       templateName: input?.payload?.templateName || '',
       idempotencyKey: idemKey,
-      context: input.context || {},
+      context: buildPersistContext(input, contact),
       consentSnapshot: consent.consentSnapshot || null,
       failedAt: new Date(),
     });

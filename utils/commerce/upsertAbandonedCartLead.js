@@ -9,6 +9,8 @@ const { normalizeIndianPhone, indianPhoneLookupVariants, indianPhoneDigits } = r
 const { contactPhoneKey, ensureCartRecoveryAttempt } = require('./cartRecoveryAttemptService');
 const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
+const { attachAnonymousJourneyToLead } = require('./attachAnonymousJourney');
+const { withPixelCaptureLock } = require('./pixelCaptureLock');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
@@ -293,6 +295,15 @@ async function upsertAbandonedCartLead(client, data = {}) {
       icon: 'ShoppingCart',
       url: phoneE164 ? `/leads/${phoneE164}` : '/leads',
       metadata: { phone: phoneE164 || email, source, amount: cartTotal },
+    }).catch(() => {});
+  }
+
+  if (lead?._id && !isPurchased) {
+    await attachAnonymousJourneyToLead({
+      clientId,
+      leadId: lead._id,
+      visitorId: data.visitorId,
+      sessionId: data.sessionId,
     }).catch(() => {});
   }
 

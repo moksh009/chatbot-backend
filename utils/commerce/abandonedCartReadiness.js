@@ -206,6 +206,12 @@ async function buildAbandonedCartReadiness(clientId) {
       unknownPhoneCount: stats.unknown || 0,
       sampleTotal: stats.total || 0,
       warn: unknownPhonePct > 30,
+      severity: unknownPhonePct > 30 ? 'critical' : unknownPhonePct > 10 ? 'warn' : 'ok',
+      banner: unknownPhonePct > 30
+        ? 'CRITICAL: ' + Math.round(unknownPhonePct) + '% of checkout leads are missing phone numbers. Shopify requires Protected Customer Data (PCD) approval since Dec 2025. Without it, phone fields return null and cart recovery messages cannot be sent. Go to Partner Dashboard → App → API access → Protected customer data → Request access.'
+        : unknownPhonePct > 10
+          ? 'WARNING: ' + Math.round(unknownPhonePct) + '% of checkout leads have missing phones. Consider requesting Protected Customer Data approval from Shopify Partner Dashboard to improve capture rates.'
+          : null,
     },
     lastCheckoutWebhookAt:
       lastCheckoutLead?.checkoutInitiatedAt ||
@@ -278,8 +284,10 @@ function buildChecklist(ctx) {
       status: ctx.unknownPhonePct > 30 ? 'error' : ctx.unknownPhonePct > 10 ? 'warn' : 'ok',
       detail:
         ctx.unknownPhonePct > 30
-          ? 'Partner Dashboard → App → API access → Protected customer data'
-          : 'Required for checkout phone capture (Dec 2025 policy)',
+          ? `CRITICAL: ${Math.round(ctx.unknownPhonePct)}% of checkout leads have no phone. Since Dec 2025, Shopify blocks phone/email access without PCD approval. Go to Partner Dashboard → App → API access → Protected customer data → Request access.`
+          : ctx.unknownPhonePct > 10
+            ? `${Math.round(ctx.unknownPhonePct)}% unknown phones detected. Request PCD access to improve capture.`
+            : 'PCD access verified — checkout phone capture is working.',
       href: 'https://partners.shopify.com/',
       actionLabel: 'Open Partner Dashboard',
     },

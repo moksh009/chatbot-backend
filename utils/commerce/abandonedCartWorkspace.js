@@ -288,6 +288,9 @@ function isNonRecoverableLead(lead) {
 }
 
 function recoveryStatusLabel(lead) {
+  if (lead.cartStatus === 'active' && lead.contactCapturedAt) {
+    return { key: 'in_checkout', label: 'In checkout' };
+  }
   if (isWaRecoveredLead(lead)) return { key: 'whatsapp', label: 'Recovered via WhatsApp' };
   if (isRecoveredLead(lead)) return { key: 'organic', label: 'Recovered' };
   return { key: 'active', label: 'Active abandoned' };
@@ -319,6 +322,9 @@ async function latestOrdersByPhone(clientId, phones = []) {
 
 function orderStatusLabel(order, lead, delay1Min = 45) {
   if (!order && !lead.isOrderPlaced) {
+    if (lead.cartStatus === 'active' && lead.contactCapturedAt) {
+      return { key: 'in_checkout', label: 'In checkout' };
+    }
     const abandonedAt = abandonDate(lead);
     const step = Number(lead.recoveryStep || 0);
     if (
@@ -384,7 +390,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     ],
   })
     .select(
-      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags'
+      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags'
     )
     .limit(8000)
     .lean();

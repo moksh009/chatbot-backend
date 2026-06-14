@@ -31,4 +31,7 @@ const PixelEventSchema = new mongoose.Schema({
 // Index for funnel analytics
 PixelEventSchema.index({ clientId: 1, eventName: 1, timestamp: -1 });
 
+// Automatic cleanup: delete raw pixel events after 180 days
+PixelEventSchema.index({ timestamp: 1 }, { expireAfterSeconds: 180 * 24 * 60 * 60 });
+
 module.exports = mongoose.model('PixelEvent', PixelEventSchema);

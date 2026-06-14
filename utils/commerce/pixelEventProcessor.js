@@ -4,6 +4,8 @@ const AdLead = require("../../models/AdLead");
 const PixelEvent = require("../../models/PixelEvent");
 const { normalizePhoneWithCountry } = require("../core/helpers");
 const { stitchVisitorIdentity } = require("./visitorIdentityService");
+const { withPixelCaptureLock } = require("./pixelCaptureLock");
+const { attachAnonymousJourneyToLead } = require("./attachAnonymousJourney");
 const log = require("../core/logger")("PixelProcessor");
 
 function mapCartItems(data = {}) {
@@ -31,6 +33,19 @@ function buildRecoverUrl(client, checkoutToken) {
   return "";
 }
 
+async function resolveCommerceLeadFilter(clientId, { phone, email, checkoutToken }) {
+  const token = checkoutToken ? String(checkoutToken).trim() : "";
+  if (token) {
+    const byToken = await AdLead.findOne({ clientId, checkoutToken: token })
+      .select("_id phoneNumber")
+      .lean();
+    if (byToken) return { clientId, _id: byToken._id };
+  }
+  if (phone) return { clientId, phoneNumber: phone };
+  if (email) return { clientId, email: String(email).toLowerCase() };
+  return null;
+}
+
 async function upsertLeadFromCommerce(client, clientId, {
   phone,
   email,
@@ -42,20 +57,20 @@ async function upsertLeadFromCommerce(client, clientId, {
   setAbandonTimestamps,
   extraSet = {},
 }) {
-  const query = phone
-    ? { clientId, phoneNumber: phone }
-    : email
-      ? { clientId, email: String(email).toLowerCase() }
-      : null;
+  const filter = await resolveCommerceLeadFilter(clientId, { phone, email, checkoutToken });
 
-  if (!query) return null;
+  if (!filter) return null;
 
   const now = new Date();
 
-  /** WS-3 C3: skip pixel-driven abandon updates for already-purchased
-   *  leads (mirrors the webhook upsert guard in upsertAbandonedCartLead). */
-  const existing = await AdLead.findOne(query)
-    .select('cartStatus isOrderPlaced')
+  const queryForPurchased = phone
+    ? { clientId, phoneNumber: phone }
+    : email
+      ? { clientId, email: String(email).toLowerCase() }
+      : filter;
+
+  const existing = await AdLead.findOne(queryForPurchased)
+    .select("cartStatus isOrderPlaced cartAbandonedAt checkoutToken")
     .lean();
   const alreadyPurchased =
     existing && (existing.cartStatus === 'purchased' || existing.isOrderPlaced === true);
@@ -116,18 +131,67 @@ async function upsertLeadFromCommerce(client, clientId, {
   const update = { $set, $setOnInsert };
   if (_ci) update.$inc = { checkoutInitiatedCount: 1 };
 
-  return AdLead.findOneAndUpdate(query, update, { upsert: true, new: true });
+  return AdLead.findOneAndUpdate(filter, update, { upsert: true, new: true });
+}
+
+async function finalizeCaptureLead({
+  clientId,
+  lead,
+  phone,
+  checkoutToken,
+  visitorId,
+  sessionId,
+  eventName,
+  cartValue,
+}) {
+  if (!lead?._id) return lead;
+
+  await attachAnonymousJourneyToLead({
+    clientId,
+    leadId: lead._id,
+    visitorId,
+    sessionId,
+  }).catch((err) => {
+    log.warn(`[Pixel] Journey stitch failed: ${err.message}`);
+  });
+
+  if (phone && lead._id) {
+    const { ensureCartRecoveryAttempt } = require("./cartRecoveryAttemptService");
+    await ensureCartRecoveryAttempt({
+      clientId,
+      leadId: lead._id,
+      contactPhone: String(phone).replace(/[^0-9]/g, ""),
+      checkoutToken,
+      attemptTimestamp: Date.now(),
+    }).catch((craErr) => {
+      log.warn(`[Pixel] CartRecoveryAttempt ensure failed: ${craErr.message}`);
+    });
+  }
+
+  if (global.io) {
+    global.io.to(`client_${clientId}`).emit("lead_cart_update", {
+      leadId: lead._id,
+      phone: lead.phoneNumber,
+      cartStatus: lead.cartStatus,
+      cartValue: cartValue || lead.cartValue,
+      event: eventName,
+    });
+  }
+
+  return lead;
 }
 
 async function recordPixelEvent(clientId, leadId, eventName, payload) {
   try {
+    const metadata = { ...(payload.metadata || {}) };
+    if (payload.visitorId) metadata.visitorId = payload.visitorId;
     await PixelEvent.create({
       clientId,
       leadId: leadId || undefined,
       eventName,
       url: payload.url || "",
       sessionId: payload.sessionId,
-      metadata: payload.metadata || {},
+      metadata,
       timestamp: payload.timestamp || new Date(),
       userAgent: payload.userAgent,
       ip: payload.ip,
@@ -177,99 +241,162 @@ async function processPixelEvent(clientId, eventData) {
   const checkoutUrl =
     data.checkoutUrl || data.checkout_url || buildRecoverUrl(client, checkoutToken);
 
-  // --- Checkout contact (Web Pixel + legacy aliases) ---
+  const captureMode = data.captureMode || meta.captureMode || "";
+  const isLiveCapture =
+    captureMode === "live" ||
+    captureMode === "live_ui_extension" ||
+    captureMode === "live_theme";
+
+  const hasCartContextFlag = Boolean(data.hasCartContext || meta.hasCartContext);
+
+  const dedupeKey = checkoutToken || phone || email || visitorId || sessionId;
+
+  // --- Checkout contact (Web Pixel + legacy aliases + live UI extension) ---
   if (
     eventName === "checkout_contact_identified" ||
     eventName === "checkout_contact_info_submitted"
   ) {
-    const cartItems = mapCartItems(data);
-    const lead = await upsertLeadFromCommerce(client, clientId, {
-      phone,
-      email,
-      checkoutToken,
-      checkoutUrl,
-      cartItems,
-      cartTotal: data.cartTotal || data.total_price,
-      cartStatus: "abandoned",
-      setAbandonTimestamps: true,
-      extraSet: {
-        source: data.source === "shopify_web_pixel" ? "Web Pixel" : "DeepPixel",
-        checkoutInitiatedCount: true,
-      },
-    });
+    return withPixelCaptureLock(clientId, dedupeKey, async () => {
+      const cartItems = mapCartItems(data);
+      const cartStatus = isLiveCapture ? "active" : "abandoned";
+      const extraSet = {
+        source:
+          data.source === "shopify_web_pixel" || data.source === "shopify_web_pixel_extension"
+            ? "Web Pixel"
+            : isLiveCapture
+              ? "DeepPixel (Live)"
+              : "DeepPixel",
+        checkoutInitiatedCount: !isLiveCapture,
+      };
+      if (isLiveCapture) {
+        extraSet.contactCapturedAt = new Date();
+      }
 
-    await recordPixelEvent(clientId, lead?._id, "checkout_contact_identified", {
-      url,
-      sessionId,
-      metadata: { ...meta, source: data.source || "shopify_web_pixel" },
-      timestamp,
-      userAgent,
-      ip,
-    });
-
-    /** WS-3: pixel-only flows (merchant has pixel extension but Shopify
-     *  webhook hasn't fired yet) must also create a `CartRecoveryAttempt`
-     *  so the dashboard funnel + attribution work and the row shows up in
-     *  `GET /abandoned-carts/workspace`. Mirrors `upsertAbandonedCartLead`. */
-    if (phone && lead?._id) {
-      const { ensureCartRecoveryAttempt } = require("./cartRecoveryAttemptService");
-      await ensureCartRecoveryAttempt({
-        clientId,
-        leadId: lead._id,
-        contactPhone: String(phone).replace(/[^0-9]/g, ""),
+      const lead = await upsertLeadFromCommerce(client, clientId, {
+        phone,
+        email,
         checkoutToken,
-        attemptTimestamp: timestamp || Date.now(),
-      }).catch((craErr) => {
-        log.warn(`[Pixel] CartRecoveryAttempt ensure failed: ${craErr.message}`);
+        checkoutUrl,
+        cartItems,
+        cartTotal: data.cartTotal || data.total_price,
+        cartStatus,
+        setAbandonTimestamps: true,
+        extraSet,
       });
-    }
 
-    if (global.io && lead) {
-      global.io.to(`client_${clientId}`).emit("lead_cart_update", {
-        leadId: lead._id,
-        phone: lead.phoneNumber,
-        cartStatus: "abandoned",
-        event: "checkout_contact_identified",
+      await recordPixelEvent(clientId, lead?._id, "checkout_contact_identified", {
+        url,
+        sessionId,
+        visitorId: visitorId || data.visitorId,
+        metadata: { ...meta, source: data.source || "shopify_web_pixel", captureMode },
+        timestamp,
+        userAgent,
+        ip,
       });
-    }
 
-    return { success: true, leadId: lead?._id, status: "checkout_contact_captured" };
+      await finalizeCaptureLead({
+        clientId,
+        lead,
+        phone,
+        checkoutToken,
+        visitorId: visitorId || data.visitorId,
+        sessionId,
+        eventName: "checkout_contact_identified",
+        cartValue: data.cartTotal || data.total_price,
+      });
+
+      return { success: true, leadId: lead?._id, status: "checkout_contact_captured" };
+    });
   }
 
-  // --- Contact identified (storefront forms) ---
+  // --- Contact identified (storefront + third-party forms) ---
   if (eventName === "contact_identified") {
-    const qPhone = data.phone ? normalizePhoneWithCountry(data.phone, client) : phone;
-    let idLead = null;
-    if (qPhone) {
-      idLead = await upsertLeadFromCommerce(client, clientId, {
-        phone: qPhone,
-        email: data.email || email,
-        extraSet: { source: "DeepPixel (Identified)" },
+    return withPixelCaptureLock(clientId, dedupeKey, async () => {
+      const qPhone = data.phone ? normalizePhoneWithCountry(data.phone, client) : phone;
+      const qEmail = data.email || email;
+
+      const existingForContext = qPhone
+        ? await AdLead.findOne({ clientId, phoneNumber: qPhone })
+            .select("addToCartCount cartSnapshot cartStatus")
+            .lean()
+        : null;
+
+      const hasCartContext =
+        Boolean(checkoutToken) ||
+        hasCartContextFlag ||
+        (existingForContext?.addToCartCount || 0) > 0 ||
+        (existingForContext?.cartSnapshot?.items?.length || 0) > 0 ||
+        mapCartItems(data).length > 0;
+
+      let idLead = null;
+
+      if (hasCartContext && (qPhone || qEmail)) {
+        const cartItems = mapCartItems(data);
+        const cartStatus = isLiveCapture ? "active" : "abandoned";
+        const extraSet = {
+          source: isLiveCapture ? "DeepPixel (Live)" : "DeepPixel (Identified)",
+        };
+        if (isLiveCapture) {
+          extraSet.contactCapturedAt = new Date();
+        }
+
+        idLead = await upsertLeadFromCommerce(client, clientId, {
+          phone: qPhone,
+          email: qEmail,
+          checkoutToken,
+          checkoutUrl,
+          cartItems,
+          cartTotal: data.cartTotal || data.total_price,
+          cartStatus,
+          setAbandonTimestamps: true,
+          extraSet,
+        });
+
+        await finalizeCaptureLead({
+          clientId,
+          lead: idLead,
+          phone: qPhone,
+          checkoutToken,
+          visitorId: visitorId || data.visitorId,
+          sessionId,
+          eventName: "contact_identified",
+          cartValue: data.cartTotal || data.total_price,
+        });
+      } else if (qPhone) {
+        idLead = await upsertLeadFromCommerce(client, clientId, {
+          phone: qPhone,
+          email: qEmail,
+          extraSet: { source: "DeepPixel (Identified)" },
+        });
+      } else if (qEmail) {
+        idLead = await upsertLeadFromCommerce(client, clientId, {
+          email: qEmail,
+          extraSet: { source: "DeepPixel (Identified)" },
+        });
+      }
+
+      if (idLead && !hasCartContext) {
+        idLead.activityLog = idLead.activityLog || [];
+        idLead.activityLog.push({
+          action: "pixel_contact_identified",
+          details: "Source: pixel_capture",
+          timestamp: new Date(),
+        });
+        await idLead.save();
+      }
+
+      await recordPixelEvent(clientId, idLead?._id, "contact_identified", {
+        url,
+        sessionId,
+        visitorId: visitorId || data.visitorId,
+        metadata: meta,
+        timestamp,
+        userAgent,
+        ip,
       });
-    } else if (data.email || email) {
-      idLead = await upsertLeadFromCommerce(client, clientId, {
-        email: data.email || email,
-        extraSet: { source: "DeepPixel (Identified)" },
-      });
-    }
-    if (idLead) {
-      idLead.activityLog = idLead.activityLog || [];
-      idLead.activityLog.push({
-        action: "pixel_contact_identified",
-        details: "Source: pixel_capture",
-        timestamp: new Date(),
-      });
-      await idLead.save();
-    }
-    await recordPixelEvent(clientId, idLead?._id, "contact_identified", {
-      url,
-      sessionId,
-      metadata: meta,
-      timestamp,
-      userAgent,
-      ip,
+
+      return { success: true, leadId: idLead?._id };
     });
-    return { success: true, leadId: idLead?._id };
   }
 
   const hasIdentity = !!(email || phone) || eventName === "contact_identified";
@@ -332,6 +459,7 @@ async function processPixelEvent(clientId, eventData) {
       await recordPixelEvent(clientId, lead._id, mappedEvent, {
         url,
         sessionId,
+        visitorId: visitorId || data.visitorId,
         metadata: meta,
         timestamp,
         userAgent,
@@ -363,6 +491,7 @@ async function processPixelEvent(clientId, eventData) {
   await recordPixelEvent(clientId, null, eventName, {
     url,
     sessionId,
+    visitorId: visitorId || data.visitorId,
     metadata: meta,
     timestamp,
     userAgent,

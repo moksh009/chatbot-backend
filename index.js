@@ -271,6 +271,7 @@ app.use('/api/public/warranty', publicWarrantyRoutes);
 app.use('/api/public/growth', require('./routes/publicGrowth'));
 app.use('/api/public/checkout-consent', require('./routes/publicCheckoutConsent'));
 app.use('/api/public/checkout-consent', require('./routes/checkoutConsent'));
+app.use('/api/public/checkout-capture', require('./routes/publicCheckoutCapture'));
 app.use('/api/public', require('./routes/publicUnsubscribe'));
 app.use('/api/growth', require('./routes/growth'));
 
@@ -295,6 +296,7 @@ app.use('/api/shopify-hub', shopifyHubRoutes);
 const commerceHealthRoutes = require('./routes/commerceHealth');
 app.use('/api/commerce', commerceHealthRoutes);
 app.use('/api/hub-health', require('./routes/hubHealth'));
+app.use('/api/email-hub', require('./routes/emailHub'));
 app.use('/api/merchant-playbook', require('./routes/merchantPlaybook'));
 const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);

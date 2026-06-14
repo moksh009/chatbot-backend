@@ -10,6 +10,7 @@ const {
   finishCancelSideEffects,
 } = require('../messaging/cancelAllAutomationsFor');
 const { indianPhoneLookupVariants } = require('../core/normalizeIndianPhone');
+const { buildOrderPlacedOptInSetFields } = require('../commerce/marketingOptStatusRules');
 const log = require('../core/logger')('HandleOrderAtomic');
 
 const ORDER_DEDUP_TTL_SEC = 7 * 24 * 3600;
@@ -92,16 +93,19 @@ async function handleOrderAtomic(client, data, cleanPhone) {
 
   const existingLead = await findRecoveryLead(client.clientId, data, cleanPhone);
   const phoneLookup = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
+  const primaryPhone = phoneLookup[0] || cleanPhone;
   const leadFilter = existingLead
     ? { _id: existingLead._id, clientId: client.clientId }
-    : phoneLookup.length
-      ? { clientId: client.clientId, phoneNumber: { $in: phoneLookup } }
+    : primaryPhone
+      ? { clientId: client.clientId, phoneNumber: { $in: phoneLookup.length ? phoneLookup : [primaryPhone] } }
       : null;
 
   if (!leadFilter) {
     if (orderId) await releaseOrderClaim(client.clientId, orderId);
     return { duplicate: false, lead: null, cancelled: { sequences: 0, campaignMessages: 0, scheduledMessages: 0 } };
   }
+
+  const orderOptInFields = buildOrderPlacedOptInSetFields(existingLead?.optStatus);
 
   const recoveryStep = Number(existingLead?.recoveryStep || 0);
   let recoveredViaWhatsApp = recoveryStep > 0;
@@ -133,6 +137,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             abandonedCartRecoveredAt: orderDate,
             recoveredOrderId: String(data.id || data.name || ''),
             recoveredViaWhatsApp,
+            ...orderOptInFields,
             ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
             ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
             ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
@@ -145,7 +150,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             lifetimeValue: orderValue,
           },
         },
-        { new: true, session, upsert: !existingLead }
+        { new: true, session, upsert: !existingLead, setDefaultsOnInsert: true }
       );
 
       cancelled = await applyMongoCancellations(

@@ -220,23 +220,14 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
             }
         }
 
-        const importConsentType = String(req.body.importConsentType || '').trim();
+        const importConsentType = String(req.body.importConsentType || 'csv_import').trim();
         const consentAcknowledged = req.body.consentAcknowledged === true || req.body.consentAcknowledged === 'true';
-        const optedInConsentTypes = new Set([
-          'whatsapp_reply',
-          'website_widget',
-          'checkout_explicit',
-        ]);
-        const normalizedConsentType = importConsentType || 'unknown';
-        if (!normalizedConsentType) {
-          if (req.file) fs.unlinkSync(req.file.path);
-          return res.status(400).json({ success: false, message: 'importConsentType is required' });
-        }
-        if (optedInConsentTypes.has(normalizedConsentType) && !consentAcknowledged) {
+        const normalizedConsentType = importConsentType || 'csv_import';
+        if (!consentAcknowledged) {
           if (req.file) fs.unlinkSync(req.file.path);
           return res.status(400).json({
             success: false,
-            message: 'Legal acknowledgment is required for opted_in CSV imports',
+            message: 'Confirm you may message these contacts on WhatsApp before importing.',
           });
         }
 
@@ -412,15 +403,18 @@ router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (re
             }
             const merged = mergeEmailForLead(subject, content, lead, client);
             try {
-                const ok = await sendEmail(client, {
-                    to: lead.email.trim(),
-                    subject: merged.subject,
-                    html: merged.html
+                const result = await sendEnvelope({
+                    clientId,
+                    channel: 'email',
+                    intent: 'marketing',
+                    contactId: lead._id,
+                    payload: { subject: merged.subject, html: merged.html },
+                    context: { source: 'routes/leads:bulk-email', actorUserId: req.user?._id },
                 });
-                if (ok) {
+                if (result.status === 'sent') {
                     sent.push(String(lead._id));
                 } else {
-                    failed.push({ leadId: String(lead._id), reason: 'smtp_send_failed' });
+                    failed.push({ leadId: String(lead._id), reason: result.reason || result.status || 'send_failed' });
                 }
             } catch (e) {
                 failed.push({ leadId: String(lead._id), reason: e.message || 'send_error' });

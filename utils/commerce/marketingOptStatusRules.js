@@ -50,6 +50,15 @@ function buildKeywordOptInHistoryEntry() {
   };
 }
 
+function buildOrderPlacedOptInSetFields(currentStatus) {
+  if (normalizeOptStatus(currentStatus) === 'opted_out') return {};
+  return buildDefaultOptInSetFields('shopify_order');
+}
+
+function buildCsvImportOptInSetFields() {
+  return buildDefaultOptInSetFields('csv_import');
+}
+
 function buildDefaultOptInSetFields(source = 'csv_import') {
   const now = new Date();
   return {
@@ -144,6 +153,8 @@ module.exports = {
   buildKeywordOptInSetFields,
   buildKeywordOptInHistoryEntry,
   buildDefaultOptInSetFields,
+  buildOrderPlacedOptInSetFields,
+  buildCsvImportOptInSetFields,
   buildManualOptStatusHistoryEntry,
   buildManualOptStatusSetFields,
   markLeadOptOutFromSendFailure,

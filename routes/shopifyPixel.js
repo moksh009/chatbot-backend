@@ -77,6 +77,22 @@ function readCookie(req, name) {
  * First-party visitor id for identity stitching (storefront).
  * GET /api/shopify-pixel/pixel/:clientId/visitor-init
  */
+const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
+
+const pixelRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300, // Limit each IP to 300 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const clientId = req.params?.clientId || 'unknown';
+    const ip = ipKeyGenerator(req.ip || 'unknown');
+    return `pixel:${clientId}:${ip}`;
+  },
+  message: { error: 'Too many pixel events from this IP, please try again after 15 minutes' },
+});
+
 router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res) => {
   let visitorId = readCookie(req, 'te_visitor_id');
   if (!visitorId || !String(visitorId).startsWith('te_')) {
@@ -89,7 +105,7 @@ router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res
   res.json({ success: true, visitorId });
 });
 
-router.post('/pixel/:clientId', pixelStorefrontCors, async (req, res) => {
+router.post('/pixel/:clientId', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
   try {
     const result = await processPixelEvent(req.params.clientId, {
       ...req.body,
@@ -107,7 +123,7 @@ router.post('/pixel/:clientId', pixelStorefrontCors, async (req, res) => {
 });
 
 router.options('/pixel/:clientId/event', pixelStorefrontCors);
-router.post('/pixel/:clientId/event', pixelStorefrontCors, async (req, res) => {
+router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
   try {
     const { clientId } = req.params;
     const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
@@ -179,6 +195,16 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
       .catch(function() {});
 
     let debounceTimer;
+    const TE_DEBOUNCE_MS = 300;
+
+    function isThirdPartyCheckoutContext(el) {
+        if (!el) return false;
+        const classes = String(el.className || "").toLowerCase();
+        const id = String(el.id || "").toLowerCase();
+        const name = String(el.name || "").toLowerCase();
+        const combined = classes + " " + id + " " + name;
+        return /gokwik|razorpay|magic-checkout|shiprocket|fastrr|gk-/.test(combined);
+    }
 
     function sendEvent(name, data = {}) {
         const payload = {
@@ -193,6 +219,8 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
         const persistedPhone = localStorage.getItem("te_pixel_phone");
         if (persistedEmail) payload.email = persistedEmail;
         if (persistedPhone) payload.phone = persistedPhone;
+        if (data.captureMode) payload.metadata.captureMode = data.captureMode;
+        if (data.hasCartContext) payload.metadata.hasCartContext = true;
         if (window.Shopify) {
             payload.shopify = {
                 shop: Shopify.shop,
@@ -230,8 +258,11 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
             if (classes.includes('gokwik') || id.includes('gokwik') || text.includes('gokwik')) {
                 sendEvent("checkout_started", { gateway: "gokwik", element: "button_click" });
             }
-            if (classes.includes('razorpay') || text.includes('razorpay')) {
+            if (classes.includes('razorpay') || text.includes('razorpay') || classes.includes('magic-checkout')) {
                 sendEvent("checkout_started", { gateway: "razorpay", element: "button_click" });
+            }
+            if (classes.includes('shiprocket') || id.includes('shiprocket') || text.includes('shiprocket') || classes.includes('fastrr')) {
+                sendEvent("checkout_started", { gateway: "shiprocket", element: "button_click" });
             }
             if (text === 'buy it now' || text === 'checkout') {
                 sendEvent("checkout_started", { gateway: "native_or_generic", element: "button_click" });
@@ -246,24 +277,36 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
                 const type = input.type;
                 const name = (input.name || "").toLowerCase();
                 const placeholder = (input.placeholder || "").toLowerCase();
+                const parentCtx = isThirdPartyCheckoutContext(input);
                 const isEmail = type === 'email' || name.includes('email') || placeholder.includes('email');
-                const isPhone = type === 'tel' || name.includes('phone') || name.includes('mobile') || placeholder.includes('phone') || placeholder.includes('mobile') || name.includes('contact');
+                const isPhone = type === 'tel' || name.includes('phone') || name.includes('mobile') || placeholder.includes('phone') || placeholder.includes('mobile') || name.includes('contact') || parentCtx;
                 if (isEmail || isPhone) {
                     input.addEventListener('input', function(e) {
                         clearTimeout(debounceTimer);
                         debounceTimer = setTimeout(function() {
                             const val = e.target.value.trim();
+                            const hasCart = localStorage.getItem("te_pixel_has_cart") === "1";
                             if (isEmail && val.includes('@') && val.length > 5) {
                                 localStorage.setItem("te_pixel_email", val);
-                                sendEvent("contact_identified", { email: val, field: name || 'email' });
+                                sendEvent("contact_identified", {
+                                    email: val,
+                                    field: name || 'email',
+                                    captureMode: "live_theme",
+                                    hasCartContext: hasCart
+                                });
                             } else if (isPhone) {
                                 const clean = val.replace(/\\D/g, '');
                                 if (clean.length >= 10) {
                                     localStorage.setItem("te_pixel_phone", clean);
-                                    sendEvent("contact_identified", { phone: clean, field: name || 'phone' });
+                                    sendEvent("contact_identified", {
+                                        phone: clean,
+                                        field: name || 'phone',
+                                        captureMode: "live_theme",
+                                        hasCartContext: hasCart || parentCtx
+                                    });
                                 }
                             }
-                        }, 1000);
+                        }, TE_DEBOUNCE_MS);
                     });
                     input.dataset.teTracked = "true";
                 }
@@ -278,7 +321,8 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
             const url = typeof arguments[0] === 'string' ? arguments[0] : arguments[0].url;
             if (url && (url.includes("/cart/add.js") || url.includes("/cart/add") || url.includes("/cart/update"))) {
                 response.clone().json().then(function(data) {
-                    sendEvent("product_added_to_cart", { product: data });
+                    localStorage.setItem("te_pixel_has_cart", "1");
+                    sendEvent("product_added_to_cart", { product: data, hasCartContext: true });
                 }).catch(function() {});
             }
             return response;

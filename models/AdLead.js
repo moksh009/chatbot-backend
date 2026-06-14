@@ -204,6 +204,8 @@ const adLeadSchema = new mongoose.Schema({
   cartValue:  { type: Number, default: 0 },
   cartUrl:    { type: String, default: '' },
   cartAbandonedAt:   { type: Date },
+  /** First moment phone/email captured on checkout (live capture) */
+  contactCapturedAt: { type: Date },
   checkoutInitiatedAt: { type: Date },
   checkoutToken:     { type: String, default: '' },
   cartToken:         { type: String, default: '' },

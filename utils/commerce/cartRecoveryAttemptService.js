@@ -728,6 +728,26 @@ function buildRecoveryTimeline(lead, attempt) {
   const events = [];
   const fmt = (d) => (d ? new Date(d) : null);
 
+  const journeyLogs = (Array.isArray(lead?.activityLog) ? lead.activityLog : []).filter(
+    (row) => row.action === 'pixel_journey' || row.source === 'pixel_stitch'
+  );
+  for (const row of journeyLogs) {
+    events.push({
+      at: fmt(row.timestamp),
+      label: row.details || 'Store activity',
+      kind: 'journey',
+    });
+  }
+
+  const contactAt = lead?.contactCapturedAt;
+  if (contactAt) {
+    events.push({
+      at: fmt(contactAt),
+      label: 'Contact entered at checkout',
+      kind: 'capture',
+    });
+  }
+
   const abandonedAt = lead?.cartAbandonedAt || lead?.lastCartEventAt;
   if (abandonedAt) {
     events.push({ at: fmt(abandonedAt), label: 'Cart abandoned', kind: 'abandon' });

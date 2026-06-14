@@ -8,7 +8,7 @@ const AdLead = require('../models/AdLead');
 const ImportSession = require('../models/ImportSession');
 const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils/commerce/leadCleaner');
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
-const { buildDefaultOptInSetFields } = require('../utils/commerce/marketingOptStatusRules');
+const { buildCsvImportOptInSetFields } = require('../utils/commerce/marketingOptStatusRules');
 
 const redisConnection = getQueueRedis();
 if (!redisConnection) {
@@ -168,26 +168,26 @@ async function handleImportLeads(data, job) {
                 }
             });
 
-            const consentType = String(importConsentType || 'unknown');
-            const isDeclaredOptIn = ['whatsapp_reply', 'website_widget', 'checkout_explicit'].includes(consentType) && consentAcknowledged === true;
+            const consentType = String(importConsentType || 'csv_import');
+            const optInFields = buildCsvImportOptInSetFields();
             const setObj = {
                 clientId,
                 phoneNumber,
+                ...optInFields,
                 meta: {
                     lastImportId: batchId,
                     importedAt: new Date(),
                     importFilename: filename,
                     importListName: batchName,
                     importConsentType: consentType,
-                    optInDeclarationTimestamp: isDeclaredOptIn ? new Date() : null,
-                    optInDeclaredBy: isDeclaredOptIn ? String(data?.user?.id || '') : ''
+                    optInDeclarationTimestamp: new Date(),
+                    optInDeclaredBy: String(data?.user?.id || ''),
                 }
             };
             
             const setOnInsertObj = {
                 source: 'CSV_Import',
                 importBatchId: session._id,
-                ...buildDefaultOptInSetFields('csv_import'),
                 name: `Guest contact (from ${filename.split('.')[0]})`
             };
             

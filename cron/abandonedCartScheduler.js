@@ -418,6 +418,19 @@ async function runAbandonedCartTick() {
                     continue;
                 }
 
+                // Promote live-capture leads (cartStatus=active) to abandoned once timer elapsed
+                const promoteBefore = new Date(now.getTime() - delay1Min * 60 * 1000);
+                await AdLead.updateMany(
+                    {
+                        clientId: client.clientId,
+                        cartStatus: 'active',
+                        contactCapturedAt: { $ne: null },
+                        cartAbandonedAt: { $lte: promoteBefore },
+                        isOrderPlaced: { $ne: true },
+                    },
+                    { $set: { cartStatus: 'abandoned' } }
+                );
+
                 // Phase 9: Pre-fetch all HUMAN_TAKEOVER phones for this client — O(1) skip checks
                 const skipSet = await buildSkipSet(client.clientId);
 

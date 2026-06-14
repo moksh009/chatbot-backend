@@ -93,10 +93,23 @@ router.get('/members', protect, async (req, res) => {
     return res.status(403).json({ message: 'Forbidden' });
   }
   try {
-    const members = await AdminTeamMember.find({ isActive: true })
-      .select('email name role permissions allowedClientIds lastLoginAt createdAt')
+    const rows = await AdminTeamMember.find({ isActive: true })
+      .select('email name role permissions allowedClientIds lastLoginAt createdAt passwordHash inviteExpiresAt')
       .sort({ createdAt: -1 })
       .lean();
+    const members = rows.map((m) => ({
+      _id: m._id,
+      email: m.email,
+      name: m.name,
+      role: m.role,
+      permissions: m.permissions,
+      allowedClientIds: m.allowedClientIds,
+      lastLoginAt: m.lastLoginAt,
+      invitedAt: m.createdAt,
+      invitePending: !m.passwordHash,
+      status: !m.passwordHash ? 'pending' : 'active',
+      isActive: true,
+    }));
     res.json({ members });
   } catch (err) {
     res.status(500).json({ message: err.message });

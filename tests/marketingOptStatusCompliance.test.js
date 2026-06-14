@@ -9,6 +9,8 @@ const {
   canAutomatedKeywordOptIn,
   buildManualOptStatusHistoryEntry,
   buildKeywordOptInSetFields,
+  buildOrderPlacedOptInSetFields,
+  buildCsvImportOptInSetFields,
   markLeadOptOutFromSendFailure,
 } = require('../utils/commerce/marketingOptStatusRules');
 
@@ -38,6 +40,20 @@ describe('marketing opt-status compliance rules', () => {
     const row = buildManualOptStatusHistoryEntry('opted_out');
     assert.equal(row.event, 'opted_out');
     assert.equal(row.source, 'admin_manual');
+  });
+
+  it('buildCsvImportOptInSetFields marks contacts opted_in', () => {
+    const fields = buildCsvImportOptInSetFields();
+    assert.equal(fields.optStatus, 'opted_in');
+    assert.equal(fields.optInSource, 'csv_import');
+    assert.equal(fields.whatsappMarketingEligible, true);
+  });
+
+  it('buildOrderPlacedOptInSetFields opts in unless already opted_out', () => {
+    const fields = buildOrderPlacedOptInSetFields('unknown');
+    assert.equal(fields.optStatus, 'opted_in');
+    assert.equal(fields.optInSource, 'shopify_order');
+    assert.deepEqual(buildOrderPlacedOptInSetFields('opted_out'), {});
   });
 });
 
