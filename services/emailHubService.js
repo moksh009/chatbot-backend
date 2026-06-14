@@ -181,6 +181,53 @@ function daysAgo(n) {
  * Repair envelopes stuck as `queued` after Gmail send succeeded but post-send
  * bookkeeping failed (historical redis.incrBy bug). Skips scheduled sends.
  */
+/** Sync hub envelopes still `queued` when ScheduledMessage already sent/failed. */
+async function reconcileScheduledHubEnvelopes(clientId) {
+  const since = daysAgo(14);
+  const stuck = await MessageEnvelope.find({
+    clientId,
+    channel: 'email',
+    status: 'queued',
+    createdAt: { $gte: since },
+    'context.scheduledMessageId': { $exists: true, $ne: '' },
+  })
+    .select('_id context.scheduledMessageId')
+    .lean();
+
+  if (!stuck.length) return 0;
+
+  const ids = stuck
+    .map((row) => row.context?.scheduledMessageId)
+    .filter(Boolean);
+  const scheduled = await ScheduledMessage.find({ _id: { $in: ids } })
+    .select('_id status')
+    .lean();
+  const statusById = new Map(scheduled.map((s) => [String(s._id), s.status]));
+
+  let updated = 0;
+  for (const row of stuck) {
+    const schedStatus = statusById.get(String(row.context.scheduledMessageId));
+    if (schedStatus === 'sent') {
+      await MessageEnvelope.updateOne(
+        { _id: row._id, status: 'queued' },
+        { status: 'sent', sentAt: new Date() }
+      );
+      updated += 1;
+    } else if (schedStatus === 'failed' || schedStatus === 'cancelled') {
+      await MessageEnvelope.updateOne(
+        { _id: row._id, status: 'queued' },
+        {
+          status: schedStatus === 'failed' ? 'failed' : 'blocked',
+          reason: schedStatus === 'failed' ? 'scheduled_send_failed' : 'scheduled_cancelled',
+          failedAt: new Date(),
+        }
+      );
+      updated += 1;
+    }
+  }
+  return updated;
+}
+
 async function reconcileStuckHubEnvelopes(clientId) {
   const graceCutoff = new Date(Date.now() - 45_000);
   const since = daysAgo(14);
@@ -211,6 +258,7 @@ async function reconcileStuckHubEnvelopes(clientId) {
 }
 
 async function getEmailHubSummary(clientId) {
+  await reconcileScheduledHubEnvelopes(clientId).catch(() => {});
   await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const client = await Client.findOne({ clientId }).lean();
   const since7 = daysAgo(7);
@@ -303,6 +351,7 @@ async function getEmailHubSummary(clientId) {
 }
 
 async function getEmailHubLogs(clientId, { page = 1, limit = 50, status, source, days = 30 } = {}) {
+  await reconcileScheduledHubEnvelopes(clientId).catch(() => {});
   await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const since = daysAgo(Math.min(Math.max(Number(days) || 30, 1), 90));
   const take = Math.min(100, Math.max(1, Number(limit)));

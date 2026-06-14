@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const moment = require('moment');
 const Client = require('../models/Client');
 const PixelEvent = require('../models/PixelEvent');
+const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const { injectPixelScript, removePixelScript, verifyThemeHasPixelScript } = require('../utils/shopify/shopifyHelper');
 const {
@@ -21,7 +22,8 @@ const {
   getCheckoutOptInInstallStatus,
 } = require('../utils/shopify/checkoutConsentExtension');
 
-const PIXEL_STATUS_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
+/** Empty — bypass disabled so dashboard status + install reflect real web pixel registration. */
+const PIXEL_STATUS_BYPASS_CLIENTS = new Set([]);
 
 function shouldBypassShopifyPixelChecks(clientId) {
   return PIXEL_STATUS_BYPASS_CLIENTS.has(String(clientId || '').trim());
@@ -44,9 +46,31 @@ function resolveBackendUrl(req) {
   ).replace(/\/+$/, '');
 }
 
+const log = require('../utils/core/logger')('ShopifyPixel');
+
 /** Storefront + checkout scripts call the API from merchant domains — allow cross-origin posts */
 function pixelStorefrontCors(req, res, next) {
   const origin = req.headers.origin;
+  // #region agent log
+  log.info('[DEBUG-f2f95b] pixelStorefrontCors', {
+    hypothesisId: 'H1',
+    method: req.method,
+    path: req.path,
+    origin: origin || null,
+  });
+  fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+    body: JSON.stringify({
+      sessionId: 'f2f95b',
+      hypothesisId: 'H1',
+      location: 'shopifyPixel.js:pixelStorefrontCors',
+      message: 'storefront CORS handler',
+      data: { method: req.method, path: req.path, origin: origin || null },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
@@ -111,16 +135,48 @@ const pixelRateLimiter = rateLimit({
   message: { error: 'Too many pixel events from this IP, please try again after 15 minutes' },
 });
 
+router.options('/pixel/:clientId/visitor-init', pixelStorefrontCors);
 router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res) => {
-  let visitorId = readCookie(req, 'te_visitor_id');
-  if (!visitorId || !String(visitorId).startsWith('te_')) {
-    visitorId = `te_${crypto.randomBytes(12).toString('hex')}`;
+  try {
+    let visitorId = readCookie(req, 'te_visitor_id');
+    if (!visitorId || !String(visitorId).startsWith('te_')) {
+      visitorId = `te_${crypto.randomBytes(12).toString('hex')}`;
+    }
+    res.setHeader(
+      'Set-Cookie',
+      `te_visitor_id=${encodeURIComponent(visitorId)}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
+    );
+    // #region agent log
+    log.info('[DEBUG-f2f95b] visitor-init ok', {
+      hypothesisId: 'H2',
+      clientId: req.params.clientId,
+      origin: req.headers.origin || null,
+      hasCookie: Boolean(readCookie(req, 'te_visitor_id')),
+    });
+    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+      body: JSON.stringify({
+        sessionId: 'f2f95b',
+        hypothesisId: 'H2',
+        location: 'shopifyPixel.js:visitor-init',
+        message: 'visitor-init success',
+        data: { clientId: req.params.clientId, origin: req.headers.origin || null },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    res.json({ success: true, visitorId });
+  } catch (err) {
+    // #region agent log
+    log.error('[DEBUG-f2f95b] visitor-init failed', {
+      hypothesisId: 'H2',
+      clientId: req.params.clientId,
+      error: err.message,
+    });
+    // #endregion
+    res.status(500).json({ error: 'visitor_init_failed' });
   }
-  res.setHeader(
-    'Set-Cookie',
-    `te_visitor_id=${encodeURIComponent(visitorId)}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
-  );
-  res.json({ success: true, visitorId });
 });
 
 router.post('/pixel/:clientId', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
@@ -141,13 +197,27 @@ router.post('/pixel/:clientId', pixelStorefrontCors, pixelRateLimiter, async (re
 });
 
 router.options('/pixel/:clientId/event', pixelStorefrontCors);
+router.options('/pixel/:clientId/script.js', pixelStorefrontCors);
 router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
+    const { eventName, url, sessionId, metadata, shopifyClientId, visitorId, email, phone } =
+      req.body;
+    const eventData = {
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      ...(email ? { email } : {}),
+      ...(phone ? { phone } : {}),
+    };
+    if (eventData.captureMode === 'live_ui_extension') {
+      log.info('[CheckoutCapture] live_ui_extension event', {
+        clientId,
+        eventName,
+        captureTarget: eventData.captureTarget || null,
+      });
+    }
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
-      data: metadata || {},
+      data: eventData,
       url,
       sessionId,
       visitorId: visitorId || readCookie(req, 'te_visitor_id'),
@@ -157,7 +227,7 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
     });
     if (clientId === 'delitech_smarthomes') {
       console.log(
-        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'}`
+        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'} captureMode=${eventData.captureMode || eventData.source || 'n/a'}`
       );
     }
     if (result.error) return res.status(404).json(result);
@@ -753,6 +823,64 @@ async function buildPixelStatusPayload(clientId, req) {
   }
   const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
 
+  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent] = await Promise.all([
+    AdLead.findOne({ clientId, source: 'shopify_native' })
+      .sort({ lastCartEventAt: -1 })
+      .select('lastCartEventAt')
+      .lean(),
+    PixelEvent.findOne({
+      clientId,
+      eventName: 'checkout_contact_identified',
+      'metadata.captureMode': 'live_ui_extension',
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp metadata')
+      .lean(),
+    PixelEvent.findOne({
+      clientId,
+      eventName: 'contact_identified',
+      'metadata.captureMode': { $in: ['live_theme', 'live'] },
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp')
+      .lean(),
+  ]);
+
+  const extensionEnvEnabled = process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED !== 'false';
+  const liveExtensionRecent =
+    lastLiveExtensionEvent &&
+    moment(lastLiveExtensionEvent.timestamp).isAfter(sevenDaysAgo);
+  const liveThemeRecent =
+    lastLiveThemeEvent && moment(lastLiveThemeEvent.timestamp).isAfter(sevenDaysAgo);
+  const webhookCaptureRecent =
+    lastWebhookLead?.lastCartEventAt &&
+    moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo);
+
+  const liveTypingCapture = {
+    status: liveExtensionRecent
+      ? 'live_extension'
+      : liveThemeRecent
+        ? 'live_theme'
+        : 'pending',
+    statusLabel: liveExtensionRecent
+      ? 'Checkout live typing active'
+      : liveThemeRecent
+        ? 'Storefront live typing active'
+        : extensionEnvEnabled
+          ? 'Live typing ready — add checkout extension in Editor'
+          : 'Deploy app extensions for checkout live typing',
+    extensionEnvEnabled,
+    lastWebhookCaptureAt: lastWebhookLead?.lastCartEventAt || null,
+    lastLiveExtensionAt: lastLiveExtensionEvent?.timestamp || null,
+    lastLiveThemeAt: lastLiveThemeEvent?.timestamp || null,
+    checkoutWebhookActive: Boolean(webhookCaptureRecent),
+    hint: liveExtensionRecent
+      ? 'Phone and email are captured while the shopper types in checkout — no Continue click needed.'
+      : liveThemeRecent
+        ? 'Contact fields on storefront pages send while typing.'
+        : 'Install the TopEdge checkout capture block in Checkout Editor for instant phone/email capture.',
+  };
+
   let storefrontHint;
   if (webPixelScopeMissing) {
     storefrontHint =
@@ -816,6 +944,7 @@ async function buildPixelStatusPayload(clientId, req) {
     scriptTag,
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
+    liveTypingCapture,
     statusHint: storefrontHint,
   };
 }

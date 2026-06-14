@@ -156,19 +156,82 @@ function isOriginAllowed(origin) {
   });
 }
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (!corsStrict) return callback(null, true);
-    if (isOriginAllowed(origin)) return callback(null, true);
-    log.warn(`[CORS] Blocked origin: ${origin}`);
-    return callback(new Error('CORS policy: origin not allowed'));
-  },
+/** Merchant storefronts + checkout extensions use route-level open CORS — not dash-only strict list. */
+function shouldSkipStrictCors(req) {
+  const p = req.path || '';
+  if (p.startsWith('/api/public/checkout-capture')) return true;
+  if (p.startsWith('/api/public/checkout-consent')) return true;
+  if (!p.startsWith('/api/shopify-pixel/pixel/')) return false;
+  if (req.method === 'OPTIONS') return true;
+  if (['/visitor-init', '/script.js', '/event'].some((suffix) => p.endsWith(suffix))) return true;
+  if (req.method === 'POST' && /^\/api\/shopify-pixel\/pixel\/[^/]+$/.test(p)) return true;
+  return false;
+}
+
+const corsBaseOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range']
-}));
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'X-Admin-Impersonating',
+  ],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+};
+
+app.use(
+  cors((req, callback) => {
+    const origin = req.headers.origin;
+
+    if (shouldSkipStrictCors(req)) {
+      // #region agent log
+      log.info('[DEBUG-f2f95b] storefront CORS allow', {
+        hypothesisId: 'H1',
+        path: req.path,
+        method: req.method,
+        origin: origin || null,
+      });
+      fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+        body: JSON.stringify({
+          sessionId: 'f2f95b',
+          hypothesisId: 'H1',
+          location: 'index.js:cors-delegate-storefront',
+          message: 'storefront path allowed',
+          data: { path: req.path, method: req.method, origin: origin || null },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+      return callback(null, { ...corsBaseOptions, origin: true });
+    }
+
+    if (!origin || !corsStrict || isOriginAllowed(origin)) {
+      return callback(null, { ...corsBaseOptions, origin: true });
+    }
+
+    // #region agent log
+    log.warn(`[CORS] Blocked origin: ${origin}`, { hypothesisId: 'H1', sessionId: 'f2f95b', path: req.path });
+    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+      body: JSON.stringify({
+        sessionId: 'f2f95b',
+        hypothesisId: 'H1',
+        location: 'index.js:cors-origin',
+        message: 'strict CORS blocked origin',
+        data: { origin, path: req.path },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    return callback(new Error('CORS policy: origin not allowed'));
+  })
+);
 
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
 
@@ -499,6 +562,31 @@ const RUN_CRONS =
 
 if (!RUN_CRONS) {
   log.info('[Boot] RUN_CRONS=false — cron jobs not started');
+  // Single-process deploys (e.g. Contabo): still deliver scheduled Email Hub messages.
+  if (RUN_API && process.env.EMAIL_SCHEDULE_TICK_ON_API !== 'false') {
+    const cron = require('node-cron');
+    const scheduleScheduled = require('./cron/scheduledMessageCron');
+    cron.schedule('*/2 * * * *', () => {
+      if (scheduleScheduled.runTick) {
+        scheduleScheduled.runTick().catch((err) => {
+          log.error('[Boot] Scheduled message tick failed', { message: err.message });
+        });
+      }
+    });
+    log.info('[Boot] Scheduled message tick on API process (RUN_CRONS=false)');
+  }
+  if (RUN_API && process.env.ABANDON_CART_TICK_ON_API !== 'false') {
+    const cron = require('node-cron');
+    const abandonedCartScheduler = require('./cron/abandonedCartScheduler');
+    cron.schedule('*/5 * * * *', () => {
+      if (abandonedCartScheduler.runTick) {
+        abandonedCartScheduler.runTick().catch((err) => {
+          log.error('[Boot] Abandon cart tick failed', { message: err.message });
+        });
+      }
+    });
+    log.info('[Boot] Abandon cart promotion tick on API process (RUN_CRONS=false)');
+  }
 } else {
   const { registerAllCrons } = require('./cron/cronBootstrap');
   registerAllCrons();

@@ -5,7 +5,8 @@ const { executeGraphQL } = require('./shopifyGraphQL');
 const { generateWebPixelScript } = require('../commerce/pixelEventProcessor');
 const log = require('../core/logger')('PixelInstaller');
 const { hasPixelScopes: tokenHasPixelScopes } = require('./shopifyScopeUtils');
-const PIXEL_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
+/** Empty — bypass disabled so one-click install registers the Shopify web pixel (required for checkout). */
+const PIXEL_BYPASS_CLIENTS = new Set([]);
 
 const WEB_PIXEL_CREATE = `
   mutation WebPixelCreate($webPixel: WebPixelInput!) {

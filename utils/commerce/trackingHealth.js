@@ -43,7 +43,13 @@ async function buildTrackingHealth(clientId, periodDays = 30) {
           "checkout_contact_info_submitted",
         ],
       },
-      "metadata.source": "shopify_web_pixel",
+      $or: [
+        { "metadata.source": "shopify_web_pixel" },
+        { "metadata.source": "shopify_web_pixel_extension" },
+        { "metadata.source": "checkout_ui_capture" },
+        { "metadata.captureMode": "live_ui_extension" },
+        { "metadata.captureMode": "live_theme" },
+      ],
       timestamp: { $gte: since },
     }),
     PixelEvent.countDocuments({
@@ -59,7 +65,12 @@ async function buildTrackingHealth(clientId, periodDays = 30) {
           "checkout_contact_info_submitted",
         ],
       },
-      "metadata.source": "shopify_web_pixel",
+      $or: [
+        { "metadata.source": "shopify_web_pixel" },
+        { "metadata.source": "shopify_web_pixel_extension" },
+        { "metadata.source": "checkout_ui_capture" },
+        { "metadata.captureMode": "live_ui_extension" },
+      ],
     })
       .sort({ timestamp: -1 })
       .select("timestamp")

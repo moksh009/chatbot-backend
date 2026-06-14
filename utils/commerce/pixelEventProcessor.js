@@ -151,6 +151,7 @@ async function finalizeCaptureLead({
     leadId: lead._id,
     visitorId,
     sessionId,
+    checkoutToken,
   }).catch((err) => {
     log.warn(`[Pixel] Journey stitch failed: ${err.message}`);
   });
