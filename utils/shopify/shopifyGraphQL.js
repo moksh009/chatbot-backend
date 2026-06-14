@@ -35,8 +35,12 @@ async function executeGraphQL(clientId, query, variables = {}) {
         );
 
         if (response.data.errors) {
-            log.error(`GraphQL Errors for ${clientId}:`, JSON.stringify(response.data.errors));
-            throw new Error(`Shopify GraphQL Error: ${response.data.errors[0].message}`);
+            const firstMsg = response.data.errors[0]?.message || 'Unknown GraphQL error';
+            const isExpectedEmptyWebPixel = /no web pixel was found/i.test(firstMsg);
+            if (!isExpectedEmptyWebPixel) {
+                log.error(`GraphQL Errors for ${clientId}:`, JSON.stringify(response.data.errors));
+            }
+            throw new Error(`Shopify GraphQL Error: ${firstMsg}`);
         }
 
         return response.data.data;

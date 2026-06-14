@@ -12,6 +12,7 @@ const {
   generateWebPixelScript,
 } = require('../utils/commerce/pixelEventProcessor');
 const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
+const { resetShopifyBreaker } = require('../utils/core/circuitBreaker');
 const {
   installWebPixel,
   getWebPixelInstallStatus,
@@ -522,6 +523,7 @@ router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res
 router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
+  resetShopifyBreaker();
   const backendUrl = resolveBackendUrl(req);
   const scriptTag = buildScriptTag(clientId, backendUrl);
   const checkoutPixelSnippet = generateWebPixelScript(clientId, backendUrl);
@@ -629,7 +631,7 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
     }
 
     const checkboxMessage = checkoutStatus.extensionDeployed
-      ? 'Next: open Checkout Editor and add the “TopEdge WhatsApp opt-in” app block on the Contact step, then publish.'
+      ? 'Optional: add the “TopEdge WhatsApp opt-in” app block in Checkout Editor → Contact step, then publish.'
       : 'Tracking registered. Deploy TopEdge app extensions (shopify app deploy) so the checkout checkbox can appear.';
 
     res.json({
@@ -646,9 +648,15 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
       checkoutPixelSteps: webPixel?.success ? null : CHECKOUT_PIXEL_STEPS,
       backendUrl,
       message: themeInject?.success
-        ? `Storefront script added. ${checkboxMessage}`
+        ? webPixel?.success
+          ? 'Storefront script and checkout web pixel registered.'
+          : `Storefront script added.${webPixel?.message ? ` Web pixel: ${webPixel.message}` : ''}`
         : webPixel?.pollHint || checkboxMessage,
-      pollHint: checkoutStatus.statusHint,
+      pollHint: webPixel?.success
+        ? 'Visit your storefront — page views should appear within seconds.'
+        : themeInject?.success
+          ? 'Storefront connected. Visit your store to confirm live signals.'
+          : checkoutStatus?.statusHint,
       manualSnippet: webPixel?.manualSnippet || checkoutPixelSnippet,
     });
   } catch (err) {
@@ -810,7 +818,7 @@ async function buildPixelStatusPayload(clientId, req) {
   const webPixelScopeMissing =
     webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false;
   const requiresCheckoutPixel = bypassShopifyChecks || (!webPixelOnShopify && !webPixelRegistered);
-  const themeActuallyReady = themeScriptVerified || eventsLive;
+  const themeActuallyReady = themeScriptVerified || eventsLive || themeMarkedInstalled;
   const isInstalled =
     !webPixelScopeMissing &&
     (themeActuallyReady || webPixelOnShopify || webPixelRegistered);
