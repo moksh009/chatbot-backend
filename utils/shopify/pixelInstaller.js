@@ -86,7 +86,7 @@ function resolveApiBaseUrl(options = {}) {
   ).replace(/\/+$/, '');
 }
 
-/** Shopify returns GraphQL errors (not null data) when the app has no web pixel yet — expected before first install. */
+/** Expected before first webPixelCreate — Shopify returns GraphQL errors, not null data. */
 function isWebPixelNotFoundError(err) {
   const msg = String(err?.message || '');
   return /no web pixel was found/i.test(msg) || /resource_not_found/i.test(msg);
