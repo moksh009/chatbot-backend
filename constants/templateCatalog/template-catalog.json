@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "prebuiltRequiredMetaNames": [
     "order_confirmation_v1",
     "cart_recovery_1",
@@ -21,18 +21,27 @@
     {
       "id": "order_status",
       "title": "Order status messages",
-      "description": "Push and approve templates from Order messages — each rule has its own template.",
-      "templateNames": ["eco_order_confirmed", "eco_shipping_update", "eco_delivered"],
+      "description": "Push and approve templates from Meta Manager — then turn on rules in Order messages.",
+      "templateNames": [
+        "eco_order_confirmed",
+        "eco_shipping_update",
+        "eco_delivered",
+        "order_in_transit",
+        "order_out_for_delivery",
+        "order_delivered_update",
+        "delivery_attempt_failed",
+        "rto_ndr_rescue"
+      ],
       "pack": "eco-starters",
       "configureRoute": "/shopify-automation-center?section=automations"
     },
     {
-      "id": "abandoned_cart_eco",
-      "title": "Abandoned cart (template send)",
-      "description": "Marketing-style recovery when flows use the eco abandoned preset.",
-      "templateNames": ["eco_abandoned_cart"],
-      "pack": "eco-starters",
-      "configureRoute": "/commerce-hub?tab=dash"
+      "id": "cart_recovery",
+      "title": "Cart leads recovery",
+      "description": "3-message follow-up sequence for abandoned carts.",
+      "templateNames": ["cart_recovery_1", "cart_recovery_2", "cart_recovery_3"],
+      "pack": "gate",
+      "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1"
     },
     {
       "id": "cod_prepaid",
@@ -43,28 +52,20 @@
       "configureRoute": "/settings?tab=features"
     },
     {
-      "id": "cart_recovery",
-      "title": "Cart leads recovery",
-      "description": "3-message follow-up sequence — push cart_recovery_1/2/3 from Order messages.",
-      "templateNames": ["cart_recovery_1", "cart_recovery_2", "cart_recovery_3"],
-      "pack": "gate",
-      "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1"
-    },
-    {
       "id": "warranty",
       "title": "Warranty certificate",
-      "description": "Optional utility message when warranty registration is enabled.",
+      "description": "Utility message when warranty registration is enabled.",
       "templateNames": ["warranty_certificate"],
       "pack": "gate",
       "configureRoute": "/audience-hub?tab=warranty"
     },
     {
-      "id": "ndr",
-      "title": "Failed delivery (NDR) rescue",
-      "description": "Default utility template name is rto_ndr_rescue unless you override it in RTO advanced settings.",
-      "templateNames": ["rto_ndr_rescue"],
+      "id": "admin_alert",
+      "title": "Admin handoff alert",
+      "description": "WhatsApp ping to your team when a shopper asks for a human.",
+      "templateNames": ["admin_human_alert"],
       "pack": "gate",
-      "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_failure"
+      "configureRoute": "/conversations"
     }
   ],
   "ecoStandardNames": [
@@ -76,13 +77,13 @@
   ],
   "groups": [
     {
-      "id": "order_status",
+      "id": "order_messages",
       "label": "Order message templates",
-      "description": "Pre-built templates for order updates. Configure and push from Store → Order messages — not here.",
+      "description": "Templates used by Order messages and shipment tracking. Edit copy here, push to Meta, then approve.",
       "slots": [
         {
           "id": "eco_order_confirmed",
-          "title": "Order confirmed",
+          "title": "Order paid confirmation",
           "description": "After payment is captured on Shopify.",
           "canonicalMetaName": "eco_order_confirmed",
           "metaNames": ["eco_order_confirmed"],
@@ -97,10 +98,10 @@
         {
           "id": "eco_shipping_update",
           "title": "Shipped + tracking",
-          "description": "When fulfillment / tracking is added.",
+          "description": "When fulfillment or tracking is added.",
           "canonicalMetaName": "eco_shipping_update",
           "metaNames": ["eco_shipping_update"],
-          "usedIn": ["Order messages", "Auto tracking"],
+          "usedIn": ["Order messages"],
           "configureRoute": "/shopify-automation-center?section=automations&rule=sys_fulfillment_fulfilled",
           "pack": "eco",
           "pushKind": "eco-standard",
@@ -110,10 +111,10 @@
         },
         {
           "id": "eco_delivered",
-          "title": "Delivered",
-          "description": "Courier confirmed delivery — same slot as shipment delivered rule.",
-          "canonicalMetaName": "order_delivered_update",
-          "metaNames": ["order_delivered_update", "eco_delivered"],
+          "title": "Delivered (order status)",
+          "description": "Order marked delivered on Shopify.",
+          "canonicalMetaName": "eco_delivered",
+          "metaNames": ["eco_delivered"],
           "usedIn": ["Order messages"],
           "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_delivered",
           "pack": "eco",
@@ -121,42 +122,115 @@
           "pushFromStandard": true,
           "prebuiltKey": null,
           "autoTrigger": null
-        }
-      ]
-    },
-    {
-      "id": "wizard_flows",
-      "label": "AI Setup & Flow Builder",
-      "description": "These names are baked into your generated flows when you finish AI Setup. Push and approve them here before launch.",
-      "slots": [
+        },
         {
-          "id": "wizard_order_confirm",
-          "title": "Order confirmation",
-          "description": "Utility message after checkout in generated flows.",
+          "id": "om_order_confirm",
+          "title": "Order placed (COD / pending)",
+          "description": "Acknowledge order while payment is still pending.",
           "canonicalMetaName": "order_confirmation_v1",
           "metaNames": ["order_confirmation_v1", "order_confirmed"],
-          "usedIn": ["AI Setup", "Flow Builder"],
+          "usedIn": ["Order messages", "Flow Builder"],
+          "configureRoute": "/shopify-automation-center?section=automations",
           "pack": "wizard",
           "pushKind": "prebuilt",
           "prebuiltKey": "order_confirmation_v1",
           "autoTrigger": "order_placed"
         },
         {
-          "id": "wizard_cod_confirm",
+          "id": "om_cod_confirm",
           "title": "COD confirmation",
-          "description": "Cash-on-delivery order acknowledgement.",
+          "description": "Ask customer to confirm cash-on-delivery dispatch.",
           "canonicalMetaName": "cod_confirmation_v1",
           "metaNames": ["cod_confirmation_v1"],
-          "usedIn": ["AI Setup", "Flow Builder"],
+          "usedIn": ["Order messages", "Flow Builder"],
+          "configureRoute": "/shopify-automation-center?section=automations",
           "pack": "wizard",
           "pushKind": "prebuilt",
           "prebuiltKey": "cod_confirmation_v1",
           "autoTrigger": "cod_order_placed"
         },
         {
-          "id": "wizard_shipped",
-          "title": "Order shipped",
-          "description": "Shipped notification inside flows (optional).",
+          "id": "om_cancelled",
+          "title": "Cancellation received",
+          "description": "Acknowledge cancellation and refund timeline.",
+          "canonicalMetaName": "order_cancellation_v1",
+          "metaNames": ["order_cancellation_v1"],
+          "usedIn": ["Order messages"],
+          "configureRoute": "/shopify-automation-center?section=automations",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "order_cancellation_v1",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_in_transit",
+          "title": "In transit update",
+          "description": "Courier picked up — includes live tracking link.",
+          "canonicalMetaName": "order_in_transit",
+          "metaNames": ["order_in_transit"],
+          "usedIn": ["Order messages", "Shipment tracking"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_in_transit",
+          "pack": "order-blueprint",
+          "pushKind": "order-blueprint",
+          "prebuiltKey": "order_in_transit",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_out_for_delivery",
+          "title": "Out for delivery",
+          "description": "Package is with the delivery agent today.",
+          "canonicalMetaName": "order_out_for_delivery",
+          "metaNames": ["order_out_for_delivery"],
+          "usedIn": ["Order messages", "Shipment tracking"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_out_for_delivery",
+          "pack": "order-blueprint",
+          "pushKind": "order-blueprint",
+          "prebuiltKey": "order_out_for_delivery",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_delivered_update",
+          "title": "Delivered (courier confirmed)",
+          "description": "Courier confirmed delivery to the customer.",
+          "canonicalMetaName": "order_delivered_update",
+          "metaNames": ["order_delivered_update"],
+          "usedIn": ["Order messages", "Shipment tracking"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_delivered",
+          "pack": "order-blueprint",
+          "pushKind": "order-blueprint",
+          "prebuiltKey": "order_delivered_update",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_delivery_failed",
+          "title": "Delivery attempt failed",
+          "description": "Ask customer to confirm address or availability.",
+          "canonicalMetaName": "delivery_attempt_failed",
+          "metaNames": ["delivery_attempt_failed"],
+          "usedIn": ["Order messages", "Shipment tracking"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_attempted",
+          "pack": "order-blueprint",
+          "pushKind": "order-blueprint",
+          "prebuiltKey": "delivery_attempt_failed",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_ndr_rescue",
+          "title": "Failed delivery rescue (NDR)",
+          "description": "Rescue the order before it returns to origin (RTO).",
+          "canonicalMetaName": "rto_ndr_rescue",
+          "metaNames": ["rto_ndr_rescue"],
+          "usedIn": ["Order messages"],
+          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_failure",
+          "pack": "order-blueprint",
+          "pushKind": "order-blueprint",
+          "prebuiltKey": "rto_ndr_rescue",
+          "autoTrigger": null
+        },
+        {
+          "id": "om_shipped_flow",
+          "title": "Order shipped (flow builder)",
+          "description": "Shipped notification used inside Flow Builder graphs.",
           "canonicalMetaName": "order_shipped_v1",
           "metaNames": ["order_shipped_v1"],
           "usedIn": ["Flow Builder"],
@@ -164,142 +238,123 @@
           "pushKind": "prebuilt",
           "prebuiltKey": "order_shipped_v1",
           "autoTrigger": "order_fulfilled"
-        },
-        {
-          "id": "wizard_cart_1",
-          "title": "Abandoned cart — reminder 1",
-          "description": "First cart recovery step in your flow ladder.",
-          "canonicalMetaName": "cart_recovery_1",
-          "metaNames": ["cart_recovery_1", "abandoned_cart_r1_v1"],
-          "usedIn": ["AI Setup", "Flow Builder"],
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "abandoned_cart_r1_v1",
-          "autoTrigger": "abandoned_cart",
-          "step": 1,
-          "headerType": "IMAGE",
-          "category": "MARKETING"
-        },
-        {
-          "id": "wizard_cart_2",
-          "title": "Abandoned cart — reminder 2",
-          "description": "Second cart recovery step with urgency.",
-          "canonicalMetaName": "cart_recovery_2",
-          "metaNames": ["cart_recovery_2", "abandoned_cart_r2_v1"],
-          "usedIn": ["AI Setup", "Flow Builder"],
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "abandoned_cart_r2_v1",
-          "autoTrigger": "abandoned_cart",
-          "step": 2,
-          "headerType": "TEXT"
-        },
-        {
-          "id": "wizard_cart_3",
-          "title": "Abandoned cart — final offer",
-          "description": "Third cart recovery step with optional discount.",
-          "canonicalMetaName": "cart_recovery_3",
-          "metaNames": ["cart_recovery_3", "abandoned_cart_r3_v1"],
-          "usedIn": ["AI Setup", "Flow Builder"],
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "abandoned_cart_r3_v1",
-          "autoTrigger": "abandoned_cart",
-          "step": 3,
-          "headerType": "IMAGE"
-        },
-        {
-          "id": "wizard_admin_alert",
-          "title": "Admin handoff alert",
-          "description": "WhatsApp ping to your team when a shopper asks for a human.",
-          "canonicalMetaName": "admin_human_alert",
-          "metaNames": ["admin_human_alert", "admin_handoff"],
-          "usedIn": ["AI Setup", "Alerts step"],
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "admin_human_alert",
-          "autoTrigger": null
-        },
-        {
-          "id": "wizard_warranty",
-          "title": "Warranty activated",
-          "description": "Warranty registration confirmation.",
-          "canonicalMetaName": "warranty_certificate",
-          "metaNames": ["warranty_registration_v1", "warranty_certificate"],
-          "usedIn": ["AI Setup", "Warranty"],
-          "configureRoute": "/audience-hub?tab=warranty",
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "warranty_registration_v1",
-          "autoTrigger": "order_placed"
         }
       ]
     },
     {
-      "id": "commerce_automation",
-      "label": "Commerce automations",
-      "description": "Starter templates for cart recovery and COD upsell — separate from the 3-step flow ladder.",
+      "id": "cart_recovery",
+      "label": "Cart recovery templates",
+      "description": "3-step cart leads sequence plus single-send marketing recovery.",
       "slots": [
+        {
+          "id": "cart_recovery_1",
+          "title": "Cart recovery — reminder 1",
+          "description": "First gentle nudge with checkout link.",
+          "canonicalMetaName": "cart_recovery_1",
+          "metaNames": ["cart_recovery_1", "abandoned_cart_r1_v1"],
+          "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
+          "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "abandoned_cart_r1_v1",
+          "autoTrigger": "abandoned_cart",
+          "step": 1
+        },
+        {
+          "id": "cart_recovery_2",
+          "title": "Cart recovery — reminder 2",
+          "description": "Second nudge with urgency.",
+          "canonicalMetaName": "cart_recovery_2",
+          "metaNames": ["cart_recovery_2", "abandoned_cart_r2_v1"],
+          "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
+          "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_2",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "abandoned_cart_r2_v1",
+          "autoTrigger": "abandoned_cart",
+          "step": 2
+        },
+        {
+          "id": "cart_recovery_3",
+          "title": "Cart recovery — final offer",
+          "description": "Last chance with optional discount code.",
+          "canonicalMetaName": "cart_recovery_3",
+          "metaNames": ["cart_recovery_3", "abandoned_cart_r3_v1"],
+          "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
+          "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_3",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "abandoned_cart_r3_v1",
+          "autoTrigger": "abandoned_cart",
+          "step": 3
+        },
         {
           "id": "eco_abandoned_cart",
           "title": "Abandoned cart (single send)",
-          "description": "Marketing recovery when automations use the eco preset.",
+          "description": "Marketing recovery for one-shot automations.",
           "canonicalMetaName": "eco_abandoned_cart",
           "metaNames": ["eco_abandoned_cart"],
-          "usedIn": ["Commerce hub"],
+          "usedIn": ["Commerce hub", "Campaigns"],
           "configureRoute": "/commerce-hub?tab=dash",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
           "prebuiltKey": null,
           "autoTrigger": "abandoned_cart"
+        }
+      ]
+    },
+    {
+      "id": "admin_alerts",
+      "label": "Admin & team alerts",
+      "description": "Internal WhatsApp alerts to your team — not sent to shoppers.",
+      "slots": [
+        {
+          "id": "admin_human_alert",
+          "title": "Admin handoff alert",
+          "description": "Ping your team when a shopper asks for a human in chat.",
+          "canonicalMetaName": "admin_human_alert",
+          "metaNames": ["admin_human_alert", "admin_handoff"],
+          "usedIn": ["Live chat", "Flow Builder", "AI Setup"],
+          "configureRoute": "/conversations",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "admin_human_alert",
+          "autoTrigger": null
+        }
+      ]
+    },
+    {
+      "id": "audience_programs",
+      "label": "Audience programs",
+      "description": "Optional programs — warranty and COD upsell.",
+      "slots": [
+        {
+          "id": "warranty_certificate",
+          "title": "Warranty activated",
+          "description": "Warranty registration confirmation for customers.",
+          "canonicalMetaName": "warranty_certificate",
+          "metaNames": ["warranty_registration_v1", "warranty_certificate"],
+          "usedIn": ["Warranty hub", "Flow Builder"],
+          "configureRoute": "/audience-hub?tab=warranty",
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "warranty_registration_v1",
+          "autoTrigger": "order_placed"
         },
         {
           "id": "eco_cod_prepaid",
           "title": "COD → prepaid nudge",
-          "description": "UPI/card incentive after COD orders — enable under Settings → Features.",
+          "description": "UPI/card incentive after COD orders.",
           "canonicalMetaName": "eco_cod_prepaid_switch",
           "metaNames": ["eco_cod_prepaid_switch"],
-          "usedIn": ["Order create webhook"],
+          "usedIn": ["Order webhook", "Settings features"],
           "configureRoute": "/settings?tab=features",
           "pack": "eco",
           "pushKind": "eco-standard",
           "pushFromStandard": true,
           "prebuiltKey": null,
           "autoTrigger": "cod_prepaid"
-        }
-      ]
-    },
-    {
-      "id": "audience_other",
-      "label": "Audience & recovery",
-      "description": "Optional programs — configure in Audience hub.",
-      "slots": [
-        {
-          "id": "gate_cart_recovery",
-          "title": "Cart leads recovery",
-          "description": "3 WhatsApp nudges — configure templates in Order messages → Abandoned cart.",
-          "canonicalMetaName": "cart_recovery_1",
-          "metaNames": ["cart_recovery_1", "cart_recovery_2", "cart_recovery_3"],
-          "usedIn": ["Cart leads", "Order messages"],
-          "configureRoute": "/shopify-automation-center?section=abandoned-cart&rule=sys_cart_followup_1",
-          "pack": "gate",
-          "pushKind": "gate",
-          "prebuiltKey": null,
-          "autoTrigger": null
-        },
-        {
-          "id": "gate_ndr",
-          "title": "Failed delivery (NDR)",
-          "description": "RTO / failed delivery rescue message.",
-          "canonicalMetaName": "rto_ndr_rescue",
-          "metaNames": ["rto_ndr_rescue"],
-          "usedIn": ["Order messages"],
-          "configureRoute": "/shopify-automation-center?section=automations&rule=sys_shipment_failure",
-          "pack": "gate",
-          "pushKind": "gate",
-          "prebuiltKey": null,
-          "autoTrigger": null
         }
       ]
     }

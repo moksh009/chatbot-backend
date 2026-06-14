@@ -7,21 +7,21 @@ const log = require('../core/logger')('CartRecoveryDrafts');
 const CART_DRAFT_SPECS = [
   {
     name: 'cart_recovery_1',
-    catalogSlotId: 'wizard_cart_1',
+    catalogSlotId: 'cart_recovery_1',
     templateKey: 'cart_recovery_1',
     prebuiltKey: 'abandoned_cart_r1_v1',
     step: 1,
   },
   {
     name: 'cart_recovery_2',
-    catalogSlotId: 'wizard_cart_2',
+    catalogSlotId: 'cart_recovery_2',
     templateKey: 'cart_recovery_2',
     prebuiltKey: 'abandoned_cart_r2_v1',
     step: 2,
   },
   {
     name: 'cart_recovery_3',
-    catalogSlotId: 'wizard_cart_3',
+    catalogSlotId: 'cart_recovery_3',
     templateKey: 'cart_recovery_3',
     prebuiltKey: 'abandoned_cart_r3_v1',
     step: 3,

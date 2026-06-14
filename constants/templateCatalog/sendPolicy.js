@@ -20,10 +20,15 @@ const COD_PREPAID_SEND_ALIASES = [
 /** Slot id → extra Meta names to try if primary slot names are missing on WABA. */
 const SLOT_SEND_META_FALLBACKS = {
   eco_abandoned_cart: ["cart_recovery_1", "abandoned_cart_r1_v1", "eco_abandoned_cart"],
+  cart_recovery_1: ["cart_recovery_1", "abandoned_cart_r1_v1"],
+  cart_recovery_2: ["cart_recovery_2", "abandoned_cart_r2_v1"],
+  cart_recovery_3: ["cart_recovery_3", "abandoned_cart_r3_v1"],
   wizard_cart_1: ["cart_recovery_1", "abandoned_cart_r1_v1"],
   wizard_cart_2: ["cart_recovery_2", "abandoned_cart_r2_v1"],
   gate_cart_recovery: ["cart_recovery", "cart_recovery_1"],
+  warranty_certificate: ["warranty_registration_v1", "warranty_confirmation"],
   wizard_warranty: ["warranty_registration_v1", "warranty_confirmation"],
+  om_ndr_rescue: ["rto_ndr_rescue"],
   gate_ndr: ["rto_ndr_rescue"],
 };
 

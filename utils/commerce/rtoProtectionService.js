@@ -382,7 +382,7 @@ async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
       const result = await sendForAutomation({
         clientId: client.clientId,
         phone: clean,
-        slotId: 'gate_ndr',
+        slotId: 'om_ndr_rescue',
         metaName: tpl,
         contextType: 'order',
         contextData: {
