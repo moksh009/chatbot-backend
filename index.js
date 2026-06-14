@@ -168,13 +168,47 @@ function shouldSkipStrictCors(req) {
   return false;
 }
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (!corsStrict) return callback(null, true);
-    if (isOriginAllowed(origin)) return callback(null, true);
+const corsBaseOptions = {
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+};
+
+app.use(
+  cors((req, callback) => {
+    const origin = req.headers.origin;
+
+    if (shouldSkipStrictCors(req)) {
+      // #region agent log
+      log.info('[DEBUG-f2f95b] storefront CORS allow', {
+        hypothesisId: 'H1',
+        path: req.path,
+        method: req.method,
+        origin: origin || null,
+      });
+      fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+        body: JSON.stringify({
+          sessionId: 'f2f95b',
+          hypothesisId: 'H1',
+          location: 'index.js:cors-delegate-storefront',
+          message: 'storefront path allowed',
+          data: { path: req.path, method: req.method, origin: origin || null },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+      return callback(null, { ...corsBaseOptions, origin: true });
+    }
+
+    if (!origin || !corsStrict || isOriginAllowed(origin)) {
+      return callback(null, { ...corsBaseOptions, origin: true });
+    }
+
     // #region agent log
-    log.warn(`[CORS] Blocked origin: ${origin}`, { hypothesisId: 'H1', sessionId: 'f2f95b' });
+    log.warn(`[CORS] Blocked origin: ${origin}`, { hypothesisId: 'H1', sessionId: 'f2f95b', path: req.path });
     fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
@@ -183,19 +217,14 @@ app.use(cors({
         hypothesisId: 'H1',
         location: 'index.js:cors-origin',
         message: 'strict CORS blocked origin',
-        data: { origin },
+        data: { origin, path: req.path },
         timestamp: Date.now(),
       }),
     }).catch(() => {});
     // #endregion
     return callback(new Error('CORS policy: origin not allowed'));
-  },
-  skip: shouldSkipStrictCors,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range']
-}));
+  })
+);
 
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
 
