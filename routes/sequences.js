@@ -226,6 +226,26 @@ router.post('/:clientId', protect, async (req, res) => {
         continue;
       }
 
+      const leadDoc = await AdLead.findById(leadId)
+        .select('cartStatus recoveryStep isOrderPlaced suppressRecovery')
+        .lean();
+      if (
+        leadDoc &&
+        leadDoc.cartStatus === 'abandoned' &&
+        leadDoc.isOrderPlaced !== true &&
+        leadDoc.suppressRecovery !== true &&
+        Number(leadDoc.recoveryStep || 0) > 0 &&
+        Number(leadDoc.recoveryStep || 0) < 99
+      ) {
+        errors.push({
+          leadId,
+          message:
+            'Lead is in active cart recovery. Pause recovery or wait until the 3-step sequence completes before enrolling a marketing sequence.',
+          code: 'CART_RECOVERY_ACTIVE',
+        });
+        continue;
+      }
+
       if (onlyEmailSteps && !String(email || '').trim()) {
         errors.push({ leadId, message: 'Contact has no email address' });
         continue;

@@ -113,4 +113,24 @@ router.get('/:clientId/health', protect, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/commerce/:clientId/recovery-funnel
+ * Cart recovery funnel metrics (Phase 7).
+ */
+router.get('/:clientId/recovery-funnel', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user?.clientId && req.user.clientId !== clientId && req.user?.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const { parseDateRange } = require('../utils/commerce/abandonedCartWorkspace');
+    const { buildRecoveryFunnelMetrics } = require('../utils/commerce/recoveryFunnelMetrics');
+    const { from, to, preset } = parseDateRange(req.query);
+    const data = await buildRecoveryFunnelMetrics(clientId, from, to);
+    res.json({ success: true, range: { from, to, preset }, ...data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load recovery funnel' });
+  }
+});
+
 module.exports = router;

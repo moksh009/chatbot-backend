@@ -21,6 +21,7 @@ const {
   syncCheckoutConsentConfig,
   getCheckoutOptInInstallStatus,
 } = require('../utils/shopify/checkoutConsentExtension');
+const { getActiveVisitorCount } = require('../utils/commerce/pixelActiveVisitors');
 
 /** Empty — bypass disabled so dashboard status + install reflect real web pixel registration. */
 const PIXEL_STATUS_BYPASS_CLIENTS = new Set([]);
@@ -51,26 +52,6 @@ const log = require('../utils/core/logger')('ShopifyPixel');
 /** Storefront + checkout scripts call the API from merchant domains — allow cross-origin posts */
 function pixelStorefrontCors(req, res, next) {
   const origin = req.headers.origin;
-  // #region agent log
-  log.info('[DEBUG-f2f95b] pixelStorefrontCors', {
-    hypothesisId: 'H1',
-    method: req.method,
-    path: req.path,
-    origin: origin || null,
-  });
-  fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-    body: JSON.stringify({
-      sessionId: 'f2f95b',
-      hypothesisId: 'H1',
-      location: 'shopifyPixel.js:pixelStorefrontCors',
-      message: 'storefront CORS handler',
-      data: { method: req.method, path: req.path, origin: origin || null },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
@@ -146,35 +127,9 @@ router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res
       'Set-Cookie',
       `te_visitor_id=${encodeURIComponent(visitorId)}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
     );
-    // #region agent log
-    log.info('[DEBUG-f2f95b] visitor-init ok', {
-      hypothesisId: 'H2',
-      clientId: req.params.clientId,
-      origin: req.headers.origin || null,
-      hasCookie: Boolean(readCookie(req, 'te_visitor_id')),
-    });
-    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-      body: JSON.stringify({
-        sessionId: 'f2f95b',
-        hypothesisId: 'H2',
-        location: 'shopifyPixel.js:visitor-init',
-        message: 'visitor-init success',
-        data: { clientId: req.params.clientId, origin: req.headers.origin || null },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     res.json({ success: true, visitorId });
   } catch (err) {
-    // #region agent log
-    log.error('[DEBUG-f2f95b] visitor-init failed', {
-      hypothesisId: 'H2',
-      clientId: req.params.clientId,
-      error: err.message,
-    });
-    // #endregion
+    log.error('visitor-init failed', { clientId: req.params.clientId, error: err.message });
     res.status(500).json({ error: 'visitor_init_failed' });
   }
 });
@@ -655,6 +610,156 @@ router.post('/pixel/:clientId/checkout-opt-in/sync', protect, async (req, res) =
   }
 });
 
+async function buildCheckoutFunnelMetrics(clientId, since) {
+  const [
+    pageViews,
+    addToCart,
+    checkoutStarted,
+    contactIdentified,
+    abandoned,
+    recovered,
+  ] = await Promise.all([
+    PixelEvent.countDocuments({
+      clientId,
+      eventName: 'page_view',
+      timestamp: { $gte: since },
+    }),
+    PixelEvent.countDocuments({
+      clientId,
+      eventName: { $in: ['product_added_to_cart', 'add_to_cart'] },
+      timestamp: { $gte: since },
+    }),
+    PixelEvent.countDocuments({
+      clientId,
+      eventName: 'checkout_started',
+      timestamp: { $gte: since },
+    }),
+    PixelEvent.countDocuments({
+      clientId,
+      eventName: {
+        $in: ['checkout_contact_identified', 'checkout_contact_info_submitted', 'contact_identified'],
+      },
+      timestamp: { $gte: since },
+    }),
+    AdLead.countDocuments({
+      clientId,
+      cartStatus: { $in: ['abandoned', 'active'] },
+      cartAbandonedAt: { $gte: since },
+    }),
+    AdLead.countDocuments({
+      clientId,
+      $or: [
+        { cartStatus: 'recovered' },
+        { cartStatus: 'purchased', abandonedCartRecoveredAt: { $exists: true, $gte: since } },
+      ],
+      updatedAt: { $gte: since },
+    }),
+  ]);
+
+  const conversionRate =
+    checkoutStarted > 0
+      ? Math.min(100, Math.round((contactIdentified / checkoutStarted) * 100))
+      : pageViews > 0
+        ? Math.min(100, Math.round((contactIdentified / pageViews) * 100))
+        : 0;
+
+  return {
+    pageViews,
+    addToCart,
+    checkoutStarted,
+    contactIdentified,
+    abandoned,
+    recovered,
+    conversionRate,
+  };
+}
+
+function buildCaptureLayers({
+  themeReady,
+  checkoutPixelReady,
+  lastCheckoutContactEvent,
+  lastLiveExtensionEvent,
+  lastWebhookLead,
+  health,
+  sevenDaysAgo,
+  extensionEnvEnabled,
+}) {
+  const checkoutContactRecent =
+    lastCheckoutContactEvent &&
+    moment(lastCheckoutContactEvent.timestamp).isAfter(sevenDaysAgo);
+  const liveExtensionRecent =
+    lastLiveExtensionEvent &&
+    moment(lastLiveExtensionEvent.timestamp).isAfter(sevenDaysAgo);
+  const webhookBackupRecent =
+    (health?.counts?.checkoutWebhookSignals || 0) > 0 ||
+    Boolean(
+      lastWebhookLead?.lastCartEventAt &&
+        moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo)
+    );
+
+  const captureMode = lastCheckoutContactEvent?.metadata?.captureMode || null;
+  const checkoutContactOk = checkoutContactRecent || webhookBackupRecent;
+
+  let checkoutContactDetail = 'Waiting for checkout contact';
+  if (checkoutContactRecent) {
+    if (captureMode === 'web_pixel_on_submit') {
+      checkoutContactDetail = 'Active — contact captured on Continue';
+    } else if (captureMode === 'live_ui_extension') {
+      checkoutContactDetail = 'Active — checkout extension';
+    } else {
+      checkoutContactDetail = 'Active — checkout contact captured';
+    }
+  } else if (webhookBackupRecent) {
+    checkoutContactDetail = 'Active — webhook backup';
+  }
+
+  return [
+    {
+      id: 'storefront',
+      label: 'Storefront browse & cart',
+      ok: Boolean(themeReady || health?.storefrontActive),
+      detail: themeReady ? 'Receiving browse & cart signals' : 'Install storefront script',
+    },
+    {
+      id: 'checkout_pixel',
+      label: 'Checkout web pixel',
+      ok: Boolean(checkoutPixelReady || health?.webPixelInstalled),
+      detail: checkoutPixelReady ? 'Registered on Shopify' : 'Not registered',
+    },
+    {
+      id: 'checkout_contact',
+      label: 'Checkout contact capture',
+      ok: checkoutContactOk,
+      detail: checkoutContactDetail,
+      lastAt: lastCheckoutContactEvent?.timestamp || lastWebhookLead?.lastCartEventAt || null,
+      mode:
+        captureMode ||
+        (webhookBackupRecent && !checkoutContactRecent ? 'webhook' : null),
+    },
+    {
+      id: 'live_typing',
+      label: 'Live checkout typing (extension)',
+      ok: Boolean(liveExtensionRecent),
+      optional: true,
+      detail: liveExtensionRecent
+        ? 'Active — typing captured in checkout'
+        : extensionEnvEnabled
+          ? 'Optional — add checkout UI extension'
+          : 'Deploy app extensions for live typing',
+      lastAt: lastLiveExtensionEvent?.timestamp || null,
+    },
+    {
+      id: 'webhook_backup',
+      label: 'Checkout webhook backup',
+      ok: webhookBackupRecent,
+      detail: webhookBackupRecent
+        ? 'Active — checkout webhooks received'
+        : 'Waiting for checkout',
+      lastAt: lastWebhookLead?.lastCartEventAt || null,
+    },
+  ];
+}
+
 async function buildPixelStatusPayload(clientId, req) {
   const backendUrl = resolveBackendUrl(req);
   const scriptTag = buildScriptTag(clientId, backendUrl);
@@ -693,6 +798,11 @@ async function buildPixelStatusPayload(clientId, req) {
       checkoutPixelSnippet,
       checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
       shopDomain: clientDoc?.shopDomain || null,
+      captureLayers: [],
+      trackingHealth: null,
+      checkoutFunnel: null,
+      activeVisitorCount: 0,
+      identifiedLeads24h: [],
       statusHint: 'Tracking disconnected. Click one-click install to reconnect storefront + checkout capture.',
     };
   }
@@ -783,17 +893,23 @@ async function buildPixelStatusPayload(clientId, req) {
   const webPixelScopeMissing =
     webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false;
   const requiresCheckoutPixel = bypassShopifyChecks || (!webPixelOnShopify && !webPixelRegistered);
-  const themeActuallyReady = themeScriptVerified || eventsLive || themeMarkedInstalled;
+  const health = await buildTrackingHealth(clientId, 30).catch(() => null);
+  const totalEventsLast30d = eventBreakdown.reduce((sum, row) => sum + (row.count || 0), 0);
+  const themeActuallyReady =
+    themeScriptVerified || eventsLive || themeMarkedInstalled || health?.storefrontActive;
   const isInstalled =
     !webPixelScopeMissing &&
-    (themeActuallyReady || webPixelOnShopify || webPixelRegistered);
+    (themeMarkedInstalled ||
+      webPixelRegistered ||
+      webPixelOnShopify ||
+      totalEventsLast30d > 0 ||
+      health?.storefrontActive ||
+      themeActuallyReady);
   const connectionState = eventsLive
     ? 'live'
     : isInstalled
       ? 'connected'
       : 'not_connected';
-
-  const health = await buildTrackingHealth(clientId, 30).catch(() => null);
 
   const sessionsMap = new Map();
   for (const ev of anonymousCartEvents) {
@@ -823,28 +939,68 @@ async function buildPixelStatusPayload(clientId, req) {
   }
   const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
 
-  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent] = await Promise.all([
-    AdLead.findOne({ clientId, source: 'shopify_native' })
-      .sort({ lastCartEventAt: -1 })
-      .select('lastCartEventAt')
-      .lean(),
-    PixelEvent.findOne({
-      clientId,
-      eventName: 'checkout_contact_identified',
-      'metadata.captureMode': 'live_ui_extension',
-    })
-      .sort({ timestamp: -1 })
-      .select('timestamp metadata')
-      .lean(),
-    PixelEvent.findOne({
-      clientId,
-      eventName: 'contact_identified',
-      'metadata.captureMode': { $in: ['live_theme', 'live'] },
-    })
-      .sort({ timestamp: -1 })
-      .select('timestamp')
-      .lean(),
-  ]);
+  const twentyFourHoursAgo = moment().subtract(24, 'hours').toDate();
+
+  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent, lastCheckoutContactEvent, checkoutFunnel, activeVisitorCount, identifiedLeadDocs] =
+    await Promise.all([
+      AdLead.findOne({ clientId, checkoutInitiatedCount: { $gt: 0 } })
+        .sort({ lastCartEventAt: -1 })
+        .select('lastCartEventAt checkoutInitiatedCount')
+        .lean(),
+      PixelEvent.findOne({
+        clientId,
+        eventName: 'checkout_contact_identified',
+        'metadata.captureMode': 'live_ui_extension',
+      })
+        .sort({ timestamp: -1 })
+        .select('timestamp metadata')
+        .lean(),
+      PixelEvent.findOne({
+        clientId,
+        eventName: 'contact_identified',
+        'metadata.captureMode': { $in: ['live_theme', 'live'] },
+      })
+        .sort({ timestamp: -1 })
+        .select('timestamp')
+        .lean(),
+      PixelEvent.findOne({
+        clientId,
+        eventName: {
+          $in: ['checkout_contact_identified', 'checkout_contact_info_submitted'],
+        },
+      })
+        .sort({ timestamp: -1 })
+        .select('timestamp metadata')
+        .lean(),
+      buildCheckoutFunnelMetrics(clientId, thirtyDaysAgo),
+      getActiveVisitorCount(clientId),
+      AdLead.find({
+        clientId,
+        contactCapturedAt: { $gte: twentyFourHoursAgo },
+        phoneNumber: { $not: /^unknown_checkout_/ },
+      })
+        .sort({ contactCapturedAt: -1 })
+        .limit(16)
+        .select('_id phoneNumber email name contactCapturedAt cartValue cartStatus')
+        .lean(),
+    ]);
+
+  const identifiedLeads24h = (identifiedLeadDocs || []).map((lead) => ({
+    leadId: String(lead._id),
+    name: lead.name || 'Identified shopper',
+    phone: lead.phoneNumber || null,
+    email: lead.email || null,
+    cartValue: lead.cartValue || 0,
+    cartStatus: lead.cartStatus || null,
+    contactCapturedAt: lead.contactCapturedAt || null,
+  }));
+
+  for (const session of anonymousActivity) {
+    if (session.hasContact) {
+      session.identified = true;
+      session.cartRecoveryHref = '/audience-hub?tab=cart-recovery';
+    }
+  }
 
   const extensionEnvEnabled = process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED !== 'false';
   const liveExtensionRecent =
@@ -853,8 +1009,22 @@ async function buildPixelStatusPayload(clientId, req) {
   const liveThemeRecent =
     lastLiveThemeEvent && moment(lastLiveThemeEvent.timestamp).isAfter(sevenDaysAgo);
   const webhookCaptureRecent =
-    lastWebhookLead?.lastCartEventAt &&
-    moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo);
+    (health?.counts?.checkoutWebhookSignals || 0) > 0 ||
+    Boolean(
+      lastWebhookLead?.lastCartEventAt &&
+        moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo)
+    );
+
+  const captureLayers = buildCaptureLayers({
+    themeReady: themeActuallyReady,
+    checkoutPixelReady: !webPixelScopeMissing && (webPixelRegistered || webPixelOnShopify),
+    lastCheckoutContactEvent,
+    lastLiveExtensionEvent,
+    lastWebhookLead,
+    health,
+    sevenDaysAgo,
+    extensionEnvEnabled,
+  });
 
   const liveTypingCapture = {
     status: liveExtensionRecent
@@ -944,6 +1114,10 @@ async function buildPixelStatusPayload(clientId, req) {
     scriptTag,
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
+    captureLayers,
+    checkoutFunnel,
+    activeVisitorCount: activeVisitorCount || 0,
+    identifiedLeads24h,
     liveTypingCapture,
     statusHint: storefrontHint,
   };

@@ -47,12 +47,13 @@ function resolveTemplateStatus(templateName, syncedTemplates = [], metaRows = []
 }
 
 function countActiveCartRules(automations = []) {
-  return automations.filter(
-    (a) =>
-      a.meta?.category === 'abandoned_cart' &&
-      a.isActive === true &&
-      String(a.templateName || '').trim()
-  ).length;
+  return automations.filter((a) => {
+    if (a.meta?.category !== 'abandoned_cart' || a.isActive !== true) return false;
+    const channels = Array.isArray(a.channels) ? a.channels : ['whatsapp'];
+    if (channels.includes('whatsapp') && String(a.templateName || '').trim()) return true;
+    if (channels.includes('email') && (a.emailConfig?.templateId || a.emailConfig?.template)) return true;
+    return false;
+  }).length;
 }
 
 function maskSecret(secret) {
@@ -197,6 +198,24 @@ async function buildAbandonedCartReadiness(clientId) {
     templates,
     templatesApprovedCount: approvedCount,
     allTemplatesApproved: approvedCount === 3,
+    emailOnlyRecoveryReady: (() => {
+      try {
+        const { isWorkspaceEmailReady } = require('../core/emailService');
+        const { normalizeRuleChannels } = require('../core/orderEmailMergeFields');
+        if (!isWorkspaceEmailReady(client)) return false;
+        return automations.some((a) => {
+          if (a.meta?.category !== 'abandoned_cart' || a.isActive !== true) return false;
+          const ch = normalizeRuleChannels(a);
+          return (
+            ch.includes('email') &&
+            (a.emailConfig?.templateId || a.emailConfig?.template) &&
+            (!ch.includes('whatsapp') || !a.templateName)
+          );
+        });
+      } catch {
+        return false;
+      }
+    })(),
     pixel: {
       installed: pixelInstalled,
       lastEventAt,
@@ -387,12 +406,9 @@ async function enableAbandonedCartRecovery(clientId) {
   const readiness = await buildAbandonedCartReadiness(clientId);
   if (!readiness) throw new Error('Client not found');
 
-  /** WS-3 defaults — keep aligned with cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS. */
+  /** WS-3: enable flag only — never reset merchant timing (BUG-006). */
   const setFields = {
     'wizardFeatures.enableAbandonedCart': true,
-    'wizardFeatures.cartNudgeMinutes1': 25,
-    'wizardFeatures.cartNudgeHours2': 4,
-    'wizardFeatures.cartNudgeHours3': 36,
   };
 
   await Client.findOneAndUpdate({ clientId }, { $set: setFields });
@@ -406,6 +422,21 @@ async function enableAbandonedCartRecovery(clientId) {
         isActive: true,
         templateName,
         language: 'en',
+      });
+      rulesActivated += 1;
+    }
+  } else if (activationPlan.emailOnly && readiness.emailOnlyRecoveryReady) {
+    const freshClient = await Client.findOne({ clientId }).select('commerceAutomations').lean();
+    const mergedRules = mergeSystemAutomations(freshClient?.commerceAutomations || []);
+    const emailRules = mergedRules.filter((a) => {
+      if (a.meta?.category !== 'abandoned_cart') return false;
+      const ch = Array.isArray(a.channels) ? a.channels : ['whatsapp'];
+      return ch.includes('email') && (a.emailConfig?.templateId || a.emailConfig?.template);
+    });
+    for (const rule of emailRules) {
+      await commerceAutomationService.upsertAutomation(clientId, {
+        id: rule.id,
+        isActive: true,
       });
       rulesActivated += 1;
     }

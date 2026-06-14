@@ -170,6 +170,22 @@ const WizardFeaturesSchema = new mongoose.Schema({
   enableAutoShopifyShippedWhatsApp: { type: Boolean, default: true }
 }, { _id: false });
 
+/** Per-tenant cart recovery timing + smart send (Phase 3 SSOT). */
+const CartRecoveryConfigSchema = new mongoose.Schema({
+  promotionDelayMinutes: { type: Number, default: 10 },
+  step1DelayMinutes: { type: Number, default: 25 },
+  step2DelayMinutes: { type: Number, default: 240 },
+  step3DelayMinutes: { type: Number, default: 2160 },
+  smartSendEnabled: { type: Boolean, default: true },
+  smartSendStartHour: { type: Number, default: 8 },
+  smartSendEndHour: { type: Number, default: 22 },
+  timezone: { type: String, default: 'Asia/Kolkata' },
+  attributionWindowHours: { type: Number, default: 24 },
+  discountEnabled: { type: Boolean, default: false },
+  discountStep2Pct: { type: Number, default: 0 },
+  discountStep3Pct: { type: Number, default: 0 },
+}, { _id: false });
+
 /** RTO Protection Suite — COD confirmation + NDR rescue (WhatsApp). */
 const RtoProtectionSchema = new mongoose.Schema({
   requireCodConfirmation: { type: Boolean, default: false },
@@ -466,6 +482,7 @@ const ClientSchema = new mongoose.Schema({
 
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
+  cartRecoveryConfig: { type: CartRecoveryConfigSchema, default: () => ({}) },
   rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
   logisticsPartner: {
     type: String,

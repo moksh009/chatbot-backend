@@ -22,12 +22,16 @@ test('generateWebhookSecret returns hex string', () => {
 
 test('mongoCartRecoveryFilter excludes opted_out leads by default', () => {
   const filter = mongoCartRecoveryFilter({});
-  assert.deepEqual(filter, { optStatus: { $ne: 'opted_out' } });
+  assert.equal(filter.optStatus.$ne, 'opted_out');
+  assert.equal(filter.isOrderPlaced.$ne, true);
+  assert.equal(filter.suppressRecovery.$ne, true);
+  assert.deepEqual(filter.cartStatus.$nin, ['purchased', 'recovered', 'suppressed']);
 });
 
 test('mongoCartRecoveryFilter strict mode requires opted_in', () => {
   const filter = mongoCartRecoveryFilter({ growthCompliance: { cartRecoveryRequiresOptIn: true } });
-  assert.deepEqual(filter, { optStatus: 'opted_in' });
+  assert.equal(filter.optStatus, 'opted_in');
+  assert.equal(filter.isOrderPlaced.$ne, true);
 });
 
 test('cron cart query merges opt-out filter (simulated AdLead query shape)', () => {
@@ -76,6 +80,7 @@ test('buildChecklist marks recovery on when templates + rules satisfied', () => 
     lastEventAt: new Date().toISOString(),
     unknownPhonePct: 10,
     recoveryOn: true,
+    recoveryFullyLive: true,
   });
   const byId = Object.fromEntries(items.map((i) => [i.id, i.status]));
   assert.equal(byId.shopify, 'ok');

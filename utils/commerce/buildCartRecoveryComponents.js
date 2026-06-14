@@ -1,6 +1,6 @@
 'use strict';
 
-const { buildRecoveryUrl } = require('./buildRecoveryUrl');
+const { buildRecoveryUrl, buildLeadRecoveryBaseUrl, buildLeadRecoveryUrl } = require('./buildRecoveryUrl');
 const { buildCartRecoveryBodyParameters } = require('../../constants/cartRecoverySlotPresets');
 
 function firstCartItem(lead = {}) {
@@ -35,18 +35,12 @@ function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
     '';
   const cartTotal = cartTotalRaw !== '' && cartTotalRaw != null ? String(cartTotalRaw) : '';
 
-  const storeHost = client.shopDomain
-    ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0]
-    : '';
-  const token = lead.checkoutToken || snap.checkoutToken || '';
-  const recoverFromToken =
-    storeHost && token ? `https://${storeHost}/cart/recover/${token}` : '';
   const baseUrl =
+    buildLeadRecoveryBaseUrl(client, lead) ||
     lead.checkoutUrl ||
     snap.checkoutUrl ||
     lead.cartUrl ||
     lead.abandoned_checkout_url ||
-    recoverFromToken ||
     '';
   const recoveryUrl = buildRecoveryUrl(baseUrl, stepNum);
   const discountCode = lead.lastDiscountCode || lead.discountCode || '';

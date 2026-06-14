@@ -35,8 +35,25 @@ function composeRecoveryText(client, shortUrl) {
 }
 
 async function processOne(linkDoc) {
-  const client = await Client.findOne({ clientId: linkDoc.clientId });
+  const client = await Client.findOne({ clientId: linkDoc.clientId })
+    .select('clientId commerceAutomations wizardFeatures commerceBotSettings growthCompliance')
+    .lean();
   if (!client) return false;
+
+  const { isAbandonedCartEnabled } = require('../utils/core/featureFlags');
+  if (isAbandonedCartEnabled(client)) {
+    const templatePathActive = (client.commerceAutomations || []).some(
+      (a) =>
+        a.meta?.category === 'abandoned_cart' &&
+        a.isActive === true &&
+        a.templateName &&
+        (!Array.isArray(a.channels) || a.channels.includes('whatsapp'))
+    );
+    if (templatePathActive) {
+      log.debug(`[CheckoutLinkRecovery] Skip ${linkDoc.clientId} — template cart recovery active`);
+      return false;
+    }
+  }
 
   const normalizedPhone = normalizePhone(linkDoc.phone);
   if (!normalizedPhone) return false;

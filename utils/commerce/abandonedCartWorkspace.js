@@ -16,50 +16,17 @@ const {
   recoveryStatusFromAttempt,
   buildRecoveryTimeline,
   summarizeMessageEngagement,
+  buildAbandonHeatmap: buildAbandonHeatmapData,
 } = require('./cartRecoveryAttemptService');
+const { predictRecoveryValue } = require('./cartRecoveryPrediction');
+const { buildConnectionStatusPayload } = require('../core/connectionStatus');
 const { ABANDONED_CART_TAG } = require('../../constants/cartRecoveryTags');
-
-/** WS-3 defaults — keep aligned with
- *  `cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS` so the merchant-facing
- *  cart workspace shows the same cadence the scheduler actually uses. */
-const CART_NUDGE_DEFAULTS = {
-  minutes1: 25,
-  hours2: 4,
-  hours3: 36,
-};
-
-function resolveCartNudgeDelay(value, fallback) {
-  if (value === null || value === undefined) return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) {
-    log.warn(`[AbandonedCartWorkspace] Invalid cart nudge delay "${value}" — using default ${fallback}`);
-    return fallback;
-  }
-  return n;
-}
-
-function getCartRecoveryDelays(client = {}) {
-  const wf = client.wizardFeatures || {};
-  const cartRules = (client.commerceAutomations || []).filter(
-    (a) => a.meta?.category === 'abandoned_cart'
-  );
-  const ruleDelayMin = (slot) => {
-    const r = cartRules.find((x) => x.meta?.systemSlot === slot);
-    const n = Number(r?.delayMinutes);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  };
-  return {
-    delay1Min:
-      ruleDelayMin('followup_1') ??
-      resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
-    delay2Min:
-      ruleDelayMin('followup_2') ??
-      resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2) * 60,
-    delay3Min:
-      ruleDelayMin('followup_3') ??
-      resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3) * 60,
-  };
-}
+const {
+  getCartRecoveryDelays,
+  getCartRecoveryConfig,
+  computeNextPromotionAt,
+  buildConfigPayload,
+} = require('./cartRecoveryConfigService');
 
 const PRESETS = {
   today: () => ({ from: startOfDayIST(), to: new Date(), timezone: 'Asia/Kolkata' }),
@@ -102,13 +69,16 @@ function parseDateRange(query = {}) {
 }
 
 function getRecoverySchedule(client = {}) {
-  const { delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client);
+  const { promotionDelayMin, delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client);
   const fmtDelay = (mins) => {
     if (mins < 60) return `${mins} min`;
     if (mins < 1440) return `${Math.round(mins / 60)}h`;
     return `${Math.round(mins / 1440)}d`;
   };
-  return [
+  return {
+    promotionDelayMinutes: promotionDelayMin,
+    promotionLabel: `${fmtDelay(promotionDelayMin)} after last checkout activity`,
+    steps: [
     {
       step: 1,
       delayMinutes: delay1Min,
@@ -130,7 +100,8 @@ function getRecoverySchedule(client = {}) {
       timingLabel: `${fmtDelay(delay3Min)} after cart abandoned (requires message 2 sent)`,
       fromAbandonTime: true,
     },
-  ];
+    ],
+  };
 }
 
 function stepSentAt(lead, stepNum) {
@@ -369,10 +340,34 @@ function isAbandonCandidate(lead) {
   );
 }
 
+function buildSetupStatus(client, flags = {}) {
+  const shopifyConnected = Boolean(flags.shopify_connected);
+  const whatsappConnected = Boolean(flags.whatsapp_connected);
+  const wf = client?.wizardFeatures || {};
+  const cartRules = (client?.commerceAutomations || []).filter(
+    (a) => a.meta?.category === 'abandoned_cart' && a.isActive === true
+  );
+  return {
+    shopifyConnected,
+    whatsappConnected,
+    canView: shopifyConnected,
+    canSend: whatsappConnected,
+    canEnable: shopifyConnected && whatsappConnected,
+    recoveryActive: wf.enableAbandonedCart !== false && cartRules.length > 0,
+    viewBlockedReason: shopifyConnected ? null : 'Connect Shopify to see real cart leads.',
+    sendBlockedReason: whatsappConnected ? null : 'Connect WhatsApp to send recovery messages.',
+  };
+}
+
 async function buildAbandonedCartWorkspace(clientId, query = {}) {
   const { from, to, preset } = parseDateRange(query);
-  const client = await Client.findOne({ clientId }).select('wizardFeatures timezone').lean();
+  const client = await Client.findOne({ clientId })
+    .select('wizardFeatures cartRecoveryConfig timezone commerceAutomations shopifyConnected shopifyAccessToken whatsappToken phoneNumberId wabaId')
+    .lean();
+  const connectionFlags = buildConnectionStatusPayload(client || {});
+  const setupStatus = buildSetupStatus(client, connectionFlags);
   const schedule = getRecoverySchedule(client || {});
+  const cartRecoveryConfig = buildConfigPayload(client || {});
 
   const leads = await AdLead.find({
     clientId,
@@ -390,7 +385,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     ],
   })
     .select(
-      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags'
+      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags nextPromotionAt nextAllowedSendAt cartValueTier recoveryUrl exitIntentAt visitorFirstVisitAt visitorVisitCount'
     )
     .limit(8000)
     .lean();
@@ -433,7 +428,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     recoveredAfterMsg2: 0,
     recoveredAfterMsg3: 0,
   };
-  const { delay1Min } = getCartRecoveryDelays(client || {});
+  const { delay1Min, promotionDelayMin } = getCartRecoveryDelays(client || {});
 
   for (const lead of filtered) {
     const nonRecoverable = isNonRecoverableLead(lead);
@@ -561,6 +556,21 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
           }
         : null,
       recoveryStep: lead.recoveryStep || 0,
+      predictedRecoveryValue: active && !nonRecoverable
+        ? predictRecoveryValue(totals.cartValue, lead.recoveryStep || 0)
+        : 0,
+      cartValueTier: lead.cartValueTier || '',
+      exitIntentAt: lead.exitIntentAt || null,
+      hasExitIntent: !!lead.exitIntentAt,
+      visitorFirstVisitAt: lead.visitorFirstVisitAt || null,
+      visitorVisitCount: lead.visitorVisitCount ?? null,
+      nextPromotionAt:
+        lead.nextPromotionAt ||
+        (lead.cartStatus === 'active'
+          ? computeNextPromotionAt(lead, promotionDelayMin)
+          : null),
+      nextAllowedSendAt: lead.nextAllowedSendAt || null,
+      recoveryUrl: lead.recoveryUrl || '',
       timeline: buildCartTimeline(lead, followup, attempt),
       leadId: String(lead._id),
       inboxPath: `/conversations?phone=${encodeURIComponent(lead.phoneNumber || '')}`,
@@ -619,12 +629,26 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       ? Math.round((metrics.recoveredCarts / metrics.totalAbandoned) * 10000) / 100
       : 0;
 
+  metrics.messagesSent = (funnel.msg1Sent || 0) + (funnel.msg2Sent || 0) + (funnel.msg3Sent || 0);
+  metrics.hero = {
+    recoverableRevenue: metrics.recoverableRevenue,
+    recoveredCarts: metrics.recoveredCarts,
+    revenueRecovered: metrics.revenueRecovered,
+    messagesSent: metrics.messagesSent,
+    predictedRecoveryValue: rows.reduce(
+      (sum, row) => sum + (Number(row.predictedRecoveryValue) || 0),
+      0
+    ),
+  };
+
   rows.sort((a, b) => new Date(b.abandonedAt) - new Date(a.abandonedAt));
 
   return {
     success: true,
     range: { from, to, preset },
     schedule,
+    cartRecoveryConfig,
+    setupStatus,
     metrics,
     funnel,
     rows,
@@ -632,8 +656,19 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
   };
 }
 
+async function buildAbandonHeatmap(clientId, query = {}) {
+  const { from, to, preset } = parseDateRange(query);
+  const heatmap = await buildAbandonHeatmapData(clientId, from, to);
+  return {
+    success: true,
+    range: { from, to, preset },
+    ...heatmap,
+  };
+}
+
 module.exports = {
   parseDateRange,
   getRecoverySchedule,
   buildAbandonedCartWorkspace,
+  buildAbandonHeatmap,
 };

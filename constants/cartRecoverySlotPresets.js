@@ -75,13 +75,17 @@ function buildCartRecoveryBodyParameters(stepNum, context = {}, opts = {}) {
 }
 
 function planCartRuleActivation(readiness = {}) {
-  if (!readiness.allTemplatesApproved) {
+  const emailReady = readiness.emailOnlyRecoveryReady === true;
+  if (!readiness.allTemplatesApproved && !emailReady) {
     return { count: 0, templateNames: [] };
   }
-  return {
-    count: 3,
-    templateNames: ['cart_recovery_1', 'cart_recovery_2', 'cart_recovery_3'],
-  };
+  if (readiness.allTemplatesApproved) {
+    return {
+      count: 3,
+      templateNames: ['cart_recovery_1', 'cart_recovery_2', 'cart_recovery_3'],
+    };
+  }
+  return { count: 0, templateNames: [], emailOnly: true };
 }
 
 module.exports = {

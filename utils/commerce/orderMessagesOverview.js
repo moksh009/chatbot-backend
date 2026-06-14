@@ -25,11 +25,18 @@ async function buildOrderMessagesOverview(clientConfig) {
       : clientConfig.wizardFeatures || {};
 
   let messagingActivity = null;
+  let templateReadiness = null;
   try {
     const { buildMessagingActivitySummary } = require('../../services/messagingActivityService');
     messagingActivity = await buildMessagingActivitySummary(clientConfig);
   } catch (err) {
     console.warn('[OrderMessagesOverview] messaging activity:', err.message);
+  }
+  try {
+    const { buildCartRecoveryTemplateReadiness } = require('./cartRecoveryTemplateReadiness');
+    templateReadiness = buildCartRecoveryTemplateReadiness(clientConfig);
+  } catch (err) {
+    console.warn('[OrderMessagesOverview] template readiness:', err.message);
   }
 
   return {
@@ -41,6 +48,8 @@ async function buildOrderMessagesOverview(clientConfig) {
     },
     orderTriggers: clientConfig.nicheData?.orderStatusTemplates || {},
     messagingActivity,
+    templateReadiness,
+    cronHealth: messagingActivity?.cronHealth || null,
   };
 }
 

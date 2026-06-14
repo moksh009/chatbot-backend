@@ -187,26 +187,6 @@ app.use(
     const origin = req.headers.origin;
 
     if (shouldSkipStrictCors(req)) {
-      // #region agent log
-      log.info('[DEBUG-f2f95b] storefront CORS allow', {
-        hypothesisId: 'H1',
-        path: req.path,
-        method: req.method,
-        origin: origin || null,
-      });
-      fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-        body: JSON.stringify({
-          sessionId: 'f2f95b',
-          hypothesisId: 'H1',
-          location: 'index.js:cors-delegate-storefront',
-          message: 'storefront path allowed',
-          data: { path: req.path, method: req.method, origin: origin || null },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       return callback(null, { ...corsBaseOptions, origin: true });
     }
 
@@ -214,21 +194,7 @@ app.use(
       return callback(null, { ...corsBaseOptions, origin: true });
     }
 
-    // #region agent log
-    log.warn(`[CORS] Blocked origin: ${origin}`, { hypothesisId: 'H1', sessionId: 'f2f95b', path: req.path });
-    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-      body: JSON.stringify({
-        sessionId: 'f2f95b',
-        hypothesisId: 'H1',
-        location: 'index.js:cors-origin',
-        message: 'strict CORS blocked origin',
-        data: { origin, path: req.path },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    log.warn(`[CORS] Blocked origin: ${origin}`, { path: req.path });
     return callback(new Error('CORS policy: origin not allowed'));
   })
 );
@@ -477,6 +443,22 @@ app.get('/api/health', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   await HealthController.checkHealth(req, res);
 });
+app.get('/api/health/crons', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const { getAppRedis } = require('./utils/core/redisFactory');
+  const redis = getAppRedis();
+  let lastTick = null;
+  if (redis && redis.status === 'ready') {
+    try {
+      lastTick = await redis.get('cron:abandoned-cart:last-tick');
+    } catch {
+      lastTick = null;
+    }
+  }
+  const isHealthy =
+    Boolean(lastTick) && Date.now() - new Date(lastTick).getTime() < 10 * 60 * 1000;
+  res.json({ cartCron: { healthy: isHealthy, lastTick } });
+});
 app.get('/api/capabilities', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const { getApiCapabilities } = require('./constants/apiCapabilities');
@@ -575,7 +557,7 @@ if (!RUN_CRONS) {
     });
     log.info('[Boot] Scheduled message tick on API process (RUN_CRONS=false)');
   }
-  if (RUN_API && process.env.ABANDON_CART_TICK_ON_API !== 'false') {
+  if (RUN_API && process.env.ABANDON_CART_TICK_ON_API === 'true') {
     const cron = require('node-cron');
     const abandonedCartScheduler = require('./cron/abandonedCartScheduler');
     cron.schedule('*/5 * * * *', () => {

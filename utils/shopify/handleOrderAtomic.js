@@ -10,6 +10,7 @@ const {
   finishCancelSideEffects,
 } = require('../messaging/cancelAllAutomationsFor');
 const { indianPhoneLookupVariants } = require('../core/normalizeIndianPhone');
+const { normalizeEmail } = require('../commerce/marketingConsent');
 const { buildOrderPlacedOptInSetFields } = require('../commerce/marketingOptStatusRules');
 const log = require('../core/logger')('HandleOrderAtomic');
 
@@ -50,6 +51,9 @@ async function findRecoveryLead(clientId, data, cleanPhone) {
   const checkoutToken = data.checkout_token || data.token || '';
   const cartToken = data.cart_token || '';
   const phoneLookup = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
+  const orderEmail = normalizeEmail(
+    data.email || data.contact_email || data.customer?.email || data.billing_address?.email
+  );
 
   if (checkoutToken) {
     const byCheckout = await AdLead.findOne({ clientId, checkoutToken: String(checkoutToken) });
@@ -70,8 +74,21 @@ async function findRecoveryLead(clientId, data, cleanPhone) {
     if (byPhone) return byPhone;
   }
 
+  if (orderEmail) {
+    const byEmail = await AdLead.findOne({
+      clientId,
+      email: orderEmail,
+      cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
+    });
+    if (byEmail) return byEmail;
+  }
+
   if (phoneLookup.length) {
     return AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } });
+  }
+
+  if (orderEmail) {
+    return AdLead.findOne({ clientId, email: orderEmail });
   }
 
   return null;
@@ -92,6 +109,10 @@ async function handleOrderAtomic(client, data, cleanPhone) {
   const orderValue = parseFloat(data.total_price) || 0;
 
   const existingLead = await findRecoveryLead(client.clientId, data, cleanPhone);
+  if (existingLead && !Array.isArray(existingLead.tags)) {
+    const withTags = await AdLead.findById(existingLead._id).select('tags').lean();
+    if (withTags) existingLead.tags = withTags.tags;
+  }
   const phoneLookup = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
   const primaryPhone = phoneLookup[0] || cleanPhone;
   const leadFilter = existingLead
@@ -109,6 +130,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
 
   const recoveryStep = Number(existingLead?.recoveryStep || 0);
   let recoveredViaWhatsApp = recoveryStep > 0;
+  let recoveredByStep = null;
 
   let lead = null;
   let recoveryAttempt = null;
@@ -120,7 +142,25 @@ async function handleOrderAtomic(client, data, cleanPhone) {
       if (existingLead?._id) {
         recoveryAttempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
         if (recoveryAttempt?.recoveredViaWhatsapp) recoveredViaWhatsApp = true;
+        if (recoveryAttempt?.recoveredViaWhatsapp) {
+          const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
+            .map((t) => Number(t.followupNumber))
+            .filter((n) => n > 0);
+          recoveredByStep = sentSteps.length
+            ? Math.max(...sentSteps)
+            : recoveryStep > 0
+              ? recoveryStep
+              : 1;
+        }
       }
+
+      const priorTags = Array.isArray(existingLead?.tags) ? existingLead.tags : [];
+      const nextTags = [
+        ...new Set([
+          ...priorTags.filter((t) => t !== ABANDONED_CART_TAG && t !== 'Imported'),
+          RECOVERED_CART_TAG,
+        ]),
+      ];
 
       lead = await AdLead.findOneAndUpdate(
         leadFilter,
@@ -137,13 +177,13 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             abandonedCartRecoveredAt: orderDate,
             recoveredOrderId: String(data.id || data.name || ''),
             recoveredViaWhatsApp,
+            tags: nextTags,
+            ...(recoveredByStep != null ? { recoveredByStep } : {}),
             ...orderOptInFields,
             ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
             ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
             ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
           },
-          $pull: { tags: { $in: [ABANDONED_CART_TAG, 'Imported'] } },
-          $addToSet: { tags: RECOVERED_CART_TAG },
           $inc: {
             ordersCount: 1,
             totalSpent: orderValue,
@@ -192,6 +232,23 @@ async function handleOrderAtomic(client, data, cleanPhone) {
         shopifyTopic: 'orders/create',
         storeKey: client.shopDomain || '',
       });
+
+      if (existingLead && (recoveryAttempt || lead.cartStatus === 'recovered' || lead.cartStatus === 'purchased')) {
+        const { emitCartRecovered } = require('../commerce/pixelSocketEmit');
+        emitCartRecovered(client.clientId, {
+          leadId: String(lead._id),
+          orderId: String(data.id || data.name || ''),
+          orderValue,
+          recoveredViaWhatsapp: recoveredViaWhatsApp,
+          recoveredByStep,
+          revenue: orderValue,
+        });
+      }
+
+      const { attachVisitorJourneyOnOrder } = require('../commerce/attachVisitorJourneyOnOrder');
+      attachVisitorJourneyOnOrder(client, lead, data).catch((e) =>
+        log.warn(`Visitor journey stitch failed: ${e.message}`)
+      );
     }
   });
 

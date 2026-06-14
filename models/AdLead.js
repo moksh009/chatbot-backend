@@ -210,9 +210,31 @@ const adLeadSchema = new mongoose.Schema({
   checkoutToken:     { type: String, default: '' },
   cartToken:         { type: String, default: '' },
   checkoutUrl:       { type: String, default: '' },
+  /** UTM attribution from pixel / checkout capture (Phase 2) */
+  utmSource:         { type: String, default: '' },
+  utmMedium:         { type: String, default: '' },
+  utmCampaign:       { type: String, default: '' },
+  referrerDomain:    { type: String, default: '' },
+  /** Pre-filled Shopify recover link (base URL, UTM added at send time) — Phase 3 */
+  recoveryUrl:       { type: String, default: '' },
+  /** high | medium | low — cron priority sort */
+  cartValueTier:     { type: String, enum: ['high', 'medium', 'low', ''], default: '' },
+  /** Checkout exit intent signal — cron priority (Phase 7 NEW-1) */
+  exitIntentAt:      { type: Date, default: null },
+  /** VisitorIdentity stitch on order (Phase 7 NEW-4) */
+  visitorFirstVisitAt: { type: Date, default: null },
+  visitorVisitCount:   { type: Number, default: null },
+  /** When active lead will promote to abandoned (Option B promotion delay) */
+  nextPromotionAt:   { type: Date, default: null },
+  /** Smart send window deferral (IST 8am–10pm) — BUG-015 */
+  nextAllowedSendAt: { type: Date, default: null },
+  /** Manual or system halt for recovery sends — BUG-016 */
+  suppressRecovery:  { type: Boolean, default: false },
   recoveredAt:       { type: Date, default: null },
   recoveredOrderId:  { type: String, default: '' },
   recoveredViaWhatsApp: { type: Boolean, default: false },
+  /** Last recovery message step credited on order match (Phase 5) */
+  recoveredByStep:   { type: Number, default: null },
   recoveryStep:      { type: Number },
   recoveryStartedAt: { type: Date },
   spinWheelPrize:    { type: String, default: '' },

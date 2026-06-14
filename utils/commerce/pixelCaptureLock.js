@@ -3,9 +3,16 @@
 const { getAppRedis } = require('../core/redisFactory');
 
 const CAPTURE_LOCK_TTL_SEC = 30;
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 120;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /**
  * Serialize rapid-fire pixel capture upserts (live typing) per checkout/phone.
+ * Exponential backoff: 120ms → 240ms → 480ms before proceeding without lock.
  */
 async function withPixelCaptureLock(clientId, dedupeKey, fn) {
   if (!clientId || !dedupeKey || typeof fn !== 'function') {
@@ -14,19 +21,19 @@ async function withPixelCaptureLock(clientId, dedupeKey, fn) {
 
   const redis = getAppRedis();
   const lockKey = `pixel_capture:${clientId}:${String(dedupeKey).slice(0, 128)}`;
+  const log = require('../core/logger')('PixelCaptureLock');
 
   if (redis) {
-    let acquired = await redis.set(lockKey, '1', 'EX', CAPTURE_LOCK_TTL_SEC, 'NX');
-    if (!acquired) {
-      // Log contention
-      const log = require('../core/logger')('PixelCaptureLock');
-      log.warn(`[LockContention] Retrying lock for ${dedupeKey} after 80ms`);
-      await new Promise((r) => setTimeout(r, 80));
+    let acquired = false;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       acquired = await redis.set(lockKey, '1', 'EX', CAPTURE_LOCK_TTL_SEC, 'NX');
+      if (acquired) break;
+      const delayMs = BASE_DELAY_MS * Math.pow(2, attempt);
+      log.warn(`[LockContention] Retrying lock for ${dedupeKey} after ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(delayMs);
     }
     if (!acquired) {
-      const log = require('../core/logger')('PixelCaptureLock');
-      log.error(`[LockFailed] Proceeding without lock for ${dedupeKey} after 80ms retry`);
+      log.error(`[LockFailed] Proceeding without lock for ${dedupeKey} after ${MAX_RETRIES} retries`);
       return fn();
     }
   }

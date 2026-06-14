@@ -69,8 +69,19 @@ function isOrderMessageEligible(template) {
   );
 }
 
+function isCartRecoveryEligible(template) {
+  if (isSystemExcluded(template)) return false;
+  const name = String(template?.name || '').toLowerCase();
+  if (name.includes('cart_recovery') || name.includes('abandon')) return true;
+  if (hasPurpose(template, 'cart_recovery')) return true;
+  if (templateCategory(template) === 'MARKETING' && name.includes('cart')) return true;
+  return false;
+}
+
 function filterTemplatesForContext(templates, contextPurpose) {
-  const purpose = normalizePurpose(contextPurpose, 'campaign');
+  const raw = String(contextPurpose || '').trim().toLowerCase();
+  const aliasMap = { 'order-messages': 'order_status', order_messages: 'order_status' };
+  const purpose = normalizePurpose(aliasMap[raw] || raw, 'campaign');
   const list = Array.isArray(templates) ? templates : [];
   const approved = list.filter((t) => normalizeStatus(t) === 'APPROVED' && !isSystemExcluded(t));
 
@@ -81,6 +92,8 @@ function filterTemplatesForContext(templates, contextPurpose) {
     eligible = approved.filter(isSequenceEligible);
   } else if (purpose === 'order_status') {
     eligible = approved.filter(isOrderMessageEligible);
+  } else if (purpose === 'cart_recovery') {
+    eligible = list.filter((t) => !isSystemExcluded(t) && isCartRecoveryEligible(t));
   } else {
     eligible = approved.filter((t) => hasPurpose(t, purpose) || primaryPurpose(t) === purpose);
   }
@@ -112,6 +125,7 @@ module.exports = {
   isCampaignEligible,
   isSequenceEligible,
   isOrderMessageEligible,
+  isCartRecoveryEligible,
   filterTemplatesForContext,
   defaultPrimaryPurposeForCreate,
 };

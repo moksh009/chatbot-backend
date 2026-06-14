@@ -119,19 +119,10 @@ function dualChannelDefaults(ruleId) {
   };
 }
 
-/** Minimum delay after cart abandoned (minutes). User may increase, not decrease. */
-const CART_FOLLOWUP_MIN_MINUTES = {
-  followup_1: 30,
-  followup_2: 2 * 60,
-  followup_3: 24 * 60,
-};
-
-/** WS-3 defaults — keep aligned with cron/abandonedCartScheduler.CART_NUDGE_DEFAULTS. */
-const CART_FOLLOWUP_DEFAULT_MINUTES = {
-  followup_1: 25,
-  followup_2: 4 * 60,
-  followup_3: 36 * 60,
-};
+const {
+  CART_FOLLOWUP_MIN_MINUTES,
+  CART_FOLLOWUP_DEFAULT_MINUTES,
+} = require('../../constants/cartRecoveryDefaults');
 
 function fulfillmentStatusRule({ status, label, tooltip }) {
   const ruleId = `sys_fulfillment_${status}`;

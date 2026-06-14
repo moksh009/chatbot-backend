@@ -101,6 +101,9 @@ function registerAllCrons() {
   const { registerAdminIssueNotificationsCron } = require('./adminIssueNotificationsCron');
   registerAdminIssueNotificationsCron();
 
+  const { registerCartRecoveryRateAlertCron } = require('./cartRecoveryRateAlertCron');
+  registerCartRecoveryRateAlertCron();
+
   const scheduleAutoResolutionCron = require("./autoResolutionCron");
   if (typeof scheduleAutoResolutionCron === "function") scheduleAutoResolutionCron();
 

@@ -3231,4 +3231,28 @@ router.get('/tenant-economics', protect, authorizeAdminScope('viewMetrics'), asy
   }
 });
 
+/** GET /api/admin/dlq/:clientId — cart recovery dead-letter queue (Phase 7 B6.5) */
+router.get('/dlq/:clientId', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const { listCartRecoveryDlq } = require('../utils/commerce/cartRecoveryDlq');
+    const limit = Math.min(100, parseInt(req.query.limit, 10) || 50);
+    const items = await listCartRecoveryDlq(req.params.clientId, limit);
+    res.json({ success: true, clientId: req.params.clientId, count: items.length, items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/** POST /api/admin/dlq/:clientId/replay/:entryId */
+router.post('/dlq/:clientId/replay/:entryId', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const { replayCartRecoveryDlqEntry } = require('../utils/commerce/cartRecoveryDlq');
+    const out = await replayCartRecoveryDlqEntry(req.params.clientId, req.params.entryId);
+    if (!out.ok) return res.status(400).json({ success: false, ...out });
+    res.json({ success: true, ...out });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;

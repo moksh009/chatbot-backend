@@ -45,7 +45,13 @@ async function executeGraphQL(clientId, query, variables = {}) {
 
         return response.data.data;
     } catch (err) {
-        log.error(`GraphQL Request Failed for ${clientId}:`, err.response?.data || err.message);
+        const errText = String(err.response?.data || err.message || '');
+        const expectedEmptyPixel = /no web pixel was found/i.test(errText);
+        if (expectedEmptyPixel) {
+            log.warn(`GraphQL web pixel not installed for ${clientId}`);
+        } else {
+            log.error(`GraphQL Request Failed for ${clientId}:`, err.response?.data || err.message);
+        }
         throw err;
     }
 }

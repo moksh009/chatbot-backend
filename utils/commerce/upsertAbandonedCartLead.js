@@ -11,6 +11,14 @@ const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cart
 const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
 const { attachAnonymousJourneyToLead } = require('./attachAnonymousJourney');
 const { withPixelCaptureLock } = require('./pixelCaptureLock');
+const { extractUtmFields } = require('./pixelUtmUtils');
+const { emitCartContactCaptured } = require('./pixelSocketEmit');
+const { buildLeadRecoveryBaseUrl } = require('./buildRecoveryUrl');
+const { cartValueTier } = require('./cartValueTier');
+const {
+  getCartRecoveryConfig,
+  computeNextPromotionAt,
+} = require('./cartRecoveryConfigService');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
@@ -187,10 +195,35 @@ async function upsertAbandonedCartLead(client, data = {}) {
   if (cartToken) $set.cartToken = String(cartToken);
   if (cartTotal != null && cartTotal !== '') $set.cartValue = Number(cartTotal) || 0;
 
+  const recoveryBaseUrl = buildLeadRecoveryBaseUrl(client, {
+    checkoutToken,
+    checkoutUrl,
+    cartSnapshot: { checkoutUrl, checkoutToken },
+  });
+  if (recoveryBaseUrl) $set.recoveryUrl = recoveryBaseUrl;
+  if (cartTotal != null && cartTotal !== '') {
+    $set.cartValueTier = cartValueTier(Number(cartTotal) || 0);
+  }
+
+  const utmFields = extractUtmFields(data);
+  Object.assign($set, utmFields);
+
   if (resolvedCartStatus === 'active' || data.contactCapturedAt) {
     if (!existing?.contactCapturedAt) {
       $set.contactCapturedAt = data.contactCapturedAt || now;
     }
+    const cfg = getCartRecoveryConfig(client);
+    const promoAnchor = data.contactCapturedAt || existing?.contactCapturedAt || now;
+    $set.nextPromotionAt = computeNextPromotionAt(
+      {
+        cartStatus: 'active',
+        lastCartEventAt: now,
+        contactCapturedAt: promoAnchor,
+        cartAbandonedAt: existing?.cartAbandonedAt || now,
+        createdAt: existing?.createdAt || now,
+      },
+      cfg.promotionDelayMinutes
+    );
   }
 
   if (data.optStatus) {
@@ -327,6 +360,27 @@ async function upsertAbandonedCartLead(client, data = {}) {
     }).catch(() => {});
   }
 
+  if (lead?._id && !isPurchased && (phoneE164 || email)) {
+    emitCartContactCaptured(clientId, {
+      leadId: String(lead._id),
+      phone: phoneE164,
+      email,
+      cartValue: Number(cartTotal) || lead.cartValue || 0,
+      cartStatus: resolvedCartStatus,
+      source,
+      checkoutToken: checkoutToken || null,
+    });
+    if (global.io) {
+      global.io.to(`client_${clientId}`).emit('lead_cart_update', {
+        leadId: lead._id,
+        phone: phoneE164 || lead.phoneNumber,
+        cartStatus: resolvedCartStatus,
+        cartValue: Number(cartTotal) || lead.cartValue,
+        event: 'checkout_contact_captured',
+      });
+    }
+  }
+
   return { success: true, lead, phone: phoneE164, phoneDigits };
 }
 
@@ -366,6 +420,20 @@ async function markCartLeadPurchased(clientId, { phone, checkoutToken, cartToken
       { id: orderId, total_price: orderValue },
       phoneE164
     );
+  }
+
+  if (lead && global.io) {
+    try {
+      const { emitCartRecovered } = require('./pixelSocketEmit');
+      emitCartRecovered(clientId, {
+        leadId: String(lead._id),
+        phone: phoneE164 || lead.phoneNumber,
+        orderId: orderId ? String(orderId) : null,
+        orderValue: orderValue != null ? Number(orderValue) : null,
+      });
+    } catch (_) {
+      /* non-fatal */
+    }
   }
 
   return { success: !!lead, lead };

@@ -3,20 +3,14 @@
 const moment = require('moment');
 const Client = require('../../models/Client');
 const DailyStat = require('../../models/DailyStat');
-const CART_NUDGE_DEFAULTS = { minutes1: 25, hours2: 4, hours3: 36 };
-
-function resolveCartNudgeDelay(value, fallback) {
-  if (value === null || value === undefined) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
+const { getCartRecoveryDelays } = require('../commerce/cartRecoveryConfigService');
 
 function resolveCartNudgeFromClient(client) {
-  const wf = client?.wizardFeatures || {};
+  const { delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client || {});
   return {
-    delay1Min: resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
-    delay2Hr: resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2),
-    delay3Hr: resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3),
+    delay1Min,
+    delay2Hr: Math.round(delay2Min / 60),
+    delay3Hr: Math.round(delay3Min / 60),
   };
 }
 
@@ -72,7 +66,9 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
   ]);
 
   const s = agg[0] || {};
-  const cartRevenueInr = Math.round(Number(s.cartRevenueRecovered) || 0);
+  const attemptRevenue = Math.round(Number(attemptTotals?.revenueRecovered) || 0);
+  const dailyStatRevenue = Math.round(Number(s.cartRevenueRecovered) || 0);
+  const cartRevenueInr = attemptRevenue > 0 ? attemptRevenue : dailyStatRevenue;
   // V1: cart recovery only — COD→prepaid is coming soon and excluded from hero totals.
   const totalRecoveredInr = cartRevenueInr;
 
@@ -96,6 +92,7 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
       organicRecovered: attemptTotals?.organicRecovered ?? 0,
       waRevenueInr: Math.round(Number(attemptTotals?.waRevenue) || 0),
       organicRevenueInr: Math.round(Number(attemptTotals?.organicRevenue) || 0),
+      revenueSource: attemptRevenue > 0 ? 'cart_recovery_attempts' : 'daily_stat',
       recoveredViaStep1: Number(s.recoveredViaStep1) || 0,
       recoveredViaStep2: Number(s.recoveredViaStep2) || 0,
       recoveredViaStep3: Number(s.recoveredViaStep3) || 0,

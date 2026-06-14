@@ -38,6 +38,9 @@ const CartRecoveryAttemptSchema = new mongoose.Schema({
   recoveredOrderId: { type: String, default: null },
   recoveredOrderValue: { type: Number, default: null },
   recoveredOrderAmount: { type: Number, default: null },
+  /** Revenue attributed to this recovery attempt (Phase 4) */
+  attributedRevenue: { type: Number, default: null },
+  attributedAt: { type: Date, default: null },
   recoveredAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },

@@ -60,28 +60,6 @@ router.get('/config', publicCors, async (req, res) => {
       .select('clientId shopDomain shopifyConnected storeConnected')
       .lean();
 
-    // #region agent log
-    log.info('[DEBUG-f2f95b] checkout-capture config', {
-      hypothesisId: 'H4',
-      shop,
-      found: Boolean(client?.clientId),
-      clientId: client?.clientId || null,
-      origin: req.headers.origin || null,
-    });
-    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
-      body: JSON.stringify({
-        sessionId: 'f2f95b',
-        hypothesisId: 'H4',
-        location: 'publicCheckoutCapture.js:config',
-        message: 'checkout extension config request',
-        data: { shop, found: Boolean(client?.clientId), clientId: client?.clientId || null },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-
     if (!client?.clientId) {
       return res.json({ success: false, enabled: false, message: 'Store not linked to TopEdge' });
     }

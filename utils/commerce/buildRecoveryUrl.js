@@ -1,6 +1,33 @@
 'use strict';
 
 /**
+ * Per-lead recovery URL builder + UTM tagging for WhatsApp cart recovery.
+ * BUG-017: pre-filled /cart/recover/{token} instead of generic store URL.
+ */
+
+function normalizeStoreHost(client = {}) {
+  const raw = client.shopDomain || client.shopifyDomain || '';
+  return String(raw).replace(/^https?:\/\//, '').split('/')[0];
+}
+
+function buildLeadRecoveryBaseUrl(client, lead = {}) {
+  const snap = lead.cartSnapshot || {};
+  const storeHost = normalizeStoreHost(client);
+  const token = lead.checkoutToken || snap.checkoutToken || lead.cartToken || '';
+  if (storeHost && token) {
+    return `https://${storeHost}/cart/recover/${encodeURIComponent(String(token))}`;
+  }
+  return (
+    lead.recoveryUrl ||
+    lead.checkoutUrl ||
+    snap.checkoutUrl ||
+    lead.cartUrl ||
+    lead.abandoned_checkout_url ||
+    ''
+  );
+}
+
+/**
  * Append UTM params to cart recovery links for GA4 / Shopify attribution.
  */
 function buildRecoveryUrl(baseUrl, step = 1) {
@@ -17,4 +44,14 @@ function buildRecoveryUrl(baseUrl, step = 1) {
   }
 }
 
-module.exports = { buildRecoveryUrl };
+function buildLeadRecoveryUrl(client, lead = {}, step = 1) {
+  const base = buildLeadRecoveryBaseUrl(client, lead);
+  return buildRecoveryUrl(base, step);
+}
+
+module.exports = {
+  normalizeStoreHost,
+  buildLeadRecoveryBaseUrl,
+  buildLeadRecoveryUrl,
+  buildRecoveryUrl,
+};

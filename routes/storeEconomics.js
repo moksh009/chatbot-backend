@@ -267,8 +267,9 @@ router.get('/cart-recovery', async (req, res) => {
     end.setHours(23, 59, 59, 999);
 
     const AdLead = require('../models/AdLead');
+    const { getRecoveryTotalsFromAttempts } = require('../utils/commerce/cartRecoveryAttemptService');
 
-    const [automationRows, leadRows] = await Promise.all([
+    const [automationRows, leadRows, attemptTotals] = await Promise.all([
       CartRecoveryAttempt.aggregate([
         { $match: { clientId, attemptTimestamp: { $gte: start, $lte: end } } },
         {
@@ -290,15 +291,24 @@ router.get('/cart-recovery', async (req, res) => {
         },
         { $group: { _id: '$cartStatus', count: { $sum: 1 } } },
       ]),
+      getRecoveryTotalsFromAttempts(clientId, start, end).catch(() => null),
     ]);
 
     const auto = automationRows[0] || { automationAttempts: 0, automationRecovered: 0, revenueRecovered: 0 };
     const leadByStatus = Object.fromEntries((leadRows || []).map((r) => [r._id, r.count]));
 
     const abandonedCarts = Number(leadByStatus.abandoned) || 0;
-    const recoveredCarts = Number(leadByStatus.recovered) || 0;
+    const recoveredCarts = Math.max(
+      Number(leadByStatus.recovered) || 0,
+      attemptTotals?.recoveredCarts || auto.automationRecovered || 0
+    );
     const activeCarts = (Number(leadByStatus.active) || 0) + (Number(leadByStatus.cart_added) || 0);
     const didNotBuy = Math.max(0, abandonedCarts - recoveredCarts);
+    const revenueRecovered = Math.round(
+      Number(attemptTotals?.revenueRecovered) ||
+        Number(auto.revenueRecovered) ||
+        0
+    );
 
     const recoveryRate = abandonedCarts > 0
       ? Math.round((recoveredCarts / abandonedCarts) * 10000) / 100
@@ -313,7 +323,9 @@ router.get('/cart-recovery', async (req, res) => {
         recoveredCarts,
         didNotBuy,
         activeCarts,
-        revenueRecovered: Number(auto.revenueRecovered) || 0,
+        revenueRecovered,
+        waRevenueRecovered: Math.round(Number(attemptTotals?.waRevenue) || 0),
+        organicRevenueRecovered: Math.round(Number(attemptTotals?.organicRevenue) || 0),
         recoveryRate,
         automationAttempts: auto.automationAttempts,
         automationRecovered: auto.automationRecovered,

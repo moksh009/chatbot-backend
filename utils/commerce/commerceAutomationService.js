@@ -395,11 +395,105 @@ function findApprovedSyncedTemplateName(syncedTemplates = [], templateName) {
   return null;
 }
 
-/** Auto-attach of "recommended" templates was retired in May 2026 — merchants now pick the
- *  template per rule themselves (free dropdown in the rule editor). This helper is kept only
- *  as a no-op so any existing call sites continue to work without modification. */
-function autoLinkApprovedTemplatesToSystemRules(automations = []) {
-  return automations;
+function cartFollowupSlotFromRule(rule) {
+  if (rule?.meta?.systemSlot) return String(rule.meta.systemSlot);
+  const id = String(rule.id || '');
+  const match = id.match(/^sys_cart_(followup_\d+)$/);
+  return match ? match[1] : null;
+}
+
+/** Link approved Meta templates onto system cart recovery SAC rules (Phase 6 / BUG-011). */
+function autoLinkApprovedTemplatesToSystemRules(automations = [], syncedTemplates = []) {
+  if (!Array.isArray(automations) || !automations.length) return automations;
+
+  return automations.map((rule) => {
+    if (rule?.meta?.category !== 'abandoned_cart') return rule;
+    const slot = cartFollowupSlotFromRule(rule);
+    if (!slot) return rule;
+
+    const expectedTemplate = CART_SLOT_TEMPLATE_NAMES[slot];
+    if (!expectedTemplate) return rule;
+
+    const approvedName = findApprovedSyncedTemplateName(syncedTemplates, expectedTemplate);
+    if (!approvedName) return rule;
+
+    const patch = {};
+    if (String(rule.templateName || '') !== approvedName) {
+      patch.templateName = approvedName;
+    }
+
+    const hadTemplate = Boolean(String(rule.templateName || '').trim());
+    const shouldActivate =
+      rule.isActive !== true &&
+      (rule.meta?.autoActivateOnApproval === true || !hadTemplate);
+
+    if (shouldActivate) {
+      patch.isActive = true;
+      patch.meta = {
+        ...(rule.meta || {}),
+        autoActivateOnApproval: false,
+        autoLinkedAt: new Date().toISOString(),
+      };
+    }
+
+    if (Object.keys(patch).length === 0) return rule;
+    return { ...rule, ...patch };
+  });
+}
+
+/**
+ * After Meta approves a cart_recovery_* template, attach it to the matching SAC rule.
+ */
+async function linkApprovedTemplateOnMetaApproval(clientId, templateName) {
+  if (!clientId || !templateName) return { linked: 0, activated: 0 };
+
+  let resolveCanonicalTemplateName = (n) => String(n || '').trim();
+  try {
+    resolveCanonicalTemplateName = require('../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
+  } catch (_) {
+    /* catalog optional in tests */
+  }
+
+  const canonical = resolveCanonicalTemplateName(templateName);
+  const isCartSlot = Object.values(CART_SLOT_TEMPLATE_NAMES).some(
+    (n) => n === canonical || n === String(templateName || '').trim()
+  );
+  if (!isCartSlot) return { linked: 0, activated: 0 };
+
+  const client = await Client.findOne({ clientId })
+    .select('commerceAutomations syncedMetaTemplates nicheData')
+    .lean();
+  if (!client) return { linked: 0, activated: 0 };
+
+  const base =
+    Array.isArray(client.commerceAutomations) && client.commerceAutomations.length
+      ? client.commerceAutomations
+      : mergeSystemAutomations([]);
+  const withSystem = mergeSystemAutomations(base);
+  const before = JSON.stringify(withSystem);
+  const linkedRules = autoLinkApprovedTemplatesToSystemRules(
+    withSystem,
+    client.syncedMetaTemplates || []
+  );
+  const merged = pruneDuplicateOrderNotificationRules(
+    syncSystemOrderRulesFromNicheMap(linkedRules, client.nicheData || {})
+  );
+  if (JSON.stringify(merged) === before) return { linked: 0, activated: 0 };
+
+  let linked = 0;
+  let activated = 0;
+  for (const rule of merged) {
+    if (rule?.meta?.category !== 'abandoned_cart') continue;
+    const slot = cartFollowupSlotFromRule(rule);
+    const expected = CART_SLOT_TEMPLATE_NAMES[slot];
+    if (!expected) continue;
+    const prev = withSystem.find((r) => r.id === rule.id);
+    if (prev && String(prev.templateName || '') !== String(rule.templateName || '')) linked += 1;
+    if (prev && !prev.isActive && rule.isActive) activated += 1;
+  }
+
+  await persistAutomations(clientId, merged);
+  return { linked, activated };
 }
 
 async function ensureMigration(clientConfig = {}, { persist = true } = {}) {
@@ -434,6 +528,15 @@ async function persistAutomations(clientId, automations) {
       },
     }
   );
+  try {
+    const { emitToClient } = require('../core/socket');
+    emitToClient(clientId, 'commerceAutomationsChanged', {
+      clientId,
+      at: new Date().toISOString(),
+    });
+  } catch (_) {
+    /* non-fatal */
+  }
 }
 
 function mergeDuplicateIntoSystemRule(systemRule, duplicate) {
@@ -731,6 +834,9 @@ async function upsertAutomation(clientId, automation = {}) {
     variantId: String(automation.variantId || '').trim(),
     actionType: automation.actionType || 'send_template',
     templateName: automation.templateName || '',
+    abTestTemplateName: String(
+      automation.abTestTemplateName ?? existing?.abTestTemplateName ?? ''
+    ).trim(),
     sequenceId: automation.sequenceId || '',
     language: automation.language || 'en',
     delayMinutes: Number(automation.delayMinutes || 0),
@@ -841,9 +947,20 @@ async function toggleAutomation(clientId, automationId, { active } = {}) {
   const existing = current.find((a) => a.id === automationId);
   if (!existing) throw new Error('Rule not found');
   if (active === true && existing.actionType !== 'enroll_sequence') {
-    if (!existing.templateName) {
+    const { normalizeRuleChannels } = require('../core/orderEmailMergeFields');
+    const channels = normalizeRuleChannels(existing);
+    const emailOnly = channels.includes('email') && !channels.includes('whatsapp');
+
+    if (!emailOnly && !existing.templateName) {
       throw new Error('Choose a WhatsApp template before activating this rule.');
     }
+
+    if (emailOnly) {
+      const emailTpl = existing.emailConfig?.templateId || existing.emailConfig?.template;
+      if (!emailTpl) {
+        throw new Error('Choose an email template before activating this email-only rule.');
+      }
+    } else {
     const { ruleIdToShipmentStatus } = require('../../constants/logisticsPartnerRegistry');
     const { assertShipmentRuleEligible } = require('../../services/logisticsEligibilityService');
     if (ruleIdToShipmentStatus(automationId)) {
@@ -865,6 +982,7 @@ async function toggleAutomation(clientId, automationId, { active } = {}) {
       err.code = 'TEMPLATE_NOT_APPROVED';
       err.status = 400;
       throw err;
+    }
     }
   }
   return upsertAutomation(clientId, { ...existing, isActive: active === true });
@@ -1060,4 +1178,7 @@ module.exports = {
   simulateAutomation,
   isSystemAutomation,
   CART_FOLLOWUP_MIN_MINUTES,
+  autoLinkApprovedTemplatesToSystemRules,
+  linkApprovedTemplateOnMetaApproval,
+  cartFollowupSlotFromRule,
 };

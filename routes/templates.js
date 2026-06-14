@@ -440,13 +440,18 @@ async function handleGetTemplateList(req, res) {
         const isUnified = req.query.unified === '1' || req.query.unified === 'true';
         // Purpose pre-filter only for legacy /list — unified context uses filterTemplatesForContext.
         if (contextPurpose && !isUnified) {
-          merged = merged.filter((tpl) => {
-            const primary = normalizePurpose(tpl.primaryPurpose || 'utility');
-            const secondary = Array.isArray(tpl.secondaryPurposes)
-              ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
-              : [];
-            return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
-          });
+          const { isCartRecoveryEligible } = require('../utils/meta/templatePolicy');
+          if (contextPurpose === 'cart_recovery') {
+            merged = merged.filter((tpl) => isCartRecoveryEligible(tpl));
+          } else {
+            merged = merged.filter((tpl) => {
+              const primary = normalizePurpose(tpl.primaryPurpose || 'utility');
+              const secondary = Array.isArray(tpl.secondaryPurposes)
+                ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
+                : [];
+              return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
+            });
+          }
         }
         let responseData = merged;
         let meta = null;

@@ -50,12 +50,24 @@ function mongoNotOptedOut() {
   };
 }
 
+/** Terminal cart states — cron must not message these leads (Phase 5). */
+function mongoCartRecoveryTerminalExclusions() {
+  return {
+    isOrderPlaced: { $ne: true },
+    suppressRecovery: { $ne: true },
+    cartStatus: { $nin: ['purchased', 'recovered', 'suppressed'] },
+  };
+}
+
 /** When tenant enables strict automation compliance */
 function mongoCartRecoveryFilter(client) {
   const strict =
     client?.growthCompliance?.cartRecoveryRequiresOptIn === true;
-  if (strict) return mongoMarketingOptInOnly();
-  return mongoNotOptedOut();
+  const consent = strict ? mongoMarketingOptInOnly() : mongoNotOptedOut();
+  return {
+    ...consent,
+    ...mongoCartRecoveryTerminalExclusions(),
+  };
 }
 
 /**

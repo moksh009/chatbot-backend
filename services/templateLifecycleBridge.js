@@ -200,10 +200,13 @@ async function autoActivateRulesForApprovedTemplate(clientId, templateName) {
 
   if (activated > 0) {
     await Client.updateOne({ clientId }, { $set: { commerceAutomations: next } });
+    const slot = getSlotByMetaName(templateName);
     emitToClient(clientId, "commerceAutomationsChanged", {
       reason: "template_approved",
       templateName,
       activated,
+      systemSlot: slot?.id || "",
+      category: slot?.autoTrigger || "",
     });
     log.info(`[TemplateLifecycle] Auto-activated ${activated} rule(s) for approved template ${templateName} (${clientId})`);
   }
@@ -369,6 +372,10 @@ async function pollPendingMetaTemplatesForClient(clientId) {
         await autoActivateRulesForApprovedTemplate(clientId, template.name).catch((e) =>
           log.warn(`auto-activate ${template.name} for ${clientId}: ${e.message}`)
         );
+        const { linkApprovedTemplateOnMetaApproval } = require("../utils/commerce/commerceAutomationService");
+        await linkApprovedTemplateOnMetaApproval(clientId, template.name).catch((e) =>
+          log.warn(`auto-link ${template.name} for ${clientId}: ${e.message}`)
+        );
       }
 
       emitToClient(clientId, "templateStatusUpdated", {
@@ -445,6 +452,10 @@ async function handleMessageTemplateStatusWebhook(clientId, value = {}) {
   if (submissionStatus === "approved") {
     await autoActivateRulesForApprovedTemplate(clientId, templateName).catch((e) =>
       log.warn(`auto-activate ${templateName} for ${clientId}: ${e.message}`)
+    );
+    const { linkApprovedTemplateOnMetaApproval } = require("../utils/commerce/commerceAutomationService");
+    await linkApprovedTemplateOnMetaApproval(clientId, templateName).catch((e) =>
+      log.warn(`auto-link ${templateName} for ${clientId}: ${e.message}`)
     );
   }
 

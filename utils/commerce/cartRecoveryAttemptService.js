@@ -1,12 +1,15 @@
 'use strict';
 
 const CartRecoveryAttempt = require('../../models/CartRecoveryAttempt');
+const AdLead = require('../../models/AdLead');
 const Client = require('../../models/Client');
 const {
   normalizeIndianPhone,
   indianPhoneDigits,
 } = require('../core/normalizeIndianPhone');
 const log = require('../core/logger')('CartRecoveryAttempt');
+const { normalizeEmail } = require('./marketingConsent');
+const { CART_RECOVERY_DEFAULTS } = require('../../constants/cartRecoveryDefaults');
 
 const CART_FOLLOWUP_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
@@ -21,11 +24,15 @@ function contactPhoneKey(raw) {
   return fallback.length >= 10 ? fallback.slice(-12) : '';
 }
 
-function withinWaAttributionWindow(attempt, recoveredAt = new Date()) {
+function withinWaAttributionWindow(
+  attempt,
+  recoveredAt = new Date(),
+  attributionWindowMs = WA_RECOVERY_ATTRIBUTION_WINDOW_MS
+) {
   if (!attempt?.whatsappMessageSentAt) return false;
   const sentAt = new Date(attempt.whatsappMessageSentAt).getTime();
   const recoveredMs = new Date(recoveredAt).getTime();
-  return recoveredMs - sentAt <= WA_RECOVERY_ATTRIBUTION_WINDOW_MS && recoveredMs >= sentAt;
+  return recoveredMs - sentAt <= attributionWindowMs && recoveredMs >= sentAt;
 }
 
 /**
@@ -104,9 +111,13 @@ async function getCartFollowupConfig(clientId) {
     return { configured: false, followups: [], setupPath: '/shopify-automation-center?section=abandoned-cart&filter=cart' };
   }
 
-  const cartRules = (client.commerceAutomations || []).filter(
-    (a) => a.meta?.category === 'abandoned_cart' && a.isActive && a.templateName
-  );
+  const cartRules = (client.commerceAutomations || []).filter((a) => {
+    if (a.meta?.category !== 'abandoned_cart' || !a.isActive) return false;
+    const channels = Array.isArray(a.channels) ? a.channels : ['whatsapp'];
+    if (channels.includes('whatsapp') && a.templateName) return true;
+    if (channels.includes('email') && (a.emailConfig?.templateId || a.emailConfig?.template)) return true;
+    return false;
+  });
 
   const followups = CART_FOLLOWUP_SLOTS.map((slot, idx) => {
     const rule = cartRules.find((r) => r.meta?.systemSlot === slot);
@@ -270,11 +281,33 @@ async function findPendingAttemptForOrder(clientId, orderData, contactPhone) {
   }
 
   if (contactPhone) {
-    return CartRecoveryAttempt.findOne({
+    const byPhone = await CartRecoveryAttempt.findOne({
       clientId,
       contactPhone,
       status: 'pending',
     }).sort({ createdAt: -1 });
+    if (byPhone) return byPhone;
+  }
+
+  const orderEmail = normalizeEmail(
+    orderData?.email || orderData?.contact_email || orderData?.customer?.email
+  );
+  if (orderEmail) {
+    const lead = await AdLead.findOne({
+      clientId,
+      email: orderEmail,
+      cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
+    })
+      .select('_id')
+      .lean();
+    if (lead?._id) {
+      const byLead = await CartRecoveryAttempt.findOne({
+        clientId,
+        leadId: lead._id,
+        status: 'pending',
+      }).sort({ createdAt: -1 });
+      if (byLead) return byLead;
+    }
   }
 
   return null;
@@ -298,6 +331,13 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
   const orderId = String(orderData.id || orderData.name || '');
   const now = new Date();
 
+  const client = await Client.findOne({ clientId }).select('cartRecoveryConfig').lean();
+  const attributionHours = Number(
+    client?.cartRecoveryConfig?.attributionWindowHours ??
+      CART_RECOVERY_DEFAULTS.attributionWindowHours
+  );
+  const attributionWindowMs = Math.max(1, attributionHours) * 60 * 60 * 1000;
+
   const patch = {
     status: 'recovered',
     recovered: true,
@@ -308,9 +348,11 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     updatedAt: now,
   };
 
-  if (withinWaAttributionWindow(attempt, now)) {
+  if (withinWaAttributionWindow(attempt, now, attributionWindowMs)) {
     patch.recoveredViaWhatsapp = true;
     patch.organicRecovery = false;
+    patch.attributedRevenue = orderTotal;
+    patch.attributedAt = now;
   } else {
     patch.organicRecovery = true;
     patch.recoveredViaWhatsapp = false;
@@ -799,6 +841,118 @@ function buildRecoveryTimeline(lead, attempt) {
     });
 }
 
+/** IST day-of-week (0=Sun) and hour from a UTC Date. */
+function istDayHour(date) {
+  const istMs = new Date(date).getTime() + 5.5 * 60 * 60 * 1000;
+  const ist = new Date(istMs);
+  return { dow: ist.getUTCDay(), hour: ist.getUTCHours() };
+}
+
+/**
+ * 24×7 IST abandon heatmap from AdLead.cartAbandonedAt (NEW-3).
+ */
+async function buildAbandonHeatmap(clientId, from, to) {
+  const leads = await AdLead.find({
+    clientId,
+    cartAbandonedAt: { $gte: from, $lte: to },
+  })
+    .select('cartAbandonedAt')
+    .lean();
+
+  const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
+  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  for (const lead of leads) {
+    if (!lead.cartAbandonedAt) continue;
+    const { dow, hour } = istDayHour(lead.cartAbandonedAt);
+    grid[dow][hour] += 1;
+  }
+
+  const flat = grid.flat();
+  const max = Math.max(...flat, 1);
+  const peak = flat.reduce(
+    (best, count, idx) => (count > best.count ? { count, dow: Math.floor(idx / 24), hour: idx % 24 } : best),
+    { count: 0, dow: 0, hour: 0 }
+  );
+
+  return {
+    timezone: 'Asia/Kolkata',
+    dayLabels,
+    hourLabels: Array.from({ length: 24 }, (_, i) => i),
+    grid,
+    max,
+    total: leads.length,
+    peak: {
+      count: peak.count,
+      day: dayLabels[peak.dow],
+      hour: peak.hour,
+      label: `${dayLabels[peak.dow]} ${peak.hour}:00 IST`,
+    },
+  };
+}
+
+/**
+ * Per-template delivery/read/recovery stats for Meta Manager (F5.2 / NEW-7).
+ */
+async function getCartRecoveryTemplatePerformance(clientId, from, to) {
+  const match = { clientId };
+  if (from || to) {
+    match.attemptTimestamp = {};
+    if (from) match.attemptTimestamp.$gte = from;
+    if (to) match.attemptTimestamp.$lte = to;
+  }
+
+  const attempts = await CartRecoveryAttempt.find(match)
+    .select('whatsappTemplatesSent status recoveredViaWhatsapp recoveredOrderValue recoveredOrderAmount')
+    .lean();
+
+  const byTemplate = {};
+
+  for (const att of attempts) {
+    for (const tpl of att.whatsappTemplatesSent || []) {
+      const name = String(tpl.templateName || 'unknown').trim() || 'unknown';
+      if (!byTemplate[name]) {
+        byTemplate[name] = {
+          templateName: name,
+          sends: 0,
+          delivered: 0,
+          read: 0,
+          clicked: 0,
+          recovered: 0,
+          recoveryRevenue: 0,
+        };
+      }
+      byTemplate[name].sends += 1;
+      if (tpl.deliveredAt) byTemplate[name].delivered += 1;
+      if (tpl.readAt) byTemplate[name].read += 1;
+      if (tpl.clickedAt) byTemplate[name].clicked += 1;
+    }
+  }
+
+  for (const att of attempts) {
+    if (att.status !== 'recovered' || !att.recoveredViaWhatsapp) continue;
+    const sent = att.whatsappTemplatesSent || [];
+    const last = sent[sent.length - 1];
+    const name = String(last?.templateName || '').trim();
+    if (!name || !byTemplate[name]) continue;
+    byTemplate[name].recovered += 1;
+    byTemplate[name].recoveryRevenue += Number(
+      att.recoveredOrderValue || att.recoveredOrderAmount || 0
+    );
+  }
+
+  return Object.values(byTemplate)
+    .map((row) => ({
+      ...row,
+      recoveryRevenue: Math.round(row.recoveryRevenue),
+      deliveryRate: row.sends ? Math.round((row.delivered / row.sends) * 100) : 0,
+      readRate: row.sends ? Math.round((row.read / row.sends) * 100) : 0,
+      clickRate: row.sends ? Math.round((row.clicked / row.sends) * 100) : 0,
+      recoveryRate: row.sends ? Math.round((row.recovered / row.sends) * 100) : 0,
+    }))
+    .sort((a, b) => b.sends - a.sends);
+}
+
 module.exports = {
   contactPhoneKey,
   WA_RECOVERY_ATTRIBUTION_WINDOW_MS,
@@ -819,4 +973,6 @@ module.exports = {
   recoveryStatusFromAttempt,
   buildRecoveryTimeline,
   findPendingAttemptForSend,
+  buildAbandonHeatmap,
+  getCartRecoveryTemplatePerformance,
 };

@@ -75,14 +75,24 @@ async function getCronHealth() {
     const { getAppRedis } = require('../utils/core/redisFactory');
     const redis = getAppRedis();
     if (!redis || redis.status !== 'ready') return { available: false };
-    const last = await redis.get('cron:last_tick');
-    if (!last) return { available: true, lastTickAt: null, stale: null };
-    const ageMs = Date.now() - Number(last);
+    const keys = ['cron:abandoned-cart:last-tick', 'cron:last_tick'];
+    let lastRaw = null;
+    for (const key of keys) {
+      const hit = await redis.get(key);
+      if (hit) {
+        lastRaw = hit;
+        break;
+      }
+    }
+    if (!lastRaw) return { available: true, lastTickAt: null, stale: null };
+    const lastMs = Number(lastRaw) || new Date(lastRaw).getTime();
+    const ageMs = Date.now() - lastMs;
     return {
       available: true,
-      lastTickAt: new Date(Number(last)).toISOString(),
+      lastTickAt: new Date(lastMs).toISOString(),
       ageMinutes: Math.round(ageMs / 60000),
       stale: ageMs > 10 * 60 * 1000,
+      source: 'abandoned_cart',
     };
   } catch (_) {
     return { available: false };
