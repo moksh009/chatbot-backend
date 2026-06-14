@@ -156,14 +156,41 @@ function isOriginAllowed(origin) {
   });
 }
 
+/** Merchant storefronts + checkout extensions use route-level open CORS — not dash-only strict list. */
+function shouldSkipStrictCors(req) {
+  const p = req.path || '';
+  if (p.startsWith('/api/public/checkout-capture')) return true;
+  if (p.startsWith('/api/public/checkout-consent')) return true;
+  if (!p.startsWith('/api/shopify-pixel/pixel/')) return false;
+  if (req.method === 'OPTIONS') return true;
+  if (['/visitor-init', '/script.js', '/event'].some((suffix) => p.endsWith(suffix))) return true;
+  if (req.method === 'POST' && /^\/api\/shopify-pixel\/pixel\/[^/]+$/.test(p)) return true;
+  return false;
+}
+
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     if (!corsStrict) return callback(null, true);
     if (isOriginAllowed(origin)) return callback(null, true);
-    log.warn(`[CORS] Blocked origin: ${origin}`);
+    // #region agent log
+    log.warn(`[CORS] Blocked origin: ${origin}`, { hypothesisId: 'H1', sessionId: 'f2f95b' });
+    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+      body: JSON.stringify({
+        sessionId: 'f2f95b',
+        hypothesisId: 'H1',
+        location: 'index.js:cors-origin',
+        message: 'strict CORS blocked origin',
+        data: { origin },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     return callback(new Error('CORS policy: origin not allowed'));
   },
+  skip: shouldSkipStrictCors,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],

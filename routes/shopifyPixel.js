@@ -43,9 +43,31 @@ function resolveBackendUrl(req) {
   ).replace(/\/+$/, '');
 }
 
+const log = require('../utils/core/logger')('ShopifyPixel');
+
 /** Storefront + checkout scripts call the API from merchant domains — allow cross-origin posts */
 function pixelStorefrontCors(req, res, next) {
   const origin = req.headers.origin;
+  // #region agent log
+  log.info('[DEBUG-f2f95b] pixelStorefrontCors', {
+    hypothesisId: 'H1',
+    method: req.method,
+    path: req.path,
+    origin: origin || null,
+  });
+  fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+    body: JSON.stringify({
+      sessionId: 'f2f95b',
+      hypothesisId: 'H1',
+      location: 'shopifyPixel.js:pixelStorefrontCors',
+      message: 'storefront CORS handler',
+      data: { method: req.method, path: req.path, origin: origin || null },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
@@ -110,16 +132,48 @@ const pixelRateLimiter = rateLimit({
   message: { error: 'Too many pixel events from this IP, please try again after 15 minutes' },
 });
 
+router.options('/pixel/:clientId/visitor-init', pixelStorefrontCors);
 router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res) => {
-  let visitorId = readCookie(req, 'te_visitor_id');
-  if (!visitorId || !String(visitorId).startsWith('te_')) {
-    visitorId = `te_${crypto.randomBytes(12).toString('hex')}`;
+  try {
+    let visitorId = readCookie(req, 'te_visitor_id');
+    if (!visitorId || !String(visitorId).startsWith('te_')) {
+      visitorId = `te_${crypto.randomBytes(12).toString('hex')}`;
+    }
+    res.setHeader(
+      'Set-Cookie',
+      `te_visitor_id=${encodeURIComponent(visitorId)}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
+    );
+    // #region agent log
+    log.info('[DEBUG-f2f95b] visitor-init ok', {
+      hypothesisId: 'H2',
+      clientId: req.params.clientId,
+      origin: req.headers.origin || null,
+      hasCookie: Boolean(readCookie(req, 'te_visitor_id')),
+    });
+    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+      body: JSON.stringify({
+        sessionId: 'f2f95b',
+        hypothesisId: 'H2',
+        location: 'shopifyPixel.js:visitor-init',
+        message: 'visitor-init success',
+        data: { clientId: req.params.clientId, origin: req.headers.origin || null },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    res.json({ success: true, visitorId });
+  } catch (err) {
+    // #region agent log
+    log.error('[DEBUG-f2f95b] visitor-init failed', {
+      hypothesisId: 'H2',
+      clientId: req.params.clientId,
+      error: err.message,
+    });
+    // #endregion
+    res.status(500).json({ error: 'visitor_init_failed' });
   }
-  res.setHeader(
-    'Set-Cookie',
-    `te_visitor_id=${encodeURIComponent(visitorId)}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
-  );
-  res.json({ success: true, visitorId });
 });
 
 router.post('/pixel/:clientId', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
@@ -140,10 +194,31 @@ router.post('/pixel/:clientId', pixelStorefrontCors, pixelRateLimiter, async (re
 });
 
 router.options('/pixel/:clientId/event', pixelStorefrontCors);
+router.options('/pixel/:clientId/script.js', pixelStorefrontCors);
 router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
   try {
     const { clientId } = req.params;
     const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
+    // #region agent log
+    log.info('[DEBUG-f2f95b] pixel event received', {
+      hypothesisId: 'H3',
+      clientId,
+      eventName: eventName || null,
+      origin: req.headers.origin || null,
+    });
+    fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f2f95b' },
+      body: JSON.stringify({
+        sessionId: 'f2f95b',
+        hypothesisId: 'H3',
+        location: 'shopifyPixel.js:event',
+        message: 'pixel event POST',
+        data: { clientId, eventName: eventName || null, origin: req.headers.origin || null },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
       data: metadata || {},
