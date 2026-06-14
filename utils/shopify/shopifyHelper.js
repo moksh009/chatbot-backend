@@ -347,8 +347,9 @@ module.exports = {
             let liquid = assetRes.data.asset?.value;
             if (!liquid) throw new Error('Could not read theme.liquid');
 
-            const finalBackendUrl = backendUrl || process.env.BACKEND_URL || 'https://topedgeai.com';
-            const scriptTag = `\n<!-- TopEdge Pixel -->\n<script src="${finalBackendUrl}/api/shopify-pixel/pixel/${clientId}/script.js"></script>\n`;
+            const finalBackendUrl =
+                backendUrl || process.env.BACKEND_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
+            const scriptTag = `\n<!-- TopEdge Pixel -->\n<script src="${finalBackendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>\n`;
 
             if (liquid.includes(`/api/shopify-pixel/pixel/${clientId}/script.js`)) {
                 return { success: true, message: 'Pixel already injected' };
@@ -372,6 +373,28 @@ module.exports = {
         });
     },
 
+    verifyThemeHasPixelScript: async (clientId) => {
+        return await withShopifyRetry(clientId, async (shop) => {
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
+            if (!mainTheme) {
+                return { found: false, error: 'Main theme not found' };
+            }
+
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' },
+            });
+            const liquid = assetRes.data.asset?.value || '';
+            const marker = `/api/shopify-pixel/pixel/${clientId}/script.js`;
+
+            return {
+                found: liquid.includes(marker),
+                themeId: mainTheme.id,
+                themeName: mainTheme.name,
+            };
+        });
+    },
+
     removePixelScript: async (clientId, backendUrl) => {
         return await withShopifyRetry(clientId, async (shop) => {
             const themesRes = await shop.get('/themes.json');
@@ -384,7 +407,8 @@ module.exports = {
             let liquid = assetRes.data.asset?.value;
             if (!liquid) throw new Error('Could not read theme.liquid');
 
-            const finalBackendUrl = backendUrl || process.env.BACKEND_URL || 'https://topedgeai.com';
+            const finalBackendUrl =
+                backendUrl || process.env.BACKEND_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
             const marker = `/api/shopify-pixel/pixel/${clientId}/script.js`;
             if (!liquid.includes(marker)) {
                 return { success: true, removed: false, message: 'Theme script not found in theme.liquid' };

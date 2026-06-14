@@ -663,6 +663,8 @@ const ClientSchema = new mongoose.Schema({
   shopifyWebPixelSettings: { type: mongoose.Schema.Types.Mixed, default: null },
   /** Theme.liquid Deep Pixel script tag injected via Admin API */
   shopifyThemePixelInstalledAt: { type: Date },
+  /** Merchant clicked Disconnect — suppress "connected" until reinstall */
+  shopifyTrackingDisabled: { type: Boolean, default: false },
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
   aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true

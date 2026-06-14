@@ -54,6 +54,12 @@ function createMemoryRedis() {
       strings.set(key, String(next));
       return next;
     },
+    async incrby(key, delta = 1) {
+      const cur = alive(key) ? Number(strings.get(key) || 0) : 0;
+      const next = cur + Number(delta);
+      strings.set(key, String(next));
+      return next;
+    },
     async decr(key) {
       const cur = alive(key) ? Number(strings.get(key) || 0) : 0;
       const next = Math.max(0, cur - 1);

@@ -177,7 +177,41 @@ function daysAgo(n) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 }
 
+/**
+ * Repair envelopes stuck as `queued` after Gmail send succeeded but post-send
+ * bookkeeping failed (historical redis.incrBy bug). Skips scheduled sends.
+ */
+async function reconcileStuckHubEnvelopes(clientId) {
+  const graceCutoff = new Date(Date.now() - 45_000);
+  const since = daysAgo(14);
+  const result = await MessageEnvelope.updateMany(
+    {
+      clientId,
+      channel: 'email',
+      status: 'queued',
+      createdAt: { $gte: since, $lte: graceCutoff },
+      'context.scheduledMessageId': { $exists: false },
+      $or: [
+        { 'context.source': /email-hub/i },
+        { 'context.source': /routes\/email-hub/i },
+      ],
+    },
+    [
+      {
+        $set: {
+          status: 'sent',
+          sentAt: { $ifNull: ['$sentAt', '$createdAt'] },
+          'context.reconciledAt': new Date(),
+          'context.reconcileReason': 'send_succeeded_before_status_persist',
+        },
+      },
+    ]
+  );
+  return result.modifiedCount || 0;
+}
+
 async function getEmailHubSummary(clientId) {
+  await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const client = await Client.findOne({ clientId }).lean();
   const since7 = daysAgo(7);
   const since30 = daysAgo(30);
@@ -269,6 +303,7 @@ async function getEmailHubSummary(clientId) {
 }
 
 async function getEmailHubLogs(clientId, { page = 1, limit = 50, status, source, days = 30 } = {}) {
+  await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const since = daysAgo(Math.min(Math.max(Number(days) || 30, 1), 90));
   const take = Math.min(100, Math.max(1, Number(limit)));
   const pageNum = Math.max(1, Number(page));
@@ -570,6 +605,7 @@ function applySentActivityFilter(rows, filter) {
 }
 
 async function getEmailHubAudience(clientId, { page = 1, limit = 40, search = '', filter = 'all' } = {}) {
+  await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const take = Math.min(100, Math.max(1, Number(limit) || 40));
   const skip = (Math.max(1, Number(page)) - 1) * take;
   const sentActivityFilter = filter === 'never_sent' || filter === 'sent_before';
@@ -622,6 +658,7 @@ async function getEmailHubAudience(clientId, { page = 1, limit = 40, search = ''
 }
 
 async function getEmailHubAnalytics(clientId, { period = '30d' } = {}) {
+  await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const days = period === '7d' ? 7 : 30;
   const since = daysAgo(days);
 
@@ -662,16 +699,22 @@ async function getEmailHubAnalytics(clientId, { period = '30d' } = {}) {
           channel: 'email',
           status: 'sent',
           createdAt: { $gte: since },
-          'context.templateId': { $exists: true, $ne: '' },
+          $or: [
+            { 'context.templateId': { $exists: true, $ne: '' } },
+            { 'context.templateName': { $exists: true, $ne: '' } },
+          ],
         },
       },
       {
         $group: {
-          _id: '$context.templateId',
-          name: { $first: '$context.templateName' },
+          _id: {
+            templateId: { $ifNull: ['$context.templateId', ''] },
+            templateName: { $ifNull: ['$context.templateName', ''] },
+          },
           sent: { $sum: 1 },
           opened: { $sum: { $cond: [{ $gt: ['$tracking.openCount', 0] }, 1, 0] } },
           clicked: { $sum: { $cond: [{ $gt: ['$tracking.clickCount', 0] }, 1, 0] } },
+          name: { $first: '$context.templateName' },
         },
       },
       { $sort: { sent: -1 } },
@@ -731,13 +774,34 @@ async function getEmailHubAnalytics(clientId, { period = '30d' } = {}) {
     byDay.push({ date: key, sent: row.sent || 0, opened: row.opened || 0, clicked: row.clicked || 0 });
   }
 
-  const byTemplate = templateRows.map((r) => ({
-    templateId: String(r._id),
-    name: r.name || 'Template',
-    sent: r.sent || 0,
-    openRate: r.sent ? Math.round(((r.opened || 0) / r.sent) * 1000) / 10 : 0,
-    ctr: r.sent ? Math.round(((r.clicked || 0) / r.sent) * 1000) / 10 : 0,
-  }));
+  const byTemplateMap = new Map();
+  for (const r of templateRows) {
+    const tid = String(r._id?.templateId || '').trim();
+    const tname = String(r._id?.templateName || r.name || '').trim();
+    const key = tid || `name:${tname}`;
+    if (!key) continue;
+    const prev = byTemplateMap.get(key);
+    const sent = (prev?.sent || 0) + (r.sent || 0);
+    const opened = (prev?.opened || 0) + (r.opened || 0);
+    const clicked = (prev?.clicked || 0) + (r.clicked || 0);
+    byTemplateMap.set(key, {
+      templateId: tid || key,
+      name: tname || prev?.name || 'Template',
+      sent,
+      opened,
+      clicked,
+    });
+  }
+  const byTemplate = [...byTemplateMap.values()]
+    .map((row) => ({
+      templateId: row.templateId,
+      name: row.name,
+      sent: row.sent,
+      openRate: row.sent ? Math.round(((row.opened || 0) / row.sent) * 1000) / 10 : 0,
+      ctr: row.sent ? Math.round(((row.clicked || 0) / row.sent) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.sent - a.sent)
+    .slice(0, 10);
 
   const [totalWithEmail, validEmails, bouncedEmails, unsubscribedEmails] = listHealth;
 
@@ -771,6 +835,7 @@ async function getEmailHubAnalytics(clientId, { period = '30d' } = {}) {
 }
 
 async function getEmailHubTemplateStats(clientId) {
+  await reconcileStuckHubEnvelopes(clientId).catch(() => {});
   const since = daysAgo(365);
   const rows = await MessageEnvelope.aggregate([
     {
@@ -779,12 +844,18 @@ async function getEmailHubTemplateStats(clientId) {
         channel: 'email',
         status: 'sent',
         createdAt: { $gte: since },
-        'context.templateId': { $exists: true, $ne: '' },
+        $or: [
+          { 'context.templateId': { $exists: true, $ne: '' } },
+          { 'context.templateName': { $exists: true, $ne: '' } },
+        ],
       },
     },
     {
       $group: {
-        _id: '$context.templateId',
+        _id: {
+          templateId: { $ifNull: ['$context.templateId', ''] },
+          templateName: { $ifNull: ['$context.templateName', ''] },
+        },
         sentCount: { $sum: 1 },
         lastSentAt: { $max: '$sentAt' },
         templateName: { $first: '$context.templateName' },
@@ -793,14 +864,34 @@ async function getEmailHubTemplateStats(clientId) {
   ]);
 
   const stats = {};
+  const mergeStat = (key, patch) => {
+    if (!key) return;
+    const prev = stats[key];
+    if (!prev) {
+      stats[key] = patch;
+      return;
+    }
+    const lastA = prev.lastSentAt ? new Date(prev.lastSentAt).getTime() : 0;
+    const lastB = patch.lastSentAt ? new Date(patch.lastSentAt).getTime() : 0;
+    stats[key] = {
+      sentCount: Math.max(prev.sentCount || 0, patch.sentCount || 0),
+      lastSentAt: lastB > lastA ? patch.lastSentAt : prev.lastSentAt,
+      templateName: patch.templateName || prev.templateName,
+    };
+  };
+
   for (const row of rows) {
-    stats[String(row._id)] = {
+    const tid = String(row._id?.templateId || '').trim();
+    const tname = String(row._id?.templateName || row.templateName || '').trim();
+    const patch = {
       sentCount: row.sentCount || 0,
       lastSentAt: row.lastSentAt || null,
-      templateName: row.templateName || '',
+      templateName: tname,
     };
+    if (tid) mergeStat(tid, patch);
+    if (tname) mergeStat(`name:${tname}`, patch);
   }
-  return { stats   };
+  return { stats };
 }
 
 function escapeCsvCell(val) {

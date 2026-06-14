@@ -1,5 +1,6 @@
 'use strict';
 
+const log = require('./logger')('EmailRateLimiter');
 const { getAppRedis, isRedisReady } = require('./redisFactory');
 
 function yyyymmdd(d = new Date()) {
@@ -16,6 +17,27 @@ function dailyLimitKey(clientId, day = yyyymmdd()) {
 function getDailyLimit() {
   const n = parseInt(String(process.env.EMAIL_DAILY_LIMIT || '450'), 10);
   return Number.isFinite(n) && n > 0 ? n : 450;
+}
+
+/** ioredis uses lowercase `incrby`; node-redis v4+ uses `incrBy`. */
+async function redisIncrBy(redis, key, count) {
+  const n = Math.max(1, Number(count) || 1);
+  if (typeof redis.incrby === 'function') {
+    return redis.incrby(key, n);
+  }
+  if (typeof redis.incrBy === 'function') {
+    return redis.incrBy(key, n);
+  }
+  if (n === 1 && typeof redis.incr === 'function') {
+    return redis.incr(key);
+  }
+  if (typeof redis.incr === 'function') {
+    for (let i = 0; i < n; i += 1) {
+      await redis.incr(key);
+    }
+    return n;
+  }
+  throw new Error('Redis client has no incr/incrby command');
 }
 
 async function checkEmailDailyLimit(clientId, emailsToSend = 1) {
@@ -39,8 +61,12 @@ async function incrementEmailCount(clientId, count = 1) {
   const redis = getAppRedis();
   if (!redis || !isRedisReady(redis) || count <= 0) return;
   const key = dailyLimitKey(clientId);
-  await redis.incrBy(key, count);
-  await redis.expire(key, 86400 * 2);
+  try {
+    await redisIncrBy(redis, key, count);
+    await redis.expire(key, 86400 * 2);
+  } catch (err) {
+    log.warn('[incrementEmailCount] non-fatal:', err.message);
+  }
 }
 
 async function getEmailDailyUsage(clientId) {
@@ -58,4 +84,5 @@ module.exports = {
   incrementEmailCount,
   getEmailDailyUsage,
   getDailyLimit,
+  redisIncrBy,
 };

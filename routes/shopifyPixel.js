@@ -5,7 +5,7 @@ const moment = require('moment');
 const Client = require('../models/Client');
 const PixelEvent = require('../models/PixelEvent');
 const { protect } = require('../middleware/auth');
-const { injectPixelScript, removePixelScript } = require('../utils/shopify/shopifyHelper');
+const { injectPixelScript, removePixelScript, verifyThemeHasPixelScript } = require('../utils/shopify/shopifyHelper');
 const {
   processPixelEvent,
   generateWebPixelScript,
@@ -38,6 +38,7 @@ function resolveBackendUrl(req) {
   return (
     process.env.BACKEND_URL ||
     process.env.SERVER_URL ||
+    (process.env.NODE_ENV === 'production' ? 'https://api.topedgeai.com' : null) ||
     `${req.protocol}://${req.get('host')}`
   ).replace(/\/+$/, '');
 }
@@ -61,9 +62,25 @@ function pixelStorefrontCors(req, res, next) {
 async function markThemePixelInstalled(clientId) {
   await Client.updateOne(
     { clientId },
-    { $set: { shopifyThemePixelInstalledAt: new Date() } }
+    {
+      $set: {
+        shopifyThemePixelInstalledAt: new Date(),
+        shopifyTrackingDisabled: false,
+      },
+    }
   );
 }
+
+function buildScriptTag(clientId, backendUrl) {
+  return `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`;
+}
+
+const CHECKOUT_PIXEL_STEPS = [
+  'Shopify Admin → Settings → Customer events.',
+  'Click Add custom pixel → name it TopEdge.',
+  'Paste the checkout pixel snippet below and Save.',
+  'Visit checkout, enter email/phone, then refresh Website tracking.',
+];
 
 const VISITOR_COOKIE_MAX_AGE = 90 * 24 * 60 * 60;
 
@@ -380,20 +397,31 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
 router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
-  if (shouldBypassShopifyPixelChecks(clientId)) {
+  const bypassShopifyChecks = shouldBypassShopifyPixelChecks(clientId);
+  let themeScriptVerified = false;
+  try {
+    const verification = await verifyThemeHasPixelScript(clientId);
+    themeScriptVerified = verification.found === true;
+  } catch {
+    themeScriptVerified = false;
+  }
+  if (bypassShopifyChecks) {
     return res.json({
       success: true,
-      installed: true,
+      installed: themeScriptVerified,
       hasPixelScopes: true,
       reason: 'bypass_for_review',
-      message:
-        'Shopify pixel scope checks bypassed temporarily for this workspace while app review is pending.',
+      themeScriptVerified,
+      requiresCheckoutPixel: true,
+      message: themeScriptVerified
+        ? 'Storefront theme script verified. Add the checkout custom pixel in Shopify Customer events.'
+        : 'Bypass mode: theme script not found in theme.liquid — run one-click install or paste manually.',
       webPixelId: null,
     });
   }
   try {
     const registration = await getWebPixelInstallStatus(clientId);
-    res.json({ success: true, ...registration });
+    res.json({ success: true, themeScriptVerified, ...registration });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message, code: err.code });
   }
@@ -402,35 +430,67 @@ router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res
 router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
+  const backendUrl = resolveBackendUrl(req);
+  const scriptTag = buildScriptTag(clientId, backendUrl);
+  const checkoutPixelSnippet = generateWebPixelScript(clientId, backendUrl);
+
   if (shouldBypassShopifyPixelChecks(clientId)) {
-    const backendUrl = resolveBackendUrl(req);
-    await markThemePixelInstalled(clientId);
-    await Client.updateOne(
-      { clientId },
-      {
-        $set: {
-          shopifyWebPixelInstalledAt: new Date(),
-        },
+    let themeInject = { success: false, message: 'Theme inject not attempted' };
+    try {
+      themeInject = await injectPixelScript(clientId, backendUrl);
+      if (themeInject?.success) await markThemePixelInstalled(clientId);
+    } catch (themeErr) {
+      themeInject = { success: false, message: themeErr.message };
+    }
+
+    let themeScriptVerified = false;
+    if (themeInject?.success) {
+      try {
+        const verification = await verifyThemeHasPixelScript(clientId);
+        themeScriptVerified = verification.found === true;
+      } catch {
+        themeScriptVerified = false;
       }
-    );
+    }
+
+    if (!themeInject?.success) {
+      return res.status(422).json({
+        success: false,
+        action: 'manual_required',
+        bypassMode: true,
+        themeInjected: false,
+        themeScriptVerified: false,
+        webPixelRegistered: false,
+        requiresCheckoutPixel: true,
+        scriptTag,
+        checkoutPixelSnippet,
+        checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
+        backendUrl,
+        message: `Theme auto-inject failed: ${themeInject.message}. Paste the theme script in theme.liquid, then add the checkout custom pixel.`,
+        pollHint: 'After pasting both scripts, visit storefront + checkout and refresh status.',
+      });
+    }
+
     return res.json({
       success: true,
-      action: 'bypass_connected',
+      action: 'bypass_theme_injected',
+      bypassMode: true,
       themeInjected: true,
-      webPixelRegistered: true,
-      webPixelId: null,
-      consentConfigSynced: false,
-      checkoutStatus: null,
-      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      themeScriptVerified,
+      webPixelRegistered: false,
+      requiresCheckoutPixel: true,
+      scriptTag,
+      checkoutPixelSnippet,
+      checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
       backendUrl,
-      message:
-        'Shopify pixel install is bypassed for this workspace while Shopify app review is pending. Theme tracking remains enabled for testing.',
-      pollHint: 'Bypass mode active for this client only.',
-      manualSnippet: null,
+      message: themeScriptVerified
+        ? 'Storefront script installed and verified. Add the checkout custom pixel in Shopify → Settings → Customer events.'
+        : 'Storefront script injected — verification pending. Also add the checkout custom pixel in Customer events.',
+      pollHint: 'Visit your storefront and checkout, then refresh status here.',
+      manualSnippet: checkoutPixelSnippet,
     });
   }
   try {
-    const backendUrl = resolveBackendUrl(req);
 
     let themeInject = { success: false, message: 'Theme inject not attempted' };
     try {
@@ -489,13 +549,15 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
       consentConfigSynced: consentSync?.success === true,
       checkoutStatus,
       checkoutEditorUrl: checkoutStatus.checkoutCustomizeUrl || checkoutStatus.checkoutEditorUrl,
-      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      scriptTag: buildScriptTag(clientId, backendUrl),
+      checkoutPixelSnippet: webPixel?.success ? null : checkoutPixelSnippet,
+      checkoutPixelSteps: webPixel?.success ? null : CHECKOUT_PIXEL_STEPS,
       backendUrl,
       message: themeInject?.success
         ? `Storefront script added. ${checkboxMessage}`
         : webPixel?.pollHint || checkboxMessage,
       pollHint: checkoutStatus.statusHint,
-      manualSnippet: webPixel?.manualSnippet,
+      manualSnippet: webPixel?.manualSnippet || checkoutPixelSnippet,
     });
   } catch (err) {
     const status = /not_connected|missing_pixel_scopes/i.test(err.message) ? 400 : 500;
@@ -533,15 +595,53 @@ router.post('/pixel/:clientId/checkout-opt-in/sync', protect, async (req, res) =
 });
 
 async function buildPixelStatusPayload(clientId, req) {
+  const backendUrl = resolveBackendUrl(req);
+  const scriptTag = buildScriptTag(clientId, backendUrl);
+  const checkoutPixelSnippet = generateWebPixelScript(clientId, backendUrl);
+  const bypassShopifyChecks = shouldBypassShopifyPixelChecks(clientId);
+
   const clientDoc = await Client.findOne({ clientId })
-    .select('shopifyThemePixelInstalledAt shopifyWebPixelId shopifyWebPixelInstalledAt shopDomain')
+    .select(
+      'shopifyThemePixelInstalledAt shopifyWebPixelId shopifyWebPixelInstalledAt shopDomain shopifyTrackingDisabled'
+    )
     .lean();
+
+  if (clientDoc?.shopifyTrackingDisabled) {
+    return {
+      success: true,
+      connectionState: 'not_connected',
+      isInstalled: false,
+      isActive: false,
+      eventsLive: false,
+      trackingDisabled: true,
+      themeInjected: false,
+      themeScriptVerified: false,
+      webPixelRegistered: false,
+      webPixelOnShopify: false,
+      bypassMode: bypassShopifyChecks,
+      requiresCheckoutPixel: bypassShopifyChecks,
+      eventsPerMinute: 0,
+      lastEventAt: null,
+      lastEventName: null,
+      totalEvents: 0,
+      eventBreakdown: [],
+      recentEvents: [],
+      anonymousActivity: [],
+      backendUrl,
+      scriptTag,
+      checkoutPixelSnippet,
+      checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
+      shopDomain: clientDoc?.shopDomain || null,
+      statusHint: 'Tracking disconnected. Click one-click install to reconnect storefront + checkout capture.',
+    };
+  }
 
   const fiveMinutesAgo = moment().subtract(5, 'minutes').toDate();
   const fifteenMinutesAgo = moment().subtract(15, 'minutes').toDate();
   const thirtyDaysAgo = moment().subtract(30, 'days').toDate();
+  const sevenDaysAgo = moment().subtract(7, 'days').toDate();
 
-  const [count, lastEvent, eventBreakdown, recentEvents] = await Promise.all([
+  const [count, lastEvent, eventBreakdown, recentEvents, anonymousCartEvents] = await Promise.all([
     PixelEvent.countDocuments({
       clientId,
       timestamp: { $gte: fiveMinutesAgo },
@@ -556,11 +656,29 @@ async function buildPixelStatusPayload(clientId, req) {
     PixelEvent.find({ clientId })
       .sort({ timestamp: -1 })
       .limit(12)
-      .select('eventName timestamp url metadata')
+      .select('eventName timestamp url metadata sessionId')
+      .lean(),
+    PixelEvent.find({
+      clientId,
+      leadId: null,
+      eventName: {
+        $in: [
+          'page_view',
+          'product_added_to_cart',
+          'checkout_started',
+          'contact_identified',
+          'checkout_contact_identified',
+        ],
+      },
+      timestamp: { $gte: sevenDaysAgo },
+    })
+      .sort({ timestamp: -1 })
+      .limit(40)
+      .select('eventName timestamp url sessionId metadata')
       .lean(),
   ]);
 
-  const eventsPerMinute = (count / 5).toFixed(1);
+  const eventsPerMinute = parseFloat((count / 5).toFixed(1));
   const eventsLive =
     (lastEvent && moment(lastEvent.timestamp).isAfter(fifteenMinutesAgo)) || false;
   const themeMarkedInstalled = Boolean(clientDoc?.shopifyThemePixelInstalledAt);
@@ -568,15 +686,25 @@ async function buildPixelStatusPayload(clientId, req) {
     clientDoc?.shopifyWebPixelId || clientDoc?.shopifyWebPixelInstalledAt
   );
 
+  let themeScriptVerified = false;
+  let themeVerifyError = null;
+  try {
+    const verification = await verifyThemeHasPixelScript(clientId);
+    themeScriptVerified = verification.found === true;
+    if (!themeScriptVerified && verification.error) themeVerifyError = verification.error;
+  } catch (verifyErr) {
+    themeVerifyError = verifyErr.message;
+  }
+
   let webPixelApi = null;
-  const bypassShopifyChecks = shouldBypassShopifyPixelChecks(clientId);
   if (bypassShopifyChecks) {
     webPixelApi = {
-      installed: true,
+      installed: false,
       hasPixelScopes: true,
       reason: 'bypass_for_review',
+      requiresCheckoutPixel: true,
       message:
-        'Shopify pixel API check bypassed for this workspace while app review is pending.',
+        'App review bypass: use the checkout custom pixel snippet below until webPixelCreate is approved.',
     };
   } else {
     try {
@@ -589,13 +717,19 @@ async function buildPixelStatusPayload(clientId, req) {
   const webPixelOnShopify = webPixelApi?.installed === true;
   const webPixelScopeMissing =
     webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false;
+  const requiresCheckoutPixel = bypassShopifyChecks || (!webPixelOnShopify && !webPixelRegistered);
+  const themeActuallyReady = themeScriptVerified || eventsLive;
   const isInstalled =
-    !webPixelScopeMissing && (themeMarkedInstalled || webPixelRegistered || webPixelOnShopify);
-  const connectionState = eventsLive ? 'live' : isInstalled ? 'connected' : 'not_connected';
+    !webPixelScopeMissing &&
+    (themeActuallyReady || webPixelOnShopify || webPixelRegistered);
+  const connectionState = eventsLive
+    ? 'live'
+    : isInstalled
+      ? 'connected'
+      : 'not_connected';
 
   const health = await buildTrackingHealth(clientId, 30).catch(() => null);
 
-  const backendUrl = resolveBackendUrl(req);
   let checkoutStatus = null;
   if (!bypassShopifyChecks) {
     try {
@@ -605,16 +739,57 @@ async function buildPixelStatusPayload(clientId, req) {
     }
   }
 
-  const storefrontHint = webPixelScopeMissing
-    ? 'Store token is missing pixel scopes (read_pixels/write_pixels/read_customer_events). Reconnect Shopify from Settings before tracking can work.'
-    : bypassShopifyChecks
-    ? 'Bypass mode active for this workspace: Shopify pixel scope checks are temporarily skipped while app review is pending.'
-    : eventsLive
-    ? 'Receiving storefront signals.'
-    : isInstalled
-      ? 'Tracking is connected — visit your storefront to confirm live signals (page views appear within seconds).'
-      : checkoutStatus?.statusHint ||
-        'Install tracking, then add the checkout opt-in block in Shopify Checkout Editor.';
+  const sessionsMap = new Map();
+  for (const ev of anonymousCartEvents) {
+    const sid = ev.sessionId || ev.metadata?.visitorId || 'unknown';
+    if (!sessionsMap.has(sid)) {
+      sessionsMap.set(sid, {
+        sessionId: sid,
+        lastEventAt: ev.timestamp,
+        lastEventName: ev.eventName,
+        lastUrl: ev.url || null,
+        hasCart: false,
+        hasContact: false,
+        eventCount: 0,
+      });
+    }
+    const session = sessionsMap.get(sid);
+    session.eventCount += 1;
+    if (moment(ev.timestamp).isAfter(session.lastEventAt)) {
+      session.lastEventAt = ev.timestamp;
+      session.lastEventName = ev.eventName;
+      session.lastUrl = ev.url || session.lastUrl;
+    }
+    if (ev.eventName === 'product_added_to_cart') session.hasCart = true;
+    if (['contact_identified', 'checkout_contact_identified'].includes(ev.eventName)) {
+      session.hasContact = true;
+    }
+  }
+  const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
+
+  let storefrontHint;
+  if (webPixelScopeMissing) {
+    storefrontHint =
+      'Store token is missing pixel scopes (read_pixels/write_pixels/read_customer_events). Reconnect Shopify from Settings before tracking can work.';
+  } else if (themeMarkedInstalled && !themeScriptVerified && !eventsLive) {
+    storefrontHint =
+      'Theme script not found in theme.liquid — run one-click install again or paste the script tag manually.';
+  } else if (requiresCheckoutPixel && themeActuallyReady && !eventsLive) {
+    storefrontHint =
+      'Storefront script ready. Add the checkout custom pixel in Shopify → Settings → Customer events to capture checkout email/phone.';
+  } else if (bypassShopifyChecks && !themeActuallyReady) {
+    storefrontHint =
+      'Bypass mode: install the theme script and checkout custom pixel to start receiving signals.';
+  } else if (eventsLive) {
+    storefrontHint = 'Receiving storefront signals.';
+  } else if (isInstalled) {
+    storefrontHint =
+      'Tracking is connected — visit your storefront to confirm live signals (page views appear within seconds).';
+  } else {
+    storefrontHint =
+      checkoutStatus?.statusHint ||
+      'Install tracking, then add the checkout custom pixel in Shopify Customer events.';
+  }
 
   return {
     success: true,
@@ -622,15 +797,22 @@ async function buildPixelStatusPayload(clientId, req) {
     isInstalled,
     isActive: eventsLive,
     eventsLive,
+    trackingDisabled: false,
     themeInjected: themeMarkedInstalled,
+    themeScriptVerified,
+    themeVerifyError,
     webPixelActive: eventsLive,
     webPixelRegistered: !webPixelScopeMissing && (webPixelRegistered || webPixelOnShopify),
     webPixelOnShopify,
     webPixelScopeMissing,
     webPixelScopeMessage: webPixelApi?.message || null,
+    bypassMode: bypassShopifyChecks,
+    requiresCheckoutPixel,
+    checkoutPixelSnippet,
+    checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
     webPixelId: clientDoc?.shopifyWebPixelId || webPixelApi?.webPixelId || null,
     lastWebPixelEventAt: lastEvent?.timestamp || null,
-    eventsPerMinute: parseFloat(eventsPerMinute),
+    eventsPerMinute,
     lastEventAt: lastEvent ? lastEvent.timestamp : null,
     lastEventName: lastEvent?.eventName || null,
     totalEvents: count,
@@ -644,9 +826,10 @@ async function buildPixelStatusPayload(clientId, req) {
       url: ev.url || null,
       source: ev.metadata?.source || ev.metadata?.gateway || null,
     })),
+    anonymousActivity,
     captureSource: 'theme_script',
     backendUrl,
-    scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+    scriptTag,
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
     checkoutStatus,
@@ -674,6 +857,9 @@ router.post('/pixel/:clientId/disconnect-tracking', protect, async (req, res) =>
           shopifyWebPixelId: '',
           shopifyWebPixelInstalledAt: '',
           shopifyWebPixelSettings: '',
+        },
+        $set: {
+          shopifyTrackingDisabled: true,
         },
       }
     );

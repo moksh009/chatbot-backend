@@ -104,14 +104,15 @@ async function dispatchTrackedEmail({
     throw err;
   }
 
-  if (!skipRateLimit) {
-    await incrementEmailCount(cid, 1);
-  }
-
+  // Persist sent status before rate-limit bookkeeping — email is already delivered.
   await MessageEnvelope.updateOne(
     { _id: envelope._id },
     { status: 'sent', sentAt: new Date(), messageId: sendOut.messageId || '' }
   );
+
+  if (!skipRateLimit) {
+    await incrementEmailCount(cid, 1);
+  }
 
   return {
     success: true,
