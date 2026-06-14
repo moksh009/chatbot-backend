@@ -7,7 +7,7 @@ const {
   getEffectiveWhatsAppWabaId,
   isWhatsAppOutboundReady,
 } = require('../meta/clientWhatsAppCreds');
-const SHOPIFY_CONNECTION_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
+const SHOPIFY_CONNECTION_BYPASS_CLIENTS = new Set([]);
 
 /**
  * Derive integration connection flags from a Client document (or lean object).

@@ -20,7 +20,8 @@ const {
   getCheckoutOptInInstallStatus,
 } = require('../utils/shopify/checkoutConsentExtension');
 
-const PIXEL_STATUS_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
+/** Empty — bypass disabled so dashboard status + install reflect real web pixel registration. */
+const PIXEL_STATUS_BYPASS_CLIENTS = new Set([]);
 
 function shouldBypassShopifyPixelChecks(clientId) {
   return PIXEL_STATUS_BYPASS_CLIENTS.has(String(clientId || '').trim());
@@ -198,13 +199,21 @@ router.options('/pixel/:clientId/script.js', pixelStorefrontCors);
 router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
+    const { eventName, url, sessionId, metadata, shopifyClientId, visitorId, email, phone } =
+      req.body;
+    const eventData = {
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      ...(email ? { email } : {}),
+      ...(phone ? { phone } : {}),
+    };
     // #region agent log
     log.info('[DEBUG-f2f95b] pixel event received', {
       hypothesisId: 'H3',
       clientId,
       eventName: eventName || null,
       origin: req.headers.origin || null,
+      hasEmail: Boolean(email || eventData.email),
+      hasPhone: Boolean(phone || eventData.phone),
     });
     fetch('http://127.0.0.1:7653/ingest/99fb88ce-bcb0-4691-9f80-8def3b29be3b', {
       method: 'POST',
@@ -221,7 +230,7 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
     // #endregion
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
-      data: metadata || {},
+      data: eventData,
       url,
       sessionId,
       visitorId: visitorId || readCookie(req, 'te_visitor_id'),
