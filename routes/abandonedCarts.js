@@ -289,7 +289,10 @@ router.put('/third-party/:clientId/:provider', protect, verifyClientAccess, asyn
     if (!webhookSecret) {
       webhookSecret = generateWebhookSecret();
     }
-    const saved = await saveThirdPartyWebhookSecret(clientId, provider, webhookSecret);
+    if (!integrationKey) {
+      return res.status(400).json({ success: false, message: 'Unknown provider' });
+    }
+    const saved = await saveThirdPartyWebhookSecret(clientId, integrationKey, webhookSecret);
     res.json({ success: true, ...saved, webhookSecret });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message || 'Failed to save secret' });

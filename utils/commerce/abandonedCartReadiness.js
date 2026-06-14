@@ -470,15 +470,21 @@ async function enableAbandonedCartRecovery(clientId) {
   };
 }
 
-async function saveThirdPartyWebhookSecret(clientId, provider, secret) {
+function normalizeThirdPartyIntegrationKey(provider) {
   const map = {
     gokwik: 'gokwik',
     razorpay: 'razorpay_magic',
+    'razorpay-magic': 'razorpay_magic',
     razorpay_magic: 'razorpay_magic',
     shiprocket: 'shiprocket_checkout',
+    'shiprocket-checkout': 'shiprocket_checkout',
     shiprocket_checkout: 'shiprocket_checkout',
   };
-  const key = map[provider];
+  return map[String(provider || '').trim()] || null;
+}
+
+async function saveThirdPartyWebhookSecret(clientId, provider, secret) {
+  const key = normalizeThirdPartyIntegrationKey(provider);
   if (!key) throw new Error('Unknown provider');
 
   const trimmed = String(secret || '').trim();

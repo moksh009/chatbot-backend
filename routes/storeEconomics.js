@@ -4,6 +4,7 @@ const { protect } = require('../middleware/auth');
 const StoreEconomicsConfig = require('../models/StoreEconomicsConfig');
 const StoreEconomicsProduct = require('../models/StoreEconomicsProduct');
 const { calculateRecoveryMetrics } = require('../services/cartRecoveryMetricsService');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const {
   calculateAndStoreAllProducts,
   buildDashboardMetrics,
@@ -297,8 +298,12 @@ router.post('/recompute', async (req, res) => {
  */
 router.get('/cart-recovery', async (req, res) => {
   try {
-    const { clientId, startDate, endDate, from: fromRaw, to: toRaw, preset } = req.query;
-    if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const { startDate, endDate, from: fromRaw, to: toRaw, preset } = req.query;
 
     const { parseDateRange } = require('../utils/commerce/abandonedCartWorkspace');
     const { startOfDayForDateStrIST, endOfDayForDateStrIST } = require('../utils/core/queryHelpers');
