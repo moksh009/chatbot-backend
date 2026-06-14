@@ -568,6 +568,18 @@ if (!RUN_CRONS) {
     });
     log.info('[Boot] Scheduled message tick on API process (RUN_CRONS=false)');
   }
+  if (RUN_API && process.env.ABANDON_CART_TICK_ON_API !== 'false') {
+    const cron = require('node-cron');
+    const abandonedCartScheduler = require('./cron/abandonedCartScheduler');
+    cron.schedule('*/5 * * * *', () => {
+      if (abandonedCartScheduler.runTick) {
+        abandonedCartScheduler.runTick().catch((err) => {
+          log.error('[Boot] Abandon cart tick failed', { message: err.message });
+        });
+      }
+    });
+    log.info('[Boot] Abandon cart promotion tick on API process (RUN_CRONS=false)');
+  }
 } else {
   const { registerAllCrons } = require('./cron/cronBootstrap');
   registerAllCrons();

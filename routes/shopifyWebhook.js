@@ -797,6 +797,7 @@ async function handleCheckout(client, data) {
       ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
       : undefined;
 
+    const isPurchased = Boolean(data.completed_at);
     const result = await upsertAbandonedCartLead(client, {
       clientId: client.clientId,
       phone: phoneE164,
@@ -809,12 +810,17 @@ async function handleCheckout(client, data) {
       cartToken,
       source: 'shopify_native',
       currency: data.currency || 'INR',
-      cartStatus: data.completed_at ? 'purchased' : 'abandoned',
+      cartStatus: isPurchased ? 'purchased' : 'active',
+      contactCapturedAt: isPurchased ? null : new Date(),
       completedAt: data.completed_at || null,
       logActivity: false,
     });
 
     if (!result.success) return;
+
+    log.info(
+      `[CheckoutWebhook] contact captured client=${client.clientId} token=${checkoutToken || 'n/a'} phone=${phoneE164 ? 'yes' : 'no'} email=${email ? 'yes' : 'no'} status=${isPurchased ? 'purchased' : 'active'}`
+    );
 
     const cleanPhone = result.phone || '';
     const lineItems = data.line_items || [];

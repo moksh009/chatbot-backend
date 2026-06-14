@@ -134,7 +134,7 @@ async function upsertAbandonedCartLead(client, data = {}) {
    *  re-opening the lead for recovery would message a customer who
    *  already paid. Refresh snapshot fields only. */
   const existing = await AdLead.findOne(leadQuery)
-    .select('cartStatus isOrderPlaced recoveryStep _id')
+    .select('cartStatus isOrderPlaced recoveryStep _id contactCapturedAt checkoutToken')
     .lean();
   const alreadyPurchased =
     existing && (existing.cartStatus === 'purchased' || existing.isOrderPlaced === true);
@@ -152,8 +152,19 @@ async function upsertAbandonedCartLead(client, data = {}) {
     };
   }
 
+  /** Single-page checkout: webhook may fire many times while user edits.
+   *  Keep `active` until cron promotes or order completes — do not flip to abandoned. */
+  let resolvedCartStatus = finalCartStatus;
+  if (
+    existing?.cartStatus === 'active' &&
+    !isPurchased &&
+    resolvedCartStatus === 'abandoned'
+  ) {
+    resolvedCartStatus = 'active';
+  }
+
   const $set = {
-    cartStatus: finalCartStatus,
+    cartStatus: resolvedCartStatus,
     lastSeen: now,
     lastCartEventAt: now,
     checkoutUrl,
@@ -175,6 +186,12 @@ async function upsertAbandonedCartLead(client, data = {}) {
   if (checkoutToken) $set.checkoutToken = String(checkoutToken);
   if (cartToken) $set.cartToken = String(cartToken);
   if (cartTotal != null && cartTotal !== '') $set.cartValue = Number(cartTotal) || 0;
+
+  if (resolvedCartStatus === 'active' || data.contactCapturedAt) {
+    if (!existing?.contactCapturedAt) {
+      $set.contactCapturedAt = data.contactCapturedAt || now;
+    }
+  }
 
   if (data.optStatus) {
     $set.optStatus = data.optStatus;
@@ -218,7 +235,7 @@ async function upsertAbandonedCartLead(client, data = {}) {
         $pull: { tags: ABANDONED_CART_TAG },
         $addToSet: { tags: RECOVERED_CART_TAG },
       }
-    : phoneE164
+    : resolvedCartStatus === 'abandoned' && phoneE164
       ? { $addToSet: { tags: ABANDONED_CART_TAG } }
       : {};
 
@@ -262,7 +279,7 @@ async function upsertAbandonedCartLead(client, data = {}) {
   await AdLead.updateOne(leadQuery, {
     $push: {
       commerceEvents: {
-        event: cartStatus === 'purchased' ? 'checkout_completed' : 'checkout_started',
+        event: resolvedCartStatus === 'purchased' ? 'checkout_completed' : 'checkout_started',
         amount: Number(cartTotal) || 0,
         currency: data.currency || 'INR',
         timestamp: now,
@@ -270,9 +287,11 @@ async function upsertAbandonedCartLead(client, data = {}) {
     },
   }).catch(() => {});
 
-  await trackEcommerceEvent(clientId, { checkoutInitiatedCount: cartStatus === 'purchased' ? 0 : 1 });
+  await trackEcommerceEvent(clientId, {
+    checkoutInitiatedCount: resolvedCartStatus === 'purchased' ? 0 : 1,
+  });
 
-  if (phoneE164 && cartStatus !== 'purchased') {
+  if (phoneE164 && resolvedCartStatus !== 'purchased' && resolvedCartStatus !== 'active') {
     await ensureCartRecoveryAttempt({
       clientId,
       leadId: lead._id,

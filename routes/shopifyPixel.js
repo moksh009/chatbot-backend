@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const moment = require('moment');
 const Client = require('../models/Client');
 const PixelEvent = require('../models/PixelEvent');
+const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const { injectPixelScript, removePixelScript, verifyThemeHasPixelScript } = require('../utils/shopify/shopifyHelper');
 const {
@@ -228,6 +229,13 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
       }),
     }).catch(() => {});
     // #endregion
+    if (eventData.captureMode === 'live_ui_extension') {
+      log.info('[CheckoutCapture] live_ui_extension event', {
+        clientId,
+        eventName,
+        captureTarget: eventData.captureTarget || null,
+      });
+    }
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
       data: eventData,
@@ -240,7 +248,7 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
     });
     if (clientId === 'delitech_smarthomes') {
       console.log(
-        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'}`
+        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'} captureMode=${eventData.captureMode || eventData.source || 'n/a'}`
       );
     }
     if (result.error) return res.status(404).json(result);
@@ -851,6 +859,43 @@ async function buildPixelStatusPayload(clientId, req) {
   }
   const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
 
+  const [lastWebhookLead, lastLiveExtensionEvent] = await Promise.all([
+    AdLead.findOne({ clientId, source: 'shopify_native' })
+      .sort({ lastCartEventAt: -1 })
+      .select('lastCartEventAt cartStatus contactCapturedAt')
+      .lean(),
+    PixelEvent.findOne({
+      clientId,
+      eventName: 'checkout_contact_identified',
+      'metadata.captureMode': 'live_ui_extension',
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp metadata')
+      .lean(),
+  ]);
+
+  const extensionEnvEnabled = process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED !== 'false';
+  const liveExtensionRecent =
+    lastLiveExtensionEvent &&
+    moment(lastLiveExtensionEvent.timestamp).isAfter(sevenDaysAgo);
+  const webhookCaptureRecent =
+    lastWebhookLead?.lastCartEventAt &&
+    moment(lastWebhookLead.lastCartEventAt).isAfter(sevenDaysAgo);
+
+  const liveTypingCapture = {
+    status: liveExtensionRecent ? 'live_extension' : 'pending_app_review',
+    statusLabel: liveExtensionRecent
+      ? 'Live typing capture active'
+      : 'Live typing capture pending Shopify app review',
+    extensionEnvEnabled,
+    lastWebhookCaptureAt: lastWebhookLead?.lastCartEventAt || null,
+    lastLiveExtensionAt: lastLiveExtensionEvent?.timestamp || null,
+    checkoutWebhookActive: Boolean(webhookCaptureRecent),
+    hint: liveExtensionRecent
+      ? 'Checkout UI extension is capturing email/phone while typing.'
+      : 'Until app review: checkout contact is captured via Shopify webhooks when fields are saved (single-page COD).',
+  };
+
   let storefrontHint;
   if (webPixelScopeMissing) {
     storefrontHint =
@@ -917,6 +962,7 @@ async function buildPixelStatusPayload(clientId, req) {
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
     checkoutStatus,
+    liveTypingCapture,
     statusHint: storefrontHint,
   };
 }
