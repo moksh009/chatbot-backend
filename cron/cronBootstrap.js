@@ -58,6 +58,7 @@ function registerAllCrons() {
   require("./codConfirmationCron")();
   require("./codPrepaidNudgeCron")();
   require("./orderStatusReconcileCron")();
+  require("./cartRecoveryReconcileCron")();
   require("./autoResumeBotCron")();
   require("./followUpSequenceCron")();
   require("./campaignProgressMonitorCron")();
@@ -119,7 +120,17 @@ function registerAllCrons() {
 
   // ── Daily IST jobs (index.js previously inline) ──
   const { resetDailyErrorCounts } = require('../utils/core/autoHealer');
-  cron.schedule("0 0 * * *", wrapCron("resetDailyErrorCounts", resetDailyErrorCounts));
+  cron.schedule(
+    "0 0 * * *",
+    wrapCron("resetDailyErrorCounts", resetDailyErrorCounts)
+  );
+
+  const cartRecoveryReconcileCron = require('./cartRecoveryReconcileCron');
+  cron.schedule(
+    '30 2 * * *',
+    wrapCron('Cart recovery nightly reconcile', () => cartRecoveryReconcileCron.runNightly()),
+    { timezone: 'Asia/Kolkata' }
+  );
 
   const { refreshExpiringInstagramTokens } = require("../routes/oauth");
   cron.schedule(

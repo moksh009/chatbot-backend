@@ -4,7 +4,7 @@ const Order = require('../../models/Order');
 const Conversation = require('../../models/Conversation');
 const Appointment = require('../../models/Appointment');
 const DailyStat = require('../../models/DailyStat');
-const { startOfDayIST } = require('./queryHelpers');
+const { startOfDayIST, startOfDayForDateStrIST } = require('./queryHelpers');
 const log = require('./logger')('StatCache');
 
 /**
@@ -108,7 +108,20 @@ async function rebuildCache(clientId) {
             { $group: { _id: null, total: { $sum: '$checkoutInitiatedCount' } } },
           ]),
         abandonedCarts: () => AdLead.countDocuments({ ...query, cartStatus: 'abandoned' }),
-        recoveredCarts: () => AdLead.countDocuments({ ...query, cartStatus: 'recovered' }),
+        recoveredCarts: async () => {
+          const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
+          const { istDateRangeStrings } = require('./queryHelpers');
+          const { start } = istDateRangeStrings(30);
+          const from = startOfDayForDateStrIST(start);
+          const metrics = await calculateRecoveryMetrics(clientId, {
+            mode: 'cohort',
+            from,
+            to: new Date(),
+            includeFunnel: false,
+            includeRows: false,
+          });
+          return metrics.recoveredCarts;
+        },
         totalConversations: () => Conversation.countDocuments(query),
         cartStatsAgg: () =>
           DailyStat.aggregate([

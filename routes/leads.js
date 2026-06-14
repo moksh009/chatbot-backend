@@ -820,15 +820,21 @@ router.post('/bulk-recovery', protect, async (req, res) => {
 
         for (const lead of leads) {
             try {
+                const stepNum = Math.min((lead.recoveryStep || 0) + 1, 3);
+                const templateName = `cart_recovery_${stepNum}`;
+                const { buildCartRecoveryComponents } = require('../utils/commerce/buildCartRecoveryComponents');
+                const { components } = buildCartRecoveryComponents(lead, client, stepNum, {
+                    includeHeaderImage: true,
+                });
                 const envResult = await sendEnvelope({
                     clientId,
                     channel: 'whatsapp',
                     intent: 'marketing',
                     contactId: lead._id,
                     payload: {
-                        templateName: 'abandoned_cart_recovery',
+                        templateName,
                         templateLanguage: 'en',
-                        components: [],
+                        components,
                     },
                     context: {
                         source: 'routes/leads:bulk-recovery',
@@ -859,6 +865,9 @@ const HIGH_INTENT_BASE = (clientId) => ({
   clientId,
   $or: [
     { cartStatus: 'abandoned' },
+    { cartStatus: 'recovered' },
+    { tags: 'Abandoned cart' },
+    { tags: 'Recovered cart' },
     { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
     { checkoutInitiatedCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
   ],

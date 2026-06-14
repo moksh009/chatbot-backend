@@ -468,6 +468,7 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
       title,
       type,
       value,
+      expiryMode = 'hours',
       expiryHours = 24,
       prefix = 'TOPAI',
       usageLimitMode = 'single',
@@ -478,12 +479,19 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
     if (!Number.isFinite(numericValue) || numericValue <= 0) {
       return res.status(400).json({ success: false, error: 'Discount value must be greater than 0' });
     }
-    if (!Number.isFinite(Number(expiryHours)) || Number(expiryHours) <= 0) {
-      return res.status(400).json({ success: false, error: 'Expiry must be a positive number of hours' });
+
+    const noExpiry = expiryMode === 'never';
+    let endsAt = null;
+    let storedExpiryHours = null;
+    if (!noExpiry) {
+      if (!Number.isFinite(Number(expiryHours)) || Number(expiryHours) <= 0) {
+        return res.status(400).json({ success: false, error: 'Expiry must be a positive number of hours' });
+      }
+      storedExpiryHours = Number(expiryHours);
+      endsAt = addHours(new Date(), storedExpiryHours);
     }
 
     const { usageLimit, usageLimitLabel } = resolveUsageLimit(usageLimitMode, usageLimitCount);
-    const endsAt = addHours(new Date(), Number(expiryHours));
 
     const clientMeta = await Client.findOne({ clientId }).select('shopDomain').lean();
 
@@ -497,8 +505,10 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
           value: `-${numericValue}`,
           customer_selection: 'all',
           starts_at: new Date().toISOString(),
-          ends_at: endsAt.toISOString(),
         };
+        if (endsAt) {
+          priceRulePayload.ends_at = endsAt.toISOString();
+        }
         if (usageLimit != null) {
           priceRulePayload.usage_limit = usageLimit;
         }
@@ -522,12 +532,13 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
       title: title || discount.code,
       type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
       value: numericValue,
-      expiryHours: Number(expiryHours),
+      expiryMode: noExpiry ? 'never' : 'hours',
+      expiryHours: storedExpiryHours,
       usageLimitMode: usageLimitMode || 'single',
       usageLimit,
       usageLimitLabel,
       usageCount: 0,
-      endsAt: endsAt.toISOString(),
+      endsAt: endsAt ? endsAt.toISOString() : null,
       disabledAt: null,
       priceRuleId: discount.priceRuleId || discount.price_rule_id,
       shopifyId: discount.id,

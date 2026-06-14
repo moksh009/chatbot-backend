@@ -2,6 +2,7 @@
 
 const AdLead = require('../../models/AdLead');
 const CartRecoveryAttempt = require('../../models/CartRecoveryAttempt');
+const { countRecoveredCartLeads } = require('./recoveredCartMetrics');
 
 function pct(num, den) {
   if (!den) return 0;
@@ -20,7 +21,7 @@ async function buildRecoveryFunnelMetrics(clientId, from, to) {
   };
 
   const [
-    contactsCaptured,
+    contactLeadPhones,
     promotedAbandoned,
     step1Sent,
     step2Sent,
@@ -29,17 +30,30 @@ async function buildRecoveryFunnelMetrics(clientId, from, to) {
     recoveredViaWa,
     attemptRecovered,
   ] = await Promise.all([
-    AdLead.countDocuments({ clientId, contactCapturedAt: range }),
+    AdLead.find({ clientId, contactCapturedAt: range })
+      .select('phoneNumber')
+      .lean(),
     AdLead.countDocuments(abandonedFilter),
     AdLead.countDocuments({ ...abandonedFilter, recoveryStep: { $gte: 1 } }),
     AdLead.countDocuments({ ...abandonedFilter, recoveryStep: { $gte: 2 } }),
     AdLead.countDocuments({ ...abandonedFilter, recoveryStep: { $gte: 3 } }),
-    AdLead.countDocuments({ clientId, cartStatus: 'recovered', recoveredAt: range }),
+    countRecoveredCartLeads(clientId, from, to),
     AdLead.countDocuments({
       clientId,
-      cartStatus: 'recovered',
       recoveredViaWhatsApp: true,
-      recoveredAt: range,
+      $or: [
+        { cartStatus: { $in: ['recovered', 'purchased'] } },
+        { isOrderPlaced: true },
+      ],
+      $and: [
+        {
+          $or: [
+            { recoveredAt: range },
+            { abandonedCartRecoveredAt: range },
+            { lastPurchaseDate: range },
+          ],
+        },
+      ],
     }),
     CartRecoveryAttempt.countDocuments({
       clientId,
@@ -59,6 +73,11 @@ async function buildRecoveryFunnelMetrics(clientId, from, to) {
     { $project: { sent: { $size: { $ifNull: ['$whatsappTemplatesSent', []] } } } },
     { $group: { _id: null, total: { $sum: '$sent' } } },
   ]);
+  const contactsCaptured = new Set(
+    (contactLeadPhones || [])
+      .map((l) => String(l.phoneNumber || '').replace(/\D/g, '').slice(-10))
+      .filter((p) => p.length >= 10)
+  ).size;
   const waMessagesSent = messagesSent[0]?.total || 0;
 
   const base = promotedAbandoned || contactsCaptured || 1;

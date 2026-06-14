@@ -13,9 +13,12 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     headerType: "IMAGE",
     headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}! 🎉 Your order is confirmed!\n\nOrder ID: {{2}}\nProduct: {{3}}\nTotal: {{4}}\nDelivery to: {{5}}\n\nWe'll notify you when your order ships. Thank you for shopping with us!",
+      "Hi {{1}}! 🎉 Your order is confirmed!\n\nOrder ID: {{2}}\nProduct: {{3}}\nTotal: {{4}}\nDelivery to: {{5}}\n\nWe'll notify you when your order ships. Need help? Tap *Contact support*.",
     variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "order_items", 4: "order_total", 5: "shipping_address" } },
-    buttons: [{ type: "QUICK_REPLY", text: "Track order" }],
+    buttons: [
+      { type: "QUICK_REPLY", text: "Track order" },
+      { type: "QUICK_REPLY", text: "Contact support" },
+    ],
     autoTrigger: "order_placed",
     requiredContext: ["order", "customer", "client"],
   },
@@ -25,11 +28,14 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     displayName: "Order shipped",
     category: "UTILITY",
     headerType: "TEXT",
-    headerText: "Your order is on its way! 🚚",
+    headerText: "Your order is on the way! 🚚",
     bodyText:
-      "Hi {{1}}! Great news!\n\nYour order *{{2}}* has been dispatched.\nEstimated delivery: {{3}}\n\nTrack your order using the button below.",
-    variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "estimated_delivery" } },
-    buttons: [{ type: "URL", text: "Track order", urlVariable: "tracking_url" }],
+      "Hi {{1}}! Great news — your order *{{2}}* has been dispatched.\n\nEstimated delivery: {{3}}\n\nTap *Track order* below or *Contact support* if you need help.",
+    variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "estimated_delivery" }, buttons: { 0: "tracking_url" } },
+    buttons: [
+      { type: "URL", text: "Track order", urlVariable: "tracking_url" },
+      { type: "QUICK_REPLY", text: "Contact support" },
+    ],
     autoTrigger: "order_fulfilled",
     requiredContext: ["order", "customer", "client"],
   },
@@ -41,8 +47,9 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     headerType: "IMAGE",
     headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}! Your order has been delivered! 📦✅\n\nWe hope you love your *{{2}}*.\n\nHow was your experience? Your feedback helps us improve!",
+      "Hi {{1}}! Your order has been delivered! 📦✅\n\nWe hope you love your *{{2}}*.\n\nHow was your experience? Tap *Contact support* if anything needs fixing.",
     variableMappings: { body: { 1: "first_name", 2: "order_items" } },
+    buttons: [{ type: "QUICK_REPLY", text: "Contact support" }],
     autoTrigger: null,
     requiredContext: ["order", "customer", "client"],
   },
@@ -54,12 +61,15 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     headerType: "IMAGE",
     headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}, you left {{2}} in your cart worth ₹{{3}}. Still interested? Complete your order here 👇",
+      "Hi {{1}}! 👋\n\nYour *{{2}}* is ready for checkout — total *₹{{3}}*.\n\nTap *Buy now* to complete your order in one step. Questions? Tap *Contact support* and our team will help.",
     variableMappings: {
       body: { 1: "first_name", 2: "product_name", 3: "cart_total" },
       buttons: { 0: "checkout_url" },
     },
-    buttons: [{ type: "URL", text: "Complete Order", urlVariable: "checkout_url" }],
+    buttons: [
+      { type: "URL", text: "Buy now", urlVariable: "checkout_url" },
+      { type: "QUICK_REPLY", text: "Contact support" },
+    ],
     autoTrigger: "abandoned_cart",
     requiredContext: ["cart", "customer", "client"],
   },
@@ -68,15 +78,18 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     metaName: "cart_recovery_2",
     displayName: "Abandoned cart — urgency",
     category: "MARKETING",
-    headerType: "TEXT",
-    headerVariable: null,
+    headerType: "IMAGE",
+    headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}, your {{2}} is waiting! Many others are viewing it right now 🔥 Tap below before it runs out.",
+      "Hi {{1}}, still thinking about *{{2}}*? 🔥\n\nYour cart is saved but popular items sell out fast. Secure yours before they're gone — tap *Buy now* below.",
     variableMappings: {
       body: { 1: "first_name", 2: "product_name" },
       buttons: { 0: "checkout_url" },
     },
-    buttons: [{ type: "URL", text: "Grab It Now", urlVariable: "checkout_url" }],
+    buttons: [
+      { type: "URL", text: "Buy now", urlVariable: "checkout_url" },
+      { type: "QUICK_REPLY", text: "Contact support" },
+    ],
     autoTrigger: "abandoned_cart",
     requiredContext: ["cart", "customer", "client"],
   },
@@ -88,12 +101,15 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     headerType: "IMAGE",
     headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}, last chance to get {{2}} (₹{{3}})! Here's a special offer — use code {{4}} for 10% off.\n\nTap below to complete your order 👇",
+      "Hi {{1}}, last call for *{{2}}* (₹{{3}})!\n\nUse code *{{4}}* at checkout for 10% off. Offer ends soon — tap *Buy now* to claim it 👇",
     variableMappings: {
       body: { 1: "first_name", 2: "product_name", 3: "cart_total", 4: "discount_code" },
       buttons: { 0: "checkout_url" },
     },
-    buttons: [{ type: "URL", text: "Use Offer Now", urlVariable: "checkout_url" }],
+    buttons: [
+      { type: "URL", text: "Buy now", urlVariable: "checkout_url" },
+      { type: "QUICK_REPLY", text: "Contact support" },
+    ],
     autoTrigger: "abandoned_cart",
     requiredContext: ["cart", "customer", "client"],
   },
@@ -109,7 +125,7 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "order_items", 4: "order_total", 5: "shipping_address" } },
     buttons: [
       { type: "QUICK_REPLY", text: "Confirm order" },
-      { type: "QUICK_REPLY", text: "Need help" },
+      { type: "QUICK_REPLY", text: "Contact support" },
     ],
     autoTrigger: "cod_order_placed",
     requiredContext: ["order", "customer", "client"],
@@ -123,6 +139,7 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     bodyText:
       "Hi {{1}},\n\nYour cancellation request for Order *{{2}}* has been received.\n\nIf eligible, your refund of *{{3}}* will be credited within 5–7 business days.\n\nWe hope to see you again at {{4}}!",
     variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "order_total", 4: "brand_name" } },
+    buttons: [{ type: "QUICK_REPLY", text: "Contact support" }],
     autoTrigger: null,
     requiredContext: ["order", "customer", "client"],
   },
@@ -133,8 +150,9 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     category: "UTILITY",
     headerType: "NONE",
     bodyText:
-      "Hi {{1}}! 🛡️ Your warranty is now active!\n\nProduct: *{{2}}*\nOrder: {{3}}\nPurchase date: {{4}}\nWarranty valid until: *{{5}}*\n\nReply *menu* anytime for help.",
+      "Hi {{1}}! 🛡️ Your warranty is now active!\n\nProduct: *{{2}}*\nOrder: {{3}}\nPurchase date: {{4}}\nWarranty valid until: *{{5}}*\n\nReply *menu* anytime or tap *Contact support*.",
     variableMappings: { body: { 1: "first_name", 2: "order_items", 3: "order_id", 4: "order_date", 5: "warranty_duration" } },
+    buttons: [{ type: "QUICK_REPLY", text: "Contact support" }],
     autoTrigger: "order_placed",
     requiredContext: ["order", "customer", "client"],
   },
@@ -145,9 +163,9 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     category: "UTILITY",
     headerType: "NONE",
     bodyText:
-      "Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.",
+      "Admin alert: {{1}} ({{2}}) needs urgent support.\nContext: {{3}}\nOpen the live chat in your dashboard.",
     variableMappings: { body: { 1: "first_name", 2: "phone_number", 3: "issue_summary" } },
-    buttons: [{ type: "QUICK_REPLY", text: "Open Inbox" }],
+    buttons: [{ type: "URL", text: "Open live chat", url: "https://dash.topedgeai.com/conversations/{{1}}" }],
     autoTrigger: null,
     requiredContext: ["customer", "client"],
   },

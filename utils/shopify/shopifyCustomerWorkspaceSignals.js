@@ -181,6 +181,7 @@ function appendWorkspaceCustomers(customers, warrantyMaps) {
 module.exports = {
   phoneSuffixKey,
   normalizeEmailKey,
+  splitDisplayName,
   loadWarrantySignalsByIdentity,
   resolveWarrantyForCustomer,
   appendWorkspaceCustomers,

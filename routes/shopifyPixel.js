@@ -1037,18 +1037,18 @@ async function buildPixelStatusPayload(clientId, req) {
       : liveThemeRecent
         ? 'Storefront live typing active'
         : extensionEnvEnabled
-          ? 'Live typing ready — add checkout extension in Editor'
-          : 'Deploy app extensions for checkout live typing',
+          ? 'Optional checkout extension'
+          : 'Optional',
     extensionEnvEnabled,
     lastWebhookCaptureAt: lastWebhookLead?.lastCartEventAt || null,
     lastLiveExtensionAt: lastLiveExtensionEvent?.timestamp || null,
     lastLiveThemeAt: lastLiveThemeEvent?.timestamp || null,
     checkoutWebhookActive: Boolean(webhookCaptureRecent),
     hint: liveExtensionRecent
-      ? 'Phone and email are captured while the shopper types in checkout — no Continue click needed.'
+      ? 'Contact captured while typing in checkout.'
       : liveThemeRecent
-        ? 'Contact fields on storefront pages send while typing.'
-        : 'Install the TopEdge checkout capture block in Checkout Editor for instant phone/email capture.',
+        ? 'Contact captured on storefront pages.'
+        : '',
   };
 
   let storefrontHint;

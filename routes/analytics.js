@@ -40,45 +40,6 @@ const getGeminiClient = () => {
 };
 
 
-// GET /api/analytics/notifications
-// @desc    Get unread conversation counts and pending order counts for sidebar badges
-// @access  Private
-router.get('/notifications', protect, apiCache(15), async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const query = { clientId };
-
-    const [unreadConversations, pendingOrders] = await Promise.all([
-      Conversation.countDocuments({
-        ...query,
-        $or: [
-          { status: 'HUMAN_TAKEOVER' },
-          { unreadCount: { $gt: 0 } }
-        ]
-      }),
-      Order.countDocuments({
-        ...query,
-        status: { $in: ['pending', 'unfulfilled'] }
-      })
-    ]);
-
-    res.json({
-      success: true,
-      notifications: {
-        conversations: unreadConversations,
-        orders: pendingOrders
-      }
-    });
-  } catch (error) {
-    console.error('Notifications Error:', error);
-    res.status(500).json({ success: false, message: 'Server Error' });
-  }
-});
-
 // GET /api/analytics/:clientId/activities
 // @desc    Get real-time activity pulse history
 // @access  Private
@@ -562,7 +523,9 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
 // GET /api/analytics/lead/:id (Detailed Lead View)
 router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
   try {
-    const lead = await AdLead.findById(req.params.id).lean();
+    const clientId = tenantClientId(req);
+    const { resolveAudienceLeadById } = require('../utils/commerce/leadsAnalyticsFacet');
+    const lead = await resolveAudienceLeadById(clientId, req.params.id);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
     // BACKGROUND ENRICHMENT: If email or city is missing, fetch from Shopify
@@ -575,7 +538,9 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
           lead.email = lead.email || shopifyCustomer.email;
           lead.city = lead.city || shopifyCustomer.defaultAddress?.city;
           lead.name = lead.name || `${shopifyCustomer.firstName} ${shopifyCustomer.lastName || ''}`.trim();
-          await AdLead.findByIdAndUpdate(lead._id, { $set: { email: lead.email, city: lead.city, name: lead.name } });
+          if (/^[0-9a-fA-F]{24}$/.test(String(lead._id))) {
+            await AdLead.findByIdAndUpdate(lead._id, { $set: { email: lead.email, city: lead.city, name: lead.name } });
+          }
           console.log(`[LeadEnrichment] Synced data for ${lead.phoneNumber} from Shopify`);
         }
       } catch (e) {
@@ -717,7 +682,7 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
     });
 
     // Perf: Background update to AdLead so next load is instant
-    if (updatedNeeded) {
+    if (updatedNeeded && /^[0-9a-fA-F]{24}$/.test(String(lead._id))) {
       AdLead.findByIdAndUpdate(lead._id, { $set: updateData }).catch(e => console.error("Enrichment Background Update Failed", e));
     }
 
@@ -1312,32 +1277,39 @@ router.get('/funnel', protect, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
+    const { parseDateRange } = require('../utils/commerce/abandonedCartWorkspace');
+    const { calculateRecoveryMetrics } = require('../services/cartRecoveryMetricsService');
+    const { from, to, preset } = parseDateRange(req.query);
     const query = { clientId };
 
-    const totalLeads = await AdLead.countDocuments(query);
-    
-    const cartResult = await AdLead.aggregate([
-      { $match: query },
-      { $group: { _id: null, count: { $sum: "$addToCartCount" } } }
-    ]);
+    const [totalLeads, cartResult, checkoutResult, totalOrders, revenueResult, recoveryMetrics] =
+      await Promise.all([
+        AdLead.countDocuments(query),
+        AdLead.aggregate([
+          { $match: query },
+          { $group: { _id: null, count: { $sum: '$addToCartCount' } } },
+        ]),
+        AdLead.aggregate([
+          { $match: query },
+          { $group: { _id: null, count: { $sum: '$checkoutInitiatedCount' } } },
+        ]),
+        Order.countDocuments(query),
+        Order.aggregate([
+          { $match: query },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]),
+        calculateRecoveryMetrics(clientId, {
+          mode: 'cohort',
+          from,
+          to,
+          includeFunnel: true,
+          includeRows: false,
+        }),
+      ]);
+
     const totalCarts = cartResult[0]?.count || 0;
-
-    const checkoutResult = await AdLead.aggregate([
-      { $match: query },
-      { $group: { _id: null, count: { $sum: "$checkoutInitiatedCount" } } }
-    ]);
     const totalCheckouts = checkoutResult[0]?.count || 0;
-
-    const totalOrders = await Order.countDocuments(query);
-    
-    const revenueResult = await Order.aggregate([
-      { $match: query },
-      { $group: { _id: null, total: { $sum: "$amount" } } }
-    ]);
     const totalRevenue = revenueResult[0]?.total || 0;
-
-    // Aggregated recovery stats
-    const recoveredCarts = await AdLead.countDocuments({ ...query, cartStatus: 'recovered' });
 
     res.json({
       leads: totalLeads,
@@ -1345,11 +1317,17 @@ router.get('/funnel', protect, async (req, res) => {
       checkouts: totalCheckouts,
       orders: totalOrders,
       revenue: totalRevenue,
-      recoveredCarts,
-      conversionRate: totalLeads > 0 ? ((totalOrders / totalLeads) * 100).toFixed(2) : 0
+      recoveredCarts: recoveryMetrics.recoveredCarts,
+      totalAbandoned: recoveryMetrics.totalAbandoned,
+      revenueRecovered: recoveryMetrics.revenueRecovered,
+      recoveryRate: recoveryMetrics.recoveryRate,
+      messageEfficiencyRate: recoveryMetrics.funnel?.messageEfficiencyRate ?? 0,
+      funnel: recoveryMetrics.funnel,
+      range: { from, to, preset },
+      conversionRate: totalLeads > 0 ? ((totalOrders / totalLeads) * 100).toFixed(2) : 0,
     });
   } catch (error) {
-    console.error("Funnel Analytics Error:", error);
+    console.error('Funnel Analytics Error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

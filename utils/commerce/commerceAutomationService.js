@@ -97,7 +97,6 @@ const ECO_TEMPLATE_BODY_MAPPINGS = {
   eco_order_confirmed: { 1: 'first_name', 2: 'order_id', 3: 'order_total', 4: 'payment_method' },
   eco_shipping_update: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
   eco_delivered: { 1: 'first_name', 2: 'order_id' },
-  eco_abandoned_cart: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 4: 'checkout_url' },
   /** Delivery tracking prebuilts (routes/templateGate.js blueprints). */
   order_in_transit: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
   order_out_for_delivery: { 1: 'first_name', 2: 'order_id' },
@@ -378,7 +377,7 @@ function findApprovedSyncedTemplateName(syncedTemplates = [], templateName) {
   if (!target) return null;
   let resolveCanonicalTemplateName = (n) => String(n || '').trim();
   try {
-    resolveCanonicalTemplateName = require('../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
+    resolveCanonicalTemplateName = require('../../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
   } catch (_) { /* catalog optional in tests */ }
   const targetCanon = resolveCanonicalTemplateName(target);
 
@@ -449,7 +448,7 @@ async function linkApprovedTemplateOnMetaApproval(clientId, templateName) {
 
   let resolveCanonicalTemplateName = (n) => String(n || '').trim();
   try {
-    resolveCanonicalTemplateName = require('../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
+    resolveCanonicalTemplateName = require('../../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
   } catch (_) {
     /* catalog optional in tests */
   }

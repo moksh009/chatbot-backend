@@ -183,6 +183,15 @@ async function buildAbandonedCartReadiness(clientId) {
     'shopify_native';
   const usesThirdPartyCheckout =
     checkoutProvider && checkoutProvider !== 'shopify_native' && checkoutProvider !== 'shopify';
+  const checkoutConfigured = ac.checkoutSignal === 'merchant_declared';
+
+  const checkoutLabel = (() => {
+    if (!usesThirdPartyCheckout) return 'Shopify checkout';
+    const hit = THIRD_PARTY_PROVIDERS.find(
+      (p) => p.id === checkoutProvider || p.integrationKey === checkoutProvider
+    );
+    return hit ? `${hit.label} checkout` : 'Third-party checkout';
+  })();
 
   return {
     shopifyConnected: flags.shopify_connected,
@@ -192,6 +201,9 @@ async function buildAbandonedCartReadiness(clientId) {
     recoveryFullyLive,
     recoveryPartial: recoveryOn && !recoveryFullyLive,
     checkoutProvider,
+    checkoutConfigured,
+    checkoutSignal: ac.checkoutSignal || null,
+    checkoutLabel,
     usesThirdPartyCheckout,
     cartRulesActive,
     cartRulesTotal: 3,

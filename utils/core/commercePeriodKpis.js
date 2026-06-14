@@ -3,15 +3,14 @@
 /**
  * Commerce period KPIs — canonical sources (AN-P1-03):
  * - Store revenue / orders: reconciled DailyStat + live Orders + timeline
- * - Cart revenue INR: DailyStat.cartRevenueRecovered
- * - Carts recovered count: CartRecoveryAttempt (getRecoveryTotalsFromAttempts)
- * - Recovery messages: DailyStat.cartRecoveryMessagesSent (fallback abandonedCartSent)
+ * - Cart recovery metrics: cartRecoveryMetricsService (cohort abandon-date SSOT)
+ * - Recovery messages: DailyStat.cartRecoveryMessagesSent (funnel only — NOT recovery rate denominator)
  */
 
 const DailyStat = require('../../models/DailyStat');
 const { istDateRangeStrings, startOfDayForDateStrIST, istDateOffsetDays } = require('./queryHelpers');
 const Order = require('../../models/Order');
-const Message = require('../../models/Message');
+const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
 
 /**
  * Sum timeline rows (from getTimelineStats / dailyStatToTimelineRow) into period KPIs.
@@ -74,10 +73,7 @@ function sumTimelineKpis(timeline = []) {
   }
 
   out.avgOrderValue = out.orders > 0 ? Math.round(out.orderRevenue / out.orders) : 0;
-  out.cartRecoveryRate =
-    out.abandonedCartSent > 0
-      ? Math.round((out.cartsRecovered / out.abandonedCartSent) * 100)
-      : 0;
+  out.cartRecoveryRate = 0;
   out.flowCompletionRate =
     out.flowsSent > 0 ? Math.round((out.flowsCompleted / out.flowsSent) * 100) : 0;
 
@@ -86,6 +82,31 @@ function sumTimelineKpis(timeline = []) {
 
 function dateRangeStrings(days) {
   return istDateRangeStrings(days);
+}
+
+function applyCanonicalCartRecoveryToKpis(kpis, recoveryMetrics) {
+  if (!recoveryMetrics) return kpis;
+  kpis.totalAbandoned = recoveryMetrics.totalAbandoned;
+  kpis.cartsRecovered = recoveryMetrics.recoveredCarts;
+  kpis.recoveredCarts = recoveryMetrics.recoveredCarts;
+  kpis.cartRevenueRecovered = recoveryMetrics.revenueRecovered;
+  kpis.revenueRecovered = recoveryMetrics.revenueRecovered;
+  kpis.cartRecoveryRate = recoveryMetrics.recoveryRate;
+  kpis.recoveryRate = recoveryMetrics.recoveryRate;
+  kpis.whatsappRecovered = recoveryMetrics.whatsappRecovered;
+  kpis.organicRecovered = recoveryMetrics.organicRecovered;
+  kpis.messageEfficiencyRate = recoveryMetrics.funnel?.messageEfficiencyRate ?? 0;
+  return kpis;
+}
+
+async function fetchCanonicalCartRecoveryMetrics(clientId, startDate, endDate) {
+  return calculateRecoveryMetrics(clientId, {
+    mode: 'cohort',
+    from: startDate,
+    to: endDate,
+    includeFunnel: true,
+    includeRows: false,
+  }).catch(() => null);
 }
 
 /** Prior window of equal length immediately before the current period (for dashboard deltas). */
@@ -111,21 +132,14 @@ async function buildPriorCommercePeriodKpis(clientId, daysInput, opts = {}) {
   const { endOfDayForDateStrIST } = require('./queryHelpers');
   const startDate = startOfDayForDateStrIST(start);
   const endDate = endOfDayForDateStrIST(end);
-  const [dailyKpis, liveOrders, liveEngagement, attemptTotals] = await Promise.all([
+  const [dailyKpis, liveOrders, liveEngagement, recoveryMetrics] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
     aggregateLiveOrdersForRange(clientId, startDate, endDate),
     aggregateLiveEngagementForRange(clientId, startDate, endDate),
-    require('../commerce/cartRecoveryAttemptService')
-      .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
-      .catch(() => null),
+    fetchCanonicalCartRecoveryMetrics(clientId, startDate, endDate),
   ]);
   const kpis = reconcileKpis({}, dailyKpis, liveOrders, liveEngagement);
-  if (attemptTotals?.recoveredCarts != null) {
-    kpis.cartsRecovered = Number(attemptTotals.recoveredCarts) || 0;
-  }
-  const msgDenom = kpis.cartRecoveryMessagesSent || kpis.abandonedCartSent || 0;
-  kpis.cartRecoveryRate =
-    msgDenom > 0 ? Math.round((kpis.cartsRecovered / msgDenom) * 100) : 0;
+  applyCanonicalCartRecoveryToKpis(kpis, recoveryMetrics);
   return { ...kpis, days, startDate: start, endDate: end, source: 'prior_reconciled' };
 }
 
@@ -195,10 +209,7 @@ async function aggregateDailyStatKpis(clientId, startDateStr, endDateStr) {
     aiHandled: Number(s.aiHandled) || 0,
     uniqueUsers: Number(s.uniqueUsers) || 0,
     avgOrderValue: orders > 0 ? Math.round(orderRevenue / orders) : 0,
-    cartRecoveryRate:
-      Number(s.abandonedCartSent) > 0
-        ? Math.round((Number(s.cartsRecovered) / Number(s.abandonedCartSent)) * 100)
-        : 0,
+    cartRecoveryRate: 0,
     flowCompletionRate:
       Number(s.flowsSent) > 0
         ? Math.round((Number(s.flowsCompleted) / Number(s.flowsSent)) * 100)
@@ -329,10 +340,7 @@ function reconcileKpis(timelineKpis, dailyKpis, liveOrders, liveEngagement = {})
   };
 
   merged.avgOrderValue = merged.orders > 0 ? Math.round(merged.orderRevenue / merged.orders) : 0;
-  merged.cartRecoveryRate =
-    merged.abandonedCartSent > 0
-      ? Math.round((merged.cartsRecovered / merged.abandonedCartSent) * 100)
-      : 0;
+  merged.cartRecoveryRate = 0;
   merged.flowCompletionRate =
     merged.flowsSent > 0 ? Math.round((merged.flowsCompleted / merged.flowsSent) * 100) : 0;
 
@@ -361,25 +369,16 @@ async function buildCommercePeriodKpis(opts) {
   const { endOfDayForDateStrIST } = require('./queryHelpers');
   const endDate = endOfDayForDateStrIST(end);
 
-  const [dailyKpis, liveOrders, liveEngagement, attemptTotals] = await Promise.all([
+  const [dailyKpis, liveOrders, liveEngagement, recoveryMetrics] = await Promise.all([
     aggregateDailyStatKpis(clientId, start, end),
     aggregateLiveOrdersForRange(clientId, startDate, endDate),
     aggregateLiveEngagementForRange(clientId, startDate, endDate),
-    require('../commerce/cartRecoveryAttemptService')
-      .getRecoveryTotalsFromAttempts(clientId, startDate, endDate)
-      .catch(() => null),
+    fetchCanonicalCartRecoveryMetrics(clientId, startDate, endDate),
   ]);
 
   const timelineKpis = sumTimelineKpis(timeline || []);
   const kpis = reconcileKpis(timelineKpis, dailyKpis, liveOrders, liveEngagement);
-
-  // Canonical cart recovery counts — CartRecoveryAttempt (same as recovered-summary + cart workspace).
-  if (attemptTotals?.recoveredCarts != null) {
-    kpis.cartsRecovered = Number(attemptTotals.recoveredCarts) || 0;
-  }
-  const msgDenom = kpis.cartRecoveryMessagesSent || kpis.abandonedCartSent || 0;
-  kpis.cartRecoveryRate =
-    msgDenom > 0 ? Math.round((kpis.cartsRecovered / msgDenom) * 100) : 0;
+  applyCanonicalCartRecoveryToKpis(kpis, recoveryMetrics);
 
   return {
     ...kpis,
@@ -404,10 +403,13 @@ function mergeRealtimeWithPeriodKpis(realtime, periodKpis) {
     checkouts: periodKpis.checkouts ?? realtime.checkouts ?? 0,
     abandonedCartSent: periodKpis.abandonedCartSent ?? realtime.abandonedCartSent ?? 0,
     abandonedCartClicks: periodKpis.abandonedCartClicks ?? realtime.abandonedCartClicks ?? 0,
-    recoveredCarts: periodKpis.cartsRecovered ?? realtime.recoveredCarts ?? 0,
+    recoveredCarts: periodKpis.recoveredCarts ?? periodKpis.cartsRecovered ?? realtime.recoveredCarts ?? 0,
     cartRecoveryMessagesSent:
       periodKpis.cartRecoveryMessagesSent ?? realtime.cartRecoveryMessagesSent ?? 0,
-    cartRevenueRecovered: periodKpis.cartRevenueRecovered ?? realtime.cartRevenueRecovered ?? 0,
+    cartRevenueRecovered:
+      periodKpis.revenueRecovered ?? periodKpis.cartRevenueRecovered ?? realtime.cartRevenueRecovered ?? 0,
+    recoveryRate: periodKpis.recoveryRate ?? periodKpis.cartRecoveryRate ?? realtime.recoveryRate ?? 0,
+    messageEfficiencyRate: periodKpis.messageEfficiencyRate ?? realtime.messageEfficiencyRate ?? 0,
     periodKpis,
   };
 }

@@ -25,6 +25,7 @@ const { selectFairClientBatch } = require('../utils/commerce/cartCronFairness');
 const { pushCartRecoveryDlq } = require('../utils/commerce/cartRecoveryDlq');
 const { hasPendingMarketingSequenceSend } = require('../utils/commerce/cartSequenceSendDedup');
 const { pickAbTestTemplate, resolveAbTestTemplatesForSlot } = require('../utils/commerce/cartRecoveryAbTest');
+const { ABANDONED_CART_TAG } = require('../constants/cartRecoveryTags');
 
 const CART_DEDUP_TTL_SEC = 48 * 3600;
 
@@ -106,7 +107,10 @@ async function gateCartSend(client, lead, config, now) {
 const CART_BATCH_SORT = { exitIntentAt: -1, cartValue: -1, cartAbandonedAt: 1, lastCartEventAt: 1 };
 
 // Helper to check if a specific node role was handled previously
-const wasRoleHandled = (lead, role) => lead.activityLog.some(l => l.action === 'automation_nudge' && l.details === role);
+const wasRoleHandled = (lead, role) =>
+  (lead.activityLog || []).some(
+    (l) => l.action === 'automation_nudge' && l.details === role
+  );
 
 // Outbound message recording helper
 async function recordNudge(lead, body, type = 'text') {
@@ -162,14 +166,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
         const contactId = String(lead._id);
         const idempotencyKey = `cart:${checkoutToken}:step${stepNum}:${contactId}`;
 
-        // 1. Prepare Data
-        let imageUrl = null;
-        if (includeImage && lead.cartSnapshot?.items?.[0]?.image) {
-            imageUrl = lead.cartSnapshot.items[0].image;
-        }
-
-        const itemName = lead.cartSnapshot?.items?.[0]?.title || "items in your cart";
-        const totalValue = lead.cartSnapshot?.totalPrice ? `₹${lead.cartSnapshot.totalPrice}` : "";
+        // 1. Prepare checkout URL for email + tracked WA button
         const checkoutUrl = buildLeadRecoveryUrl(client, lead, stepNum);
 
         let successfullySent = false;
@@ -257,7 +254,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
               }
             }
             const { components } = buildCartRecoveryComponents(lead, client, stepNum, {
-              includeHeaderImage: stepNum !== 2,
+              includeHeaderImage: includeImage !== false,
               discountCode: lead.lastDiscountCode || lead.discountCode,
               recoveryUrl: trackedRecoveryUrl,
             });
@@ -475,7 +472,7 @@ async function runAbandonedCartTick() {
                           },
                         ],
                     },
-                    { $set: { cartStatus: 'abandoned', cartAbandonedAt: now, nextPromotionAt: null } }
+                    { $set: { cartStatus: 'abandoned', cartAbandonedAt: now, nextPromotionAt: null }, $addToSet: { tags: ABANDONED_CART_TAG } }
                 );
                 if (promoteResult.modifiedCount > 0) {
                     try {

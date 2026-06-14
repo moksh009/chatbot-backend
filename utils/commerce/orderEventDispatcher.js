@@ -108,8 +108,8 @@ async function dispatchOrderStatusAutomation({
     clientConfig.wizardFeatures && typeof clientConfig.wizardFeatures.toObject === 'function'
       ? clientConfig.wizardFeatures.toObject()
       : clientConfig.wizardFeatures || {};
-  /** Default true when unset — backward compatible. */
-  const autoShopifyShippedWaEnabled = wf.enableAutoShopifyShippedWhatsApp !== false;
+  /** Only when explicitly enabled — avoids legacy sends merchants did not turn on. */
+  const autoShopifyShippedWaEnabled = wf.enableAutoShopifyShippedWhatsApp === true;
   const skipWebhookShippedCustomerWa =
     isWebhook &&
     (next === 'shipped' || next === 'fulfilled') &&
@@ -160,8 +160,10 @@ async function dispatchOrderStatusAutomation({
 
   const shouldTextFallback =
     !skipWebhookShippedCustomerWa &&
+    autoShopifyShippedWaEnabled &&
     (order.customerPhone || order.phone) &&
-    (!wa.templateAttempted || !wa.ok) &&
+    wa.templateAttempted &&
+    !wa.ok &&
     auto.matched === 0;
 
   let textFallbackSent = false;
@@ -222,13 +224,7 @@ async function dispatchOrderStatusAutomation({
           source,
         });
       } else if (!wa.templateAttempted && wa.reason === 'no_mapping') {
-        await appendOrderWhatsAppActivity(oid, {
-          event: next,
-          channel: 'none',
-          success: false,
-          reason: 'no_template_configured',
-          source,
-        });
+        /** No active template mapping — nothing attempted; do not log as a failure. */
       }
     }
   } catch (logErr) {

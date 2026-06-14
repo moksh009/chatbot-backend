@@ -1,7 +1,9 @@
 'use strict';
 
 const Order = require('../../models/Order');
+const Client = require('../../models/Client');
 const { buildShopifyOrderSet, shopifyOrderFilter, loadVariantCompareAtMap } = require('./shopifyOrderMapper');
+const { reconcileCartRecoveryFromShopifyOrder } = require('../commerce/cartRecoveryOrderReconcile');
 
 /** Fields needed for payment, COD, fulfillment, and 3PL tracking on sync. */
 const SYNC_ORDER_FIELDS =
@@ -49,6 +51,7 @@ async function fetchAllShopifyOrdersForSync(shop) {
  */
 async function syncShopifyOrdersToMongo(clientId, shop) {
   const orders = await fetchAllShopifyOrdersForSync(shop);
+  const client = await Client.findOne({ clientId }).lean();
   const variantCompareAtMap = await loadVariantCompareAtMap(clientId, orders);
   let syncedCount = 0;
   let failedCount = 0;
@@ -99,6 +102,12 @@ async function syncShopifyOrdersToMongo(clientId, shop) {
         }
       }
       syncedCount++;
+
+      if (client) {
+        await reconcileCartRecoveryFromShopifyOrder(client, data, {
+          source: 'shopify_order_sync',
+        }).catch(() => {});
+      }
     } catch (individualErr) {
       console.error(
         `[Sync] Failed to process order ${data.name} for ${clientId}:`,

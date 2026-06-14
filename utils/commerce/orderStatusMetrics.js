@@ -4,6 +4,23 @@ const STATUSES = ['paid', 'shipped', 'delivered', 'cancelled'];
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Reasons that are setup gaps, not Meta send failures merchants should panic about. */
+const NON_ACTIONABLE_FAILURE_REASONS = new Set([
+  'no_template_configured',
+  'no_mapping',
+  'auto_shipped_disabled',
+]);
+
+function isActionableFailureEntry(entry) {
+  if (!entry || entry.success !== false) return false;
+  const reason = String(entry.reason || '').toLowerCase().trim();
+  if (NON_ACTIONABLE_FAILURE_REASONS.has(reason)) return false;
+  const channel = String(entry.channel || '').toLowerCase();
+  if (channel === 'none') return false;
+  if (entry.templateName) return true;
+  return channel === 'template' || channel === 'text' || channel === 'automation';
+}
+
 /**
  * Aggregate whatsappActivityLog across orders for SAC status cards.
  * @param {Array<{ _id?: *, orderId?: string, orderNumber?: string, whatsappActivityLog?: object[] }>} orders
@@ -45,7 +62,7 @@ function aggregateOrderStatusMetrics(orders, opts = {}) {
         if (!prev || atMs > prev) byStatus[ev].lastSendAt = entry.at;
       }
 
-      if (!entry.success && atMs >= weekAgo) {
+      if (!entry.success && atMs >= weekAgo && isActionableFailureEntry(entry)) {
         failures.push({
           orderId: String(order._id || order.orderId || ''),
           orderNumber: order.orderNumber || order.orderId || '',
@@ -74,4 +91,6 @@ function aggregateOrderStatusMetrics(orders, opts = {}) {
 module.exports = {
   STATUSES,
   aggregateOrderStatusMetrics,
+  isActionableFailureEntry,
+  NON_ACTIONABLE_FAILURE_REASONS,
 };

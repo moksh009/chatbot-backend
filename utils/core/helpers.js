@@ -1,7 +1,8 @@
 "use strict";
 
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
-const { normalizeIndianPhone } = require("./normalizeIndianPhone");
+const { normalizeIndianPhone, indianPhoneSuffix } = require("./normalizeIndianPhone");
+const { repairPhoneDigits } = require("./phoneSanitizer");
 
 /**
  * ISO country for phone parsing — Shopify stores often use IN; override per client.
@@ -28,35 +29,134 @@ function normalizePhone(phoneRaw, defaultCountry = "IN") {
   if (!raw) return "";
 
   const country = String(defaultCountry || "IN").toUpperCase();
+  const digitsOnly = raw.replace(/\D/g, "");
 
-  if (country === "IN") {
-    const e164 = normalizeIndianPhone(raw);
-    if (e164) return e164.replace(/^\+/, "");
+  // Corrupted concatenations — repair before libphonenumber mis-parses long digit strings
+  if (country === "IN" && digitsOnly.length > 12) {
+    const repaired = repairPhoneDigits(raw, country);
+    return repaired || "";
+  }
+
+  // Shopify / NANP fictional test lines (555-01XX) — never treat as Indian mobiles
+  if (digitsOnly.length === 10 && /^\d{3}55501\d{2}$/.test(digitsOnly)) {
+    return `1${digitsOnly}`;
   }
 
   try {
     if (raw.startsWith("+")) {
       const parsed = parsePhoneNumberFromString(raw);
       if (parsed?.isValid()) return parsed.number.replace("+", "");
-    } else {
-      const parsed = parsePhoneNumberFromString(raw, country);
-      if (parsed?.isValid()) return parsed.number.replace("+", "");
     }
   } catch (_) {
     /* fall through */
   }
 
-  let digits = raw.replace(/\D/g, "");
+  // North American numbers stored without + (1 + 10 digits)
+  if (digitsOnly.length === 11 && digitsOnly.startsWith("1")) {
+    try {
+      const parsed = parsePhoneNumberFromString(`+${digitsOnly}`);
+      if (parsed?.isValid()) return parsed.number.replace("+", "");
+    } catch (_) {
+      /* fall through */
+    }
+  }
+
+  try {
+    const parsed = parsePhoneNumberFromString(raw, country);
+    if (parsed?.isValid()) return parsed.number.replace("+", "");
+  } catch (_) {
+    /* fall through */
+  }
+
+  if (country === "IN") {
+    const e164 = normalizeIndianPhone(raw);
+    if (e164) return e164.replace(/^\+/, "");
+  }
+
+  const repaired = repairPhoneDigits(raw, country);
+  if (repaired) return repaired;
+
+  let digits = digitsOnly;
   if (!digits) return "";
 
   if (digits.startsWith("0") && digits.length === 11 && country === "IN") {
     digits = "91" + digits.slice(1);
-  } else if (digits.length === 10 && country === "IN") {
-    digits = "91" + digits;
+    const e164 = normalizeIndianPhone(digits);
+    if (e164) return e164.replace(/^\+/, "");
+  } else if (digits.length === 10 && country === "IN" && /^[6-9]\d{9}$/.test(digits)) {
+    return "91" + digits;
   }
 
-  if (digits.length >= 10 && digits.length <= 15) return digits;
+  if (digits.length === 11 && digits.startsWith("1")) return digits;
+
   return "";
+}
+
+/**
+ * Human-readable phone for dashboard tables — Indian merchants see 10-digit mobiles
+ * (matches Orders page); international numbers keep country formatting.
+ */
+function formatPhoneForDisplay(phoneRaw, defaultCountry = "IN") {
+  if (phoneRaw == null || phoneRaw === "") return null;
+  const raw = String(phoneRaw).trim();
+  if (!raw) return null;
+
+  const country = String(defaultCountry || "IN").toUpperCase();
+  const normalized = normalizePhone(raw, country);
+  if (!normalized) return null;
+
+  const suffix = indianPhoneSuffix(normalized);
+
+  if (normalized.length === 11 && normalized.startsWith("1")) {
+    try {
+      const parsed = parsePhoneNumberFromString(`+${normalized}`);
+      if (parsed?.isValid()) {
+        return parsed.formatInternational().replace(/\s+/g, " ").trim();
+      }
+    } catch (_) {
+      /* fall through */
+    }
+  }
+
+  if (
+    (country === "IN" || normalized.startsWith("91")) &&
+    normalized.length === 12 &&
+    normalized.startsWith("91") &&
+    /^[6-9]\d{9}$/.test(suffix)
+  ) {
+    return suffix;
+  }
+
+  if (country === "IN" && /^[6-9]\d{9}$/.test(suffix) && normalized.length <= 12) {
+    return suffix;
+  }
+
+  if (normalized.startsWith("91") && /^[6-9]\d{9}$/.test(suffix)) {
+    return suffix;
+  }
+
+  if (normalized.length === 11 && normalized.startsWith("1")) {
+    try {
+      const parsed = parsePhoneNumberFromString(`+${normalized}`);
+      if (parsed?.isValid()) {
+        return parsed.formatInternational().replace(/\s+/g, " ").trim();
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    return `+1 ${normalized.slice(1, 4)} ${normalized.slice(4, 7)} ${normalized.slice(7)}`;
+  }
+
+  try {
+    const parsed = parsePhoneNumberFromString(`+${normalized}`);
+    if (parsed?.isValid()) {
+      return parsed.formatInternational().replace(/\s+/g, " ").trim();
+    }
+  } catch (_) {
+    /* fall through */
+  }
+
+  return null;
 }
 
 function normalizePhoneWithCountry(phoneRaw, client) {
@@ -74,6 +174,7 @@ function parseDateFromId(id, prefix) {
 module.exports = {
   normalizePhone,
   normalizePhoneWithCountry,
+  formatPhoneForDisplay,
   resolveDefaultCountry,
   parseDateFromId,
 };

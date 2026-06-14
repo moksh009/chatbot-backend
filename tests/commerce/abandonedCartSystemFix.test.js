@@ -120,9 +120,9 @@ test('Cart recovery — 24h WA attribution window helper', () => {
   assert.ok(contactPhoneKey('+919876543210').endsWith('9876543210'));
 });
 
-test('Cart recovery — min followup 1 delay is 30 minutes', () => {
-  const { CART_FOLLOWUP_MIN_MINUTES } = require('../../utils/commerce/commerceAutomationPresets');
-  assert.equal(CART_FOLLOWUP_MIN_MINUTES.followup_1, 30);
+test('Cart recovery — min followup 1 delay is 15 minutes (SSOT)', () => {
+  const { CART_FOLLOWUP_MIN_MINUTES } = require('../../constants/cartRecoveryDefaults');
+  assert.equal(CART_FOLLOWUP_MIN_MINUTES.followup_1, 15);
 });
 
 test('Task 1 — verifyRazorpaySignature validates HMAC', () => {

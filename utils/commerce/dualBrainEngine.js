@@ -1552,6 +1552,22 @@ async function runDualBrainEngine(parsedMessage, client) {
     });
     if (ndrHandled) return true;
   }
+
+  // ── Template support buttons (Contact support / Need help) — no flow required ──
+  if (inboundText) {
+    const { isTemplateSupportButton, handleTemplateSupportButtonTap } = require('./templateSupportButtons');
+    if (isTemplateSupportButton(inboundText)) {
+      const supportHandled = await handleTemplateSupportButtonTap({
+        client,
+        phone,
+        convo,
+        lead,
+        io,
+        inboundText,
+      });
+      if (supportHandled) return true;
+    }
+  }
   
   // ── RTO Protection Suite: COD confirm + NDR rescue (WhatsApp button taps) ──
   if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id) {
@@ -3695,11 +3711,13 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       const NotificationService = require('../core/notificationService');
       await NotificationService.sendAdminAlert(client, {
         customerPhone: phone,
+        conversationId: convo._id,
         topic: alertMsg,
         triggerSource: triggerSource || "WhatsApp flow",
         channel: alertChannel,
         adminPhoneOverride: adminWaDigits.length >= 10 ? adminWaDigits : undefined,
         customerQuery,
+        lead,
       });
     } catch (err) {
       log.error(`AdminAlert dispatch failed: ${err.message}`);
@@ -5218,7 +5236,14 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
   try {
     const callIntentRegex = /\b(call|phone|talk|speak|representative|human|agent|person|connect|callback|calling)\b/i;
     if (callIntentRegex.test(text)) {
-      await NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'Customer Requesting Call/Human', triggerSource: 'AI Active Listener' });
+      await NotificationService.sendAdminAlert(client, {
+        customerPhone: phone,
+        conversationId: convo?._id,
+        topic: 'Customer Requesting Call/Human',
+        triggerSource: 'AI Active Listener',
+        customerQuery: text,
+        lead,
+      });
       await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
       await sendWhatsAppText(client, phone, `I've just notified our team that you'd like to speak with someone. A representative will reach out to you shortly! 📞✨`);
       return true;
@@ -5540,7 +5565,13 @@ REPLY:
       }
 
       if (!isKeyError && global.NotificationService) {
-         await global.NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'AI Gateway Timeout/Failure', triggerSource: 'runAIFallback' });
+         await global.NotificationService.sendAdminAlert(client, {
+           customerPhone: phone,
+           conversationId: convo?._id,
+           topic: 'AI Gateway Timeout/Failure',
+           triggerSource: 'runAIFallback',
+           lead,
+         });
          // Only escalate to HUMAN_TAKEOVER on actual logic/timeout errors, not missing keys
          await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
       }

@@ -9,7 +9,7 @@ const {
   applyMongoCancellations,
   finishCancelSideEffects,
 } = require('../messaging/cancelAllAutomationsFor');
-const { indianPhoneLookupVariants } = require('../core/normalizeIndianPhone');
+const { indianPhoneLookupVariants, indianPhoneSuffix } = require('../core/normalizeIndianPhone');
 const { normalizeEmail } = require('../commerce/marketingConsent');
 const { buildOrderPlacedOptInSetFields } = require('../commerce/marketingOptStatusRules');
 const log = require('../core/logger')('HandleOrderAtomic');
@@ -72,6 +72,16 @@ async function findRecoveryLead(clientId, data, cleanPhone) {
       cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
     });
     if (byPhone) return byPhone;
+
+    const suffix = indianPhoneSuffix(cleanPhone);
+    if (suffix.length >= 8) {
+      const bySuffix = await AdLead.findOne({
+        clientId,
+        phoneNumber: { $regex: new RegExp(`${suffix}$`) },
+        cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
+      });
+      if (bySuffix) return bySuffix;
+    }
   }
 
   if (orderEmail) {
@@ -84,7 +94,16 @@ async function findRecoveryLead(clientId, data, cleanPhone) {
   }
 
   if (phoneLookup.length) {
-    return AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } });
+    const anyPhone = await AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } });
+    if (anyPhone) return anyPhone;
+
+    const suffix = indianPhoneSuffix(cleanPhone);
+    if (suffix.length >= 8) {
+      return AdLead.findOne({
+        clientId,
+        phoneNumber: { $regex: new RegExp(`${suffix}$`) },
+      });
+    }
   }
 
   if (orderEmail) {

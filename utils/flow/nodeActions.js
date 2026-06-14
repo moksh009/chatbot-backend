@@ -66,13 +66,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           conversationId: convo?._id,
           topic: "Human takeover requested (ESCALATE_HUMAN)",
           triggerSource: "Flow action",
+          lead,
         });
       } catch (e) {
-        if (client.adminPhoneNumber) {
-          await WhatsApp.sendText(client, client.adminPhoneNumber,
-            `👋 Human needed: ${phone}. Chat: https://wa.me/${phone}`
-          );
-        }
+        console.error(`[NodeActions] ESCALATE_HUMAN admin alert failed: ${e.message}`);
       }
       break;
     }
@@ -471,11 +468,13 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
       await NotificationService.sendAdminAlert(client, {
         customerPhone: phone,
+        conversationId: convo?._id,
         topic,
         triggerSource: node.data?.triggerSource || "Automation Flow",
         channel,
         adminPhoneOverride: node.data?.phone ? String(node.data.phone).replace(/\D/g, "") : undefined,
         customerQuery: lead?.capturedData?.support_query || "",
+        lead,
       });
 
       if (global.io) {

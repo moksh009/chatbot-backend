@@ -564,7 +564,13 @@ router.post('/library/preview', protect, async (req, res) => {
     if (!key) return res.status(400).json({ success: false, message: 'Missing template key' });
 
     const entry = PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === key || t.metaName === key);
-    if (!entry) return res.status(404).json({ success: false, message: 'Template not in library' });
+
+    const { getOrderMessageBlueprint } = require('../constants/orderMessageWaBlueprints');
+    const blueprint = !entry ? getOrderMessageBlueprint(key) : null;
+
+    if (!entry && !blueprint) {
+      return res.status(404).json({ success: false, message: 'Template not in library' });
+    }
 
     const client = clientId
       ? await Client.findOne({ clientId }).select('businessName brandName nicheData businessLogo').lean()
@@ -587,6 +593,52 @@ router.post('/library/preview', protect, async (req, res) => {
       order_date: '16 May 2026',
       first_product_image: client?.nicheData?.businessLogo || client?.businessLogo || 'https://via.placeholder.com/400x200?text=Product',
     };
+
+    if (blueprint && !entry) {
+      const bodyComp = (blueprint.components || []).find((c) => String(c.type).toUpperCase() === 'BODY');
+      const examples = bodyComp?.example?.body_text?.[0] || [];
+      const variableExamples = {};
+      examples.forEach((val, i) => {
+        const n = String(i + 1);
+        variableExamples[n] = String(val ?? '');
+        variableExamples[`body_${n}`] = variableExamples[n];
+      });
+      let resolvedBody = bodyComp?.text || '';
+      Object.keys(variableExamples).forEach((k) => {
+        if (/^\d+$/.test(k)) {
+          resolvedBody = resolvedBody.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), variableExamples[k]);
+        }
+      });
+
+      let clientStatus = null;
+      if (clientId) {
+        const doc = await MetaTemplate.findOne({
+          clientId,
+          name: blueprint.name,
+        })
+          .select('submissionStatus name totalSends')
+          .lean();
+        clientStatus = doc
+          ? { name: doc.name, status: doc.submissionStatus, totalSends: doc.totalSends || 0 }
+          : null;
+      }
+
+      return res.json({
+        success: true,
+        entry: { key: blueprint.name, metaName: blueprint.name, category: blueprint.category },
+        preview: {
+          body: resolvedBody,
+          headerText: null,
+          headerType: null,
+          headerImageUrl: sampleContext.first_product_image,
+          footerText: null,
+          buttons: [],
+          sampleContext,
+          variableExamples,
+        },
+        clientStatus,
+      });
+    }
 
     const resolvedBody = resolvePositionalPreviewBody(entry.bodyText, entry.variableMappings, sampleContext, brand);
     const variableExamples = {};

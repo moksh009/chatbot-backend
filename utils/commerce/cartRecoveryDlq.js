@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { getAppRedis } = require('../core/redisFactory');
+const log = require('../core/logger')('CartRecoveryDlq');
 
 const DLQ_MAX = 500;
 const DLQ_TTL_SEC = 14 * 24 * 3600;
@@ -20,7 +21,14 @@ function parseEntry(raw) {
 
 async function pushCartRecoveryDlq(entry) {
   const redis = getAppRedis();
-  if (!redis || redis.status !== 'ready') return null;
+  if (!redis || redis.status !== 'ready') {
+    log.warn('[DLQ] Redis unavailable — cart recovery failure not queued', {
+      clientId: entry?.clientId,
+      leadId: entry?.leadId,
+      reason: entry?.reason,
+    });
+    return null;
+  }
 
   const payload = {
     id: entry.id || crypto.randomUUID(),

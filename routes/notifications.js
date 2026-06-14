@@ -37,13 +37,9 @@ router.post('/', protect, async (req, res) => {
             metadata: metadata || {}
         });
 
-        // Broadcast to specific client room
         const io = req.app.get('socketio');
         if (io) {
             io.to(`client_${clientId}`).emit('new_notification', notification);
-            // Push updated badge counts so Sidebar updates without polling
-            const unreadCount = await Notification.countDocuments({ clientId, status: 'unread' });
-            io.to(`client_${clientId}`).emit('notification_badge_update', { notifications: unreadCount });
             console.log(`[Notification] Broadcasted to client_${clientId}:`, title);
         }
 
@@ -64,12 +60,6 @@ router.patch('/:id/read', protect, async (req, res) => {
     );
     if (!notification) return res.status(404).json({ success: false, message: "Notification not found" });
 
-    const io = req.app.get('socketio');
-    if (io) {
-      const unreadCount = await Notification.countDocuments({ clientId: req.user.clientId, status: 'unread' });
-      io.to(`client_${req.user.clientId}`).emit('notification_badge_update', { notifications: unreadCount });
-    }
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -81,11 +71,6 @@ router.post('/read-all', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
     await Notification.updateMany({ clientId, status: 'unread' }, { status: 'read' });
-
-    const io = req.app.get('socketio');
-    if (io) {
-      io.to(`client_${clientId}`).emit('notification_badge_update', { notifications: 0 });
-    }
 
     res.json({ success: true });
   } catch (err) {
@@ -99,12 +84,6 @@ router.delete('/:id', protect, async (req, res) => {
     const deleted = await Notification.findOneAndDelete({ _id: req.params.id, clientId: req.user.clientId });
     if (!deleted) return res.status(404).json({ success: false, message: "Notification not found" });
 
-    const io = req.app.get('socketio');
-    if (io) {
-      const unreadCount = await Notification.countDocuments({ clientId: req.user.clientId, status: 'unread' });
-      io.to(`client_${req.user.clientId}`).emit('notification_badge_update', { notifications: unreadCount });
-    }
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -116,11 +95,6 @@ router.post('/clear-all', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
     await Notification.deleteMany({ clientId });
-
-    const io = req.app.get('socketio');
-    if (io) {
-      io.to(`client_${clientId}`).emit('notification_badge_update', { notifications: 0 });
-    }
 
     res.json({ success: true });
   } catch (err) {

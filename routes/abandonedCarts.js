@@ -270,6 +270,22 @@ router.put('/third-party/:clientId/:provider', protect, verifyClientAccess, asyn
   try {
     const { clientId, provider } = req.params;
     let { webhookSecret } = req.body || {};
+    const providerMap = {
+      gokwik: 'gokwik',
+      razorpay: 'razorpay_magic',
+      'razorpay-magic': 'razorpay_magic',
+      razorpay_magic: 'razorpay_magic',
+      shiprocket: 'shiprocket_checkout',
+      'shiprocket-checkout': 'shiprocket_checkout',
+      shiprocket_checkout: 'shiprocket_checkout',
+    };
+    const integrationKey = providerMap[provider];
+    if (!webhookSecret && integrationKey) {
+      const Client = require('../models/Client');
+      const client = await Client.findOne({ clientId }).select('audienceContext').lean();
+      webhookSecret =
+        client?.audienceContext?.integrations?.[integrationKey]?.webhookSecret || '';
+    }
     if (!webhookSecret) {
       webhookSecret = generateWebhookSecret();
     }
@@ -404,6 +420,7 @@ router.post(
 router.get('/workspace/leads/:leadId/gdpr-export', protect, verifyClientAccess, logPersonalDataAccess, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
+    const format = String(req.query.format || 'json').toLowerCase();
     const { exportLeadBundle } = require('../services/gdpr/leadGdprService');
     const bundle = await exportLeadBundle({
       leadId: req.params.leadId,
@@ -413,6 +430,15 @@ router.get('/workspace/leads/:leadId/gdpr-export', protect, verifyClientAccess, 
     if (bundle.clientId !== clientId) {
       return res.status(403).json({ success: false, message: 'Forbidden' });
     }
+
+    if (format === 'pdf') {
+      const { streamCartLeadGdprPdf } = require('../utils/commerce/cartLeadGdprPdf');
+      const lead = bundle?.records?.AdLead?.[0] || {};
+      const slug = String(lead.name || 'cart-lead').replace(/[^a-z0-9]+/gi, '-').slice(0, 40);
+      const filename = `cart-lead-${slug}-${new Date().toISOString().split('T')[0]}`;
+      return streamCartLeadGdprPdf(bundle, res, { filename });
+    }
+
     res.json({ success: true, bundle });
   } catch (err) {
     const status = err.message === 'lead_not_found' ? 404 : 500;

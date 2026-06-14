@@ -12,7 +12,7 @@ test('aggregateOrderStatusMetrics — 7d counts and success rate', () => {
       orderNumber: '#1',
       whatsappActivityLog: [
         { at: '2026-05-23T10:00:00.000Z', event: 'shipped', success: true, templateName: 'eco_shipping_update' },
-        { at: '2026-05-20T10:00:00.000Z', event: 'shipped', success: false, reason: 'no_phone' },
+        { at: '2026-05-20T10:00:00.000Z', event: 'shipped', success: false, reason: 'no_phone', channel: 'template', templateName: 'eco_shipping_update' },
       ],
     },
     {
@@ -33,4 +33,35 @@ test('aggregateOrderStatusMetrics — 7d counts and success rate', () => {
   assert.equal(byStatus.paid.count7d, 1);
   assert.equal(failures.length, 1);
   assert.equal(failures[0].orderNumber, '#1');
+});
+
+test('aggregateOrderStatusMetrics — ignores non-actionable setup failures', () => {
+  const now = Date.parse('2026-05-24T12:00:00.000Z');
+  const orders = [
+    {
+      _id: 'c',
+      orderNumber: '#3',
+      whatsappActivityLog: [
+        {
+          at: '2026-05-23T10:00:00.000Z',
+          event: 'shipped',
+          success: false,
+          reason: 'no_template_configured',
+          channel: 'none',
+        },
+        {
+          at: '2026-05-23T11:00:00.000Z',
+          event: 'shipped',
+          success: false,
+          reason: 'meta_send_failed',
+          channel: 'template',
+          templateName: 'eco_shipping_update',
+        },
+      ],
+    },
+  ];
+
+  const { failures } = aggregateOrderStatusMetrics(orders, { now });
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, 'meta_send_failed');
 });

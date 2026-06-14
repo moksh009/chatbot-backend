@@ -11,41 +11,6 @@
  */
 const STANDARD_TEMPLATES = [
   {
-    id: 'eco_abandoned_cart',
-    name: 'eco_abandoned_cart',
-    category: 'MARKETING',
-    language: 'en_US',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'IMAGE',
-        example: { header_handle: [ "https://images.unsplash.com/photo-1523275335684-37898b6baf30" ] }
-      },
-      {
-        type: 'BODY',
-        text: "Hi {{1}}, your cart is waiting! 🛒\n\nYou left *{{2}}* and other items behind. Total: *{{3}}*.\n\nComplete your order now and we'll ship it today! ⚡️\n\nCheckout Link: {{4}}",
-        example: { body_text: [ ["Customer", "Best Seller Watch", "₹1,299", "https://yourstore.com/cart"] ] }
-      },
-      {
-        type: 'FOOTER',
-        text: "Reply 'STOP' to opt-out."
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Shop Now' },
-          { type: 'QUICK_REPLY', text: 'Help Me' }
-        ]
-      }
-    ],
-    variableMapping: {
-      1: 'Customer Name',
-      2: 'Product Name',
-      3: 'Cart Total',
-      4: 'Checkout URL'
-    }
-  },
-  {
     id: 'eco_order_confirmed',
     name: 'eco_order_confirmed',
     category: 'UTILITY',
@@ -58,7 +23,7 @@ const STANDARD_TEMPLATES = [
       },
       {
         type: 'BODY',
-        text: "🎉 *Order Confirmed!*\n\nHi {{1}}, thanks for shopping with us. Your order *#{{2}}* for *{{3}}* is being prepared! 📦\n\nPayment: {{4}}\n\nWe'll notify you as soon as it ships! ✨",
+        text: "🎉 *Order confirmed!*\n\nHi {{1}}, thanks for shopping with us!\n\nOrder *#{{2}}* for *{{3}}* is being prepared. 📦\n\nPayment: {{4}}\n\nWe'll notify you when it ships. Tap *Contact support* if you need help.",
         example: { body_text: [ ["Customer", "10294", "₹2,450", "Prepaid"] ] }
       },
       {
@@ -68,8 +33,8 @@ const STANDARD_TEMPLATES = [
       {
         type: 'BUTTONS',
         buttons: [
-          { type: 'QUICK_REPLY', text: 'Track Order' },
-          { type: 'QUICK_REPLY', text: 'Contact Support' }
+          { type: 'QUICK_REPLY', text: 'Track order' },
+          { type: 'QUICK_REPLY', text: 'Contact support' }
         ]
       }
     ],
@@ -93,12 +58,19 @@ const STANDARD_TEMPLATES = [
       },
       {
         type: 'BODY',
-        text: "🚚 *Your order has shipped!*\n\nHigh five, {{1}}! Order *#{{2}}* is on its way. 🚀\n\nYou can track your package here:\n{{3}}",
+        text: "🚚 *Your order has shipped!*\n\nHi {{1}}! Order *#{{2}}* is on the way. 🚀\n\nTrack your package here:\n{{3}}\n\nNeed help? Tap *Contact support* below.",
         example: { body_text: [ ["Customer", "10294", "https://track.it/ABC123XYZ"] ] }
       },
       {
         type: 'FOOTER',
         text: "Reply 'STOP' to opt-out."
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Track order' },
+          { type: 'QUICK_REPLY', text: 'Contact support' }
+        ]
       }
     ],
     variableMapping: {
@@ -120,7 +92,7 @@ const STANDARD_TEMPLATES = [
       },
       {
         type: 'BODY',
-        text: "✅ *Order Delivered!*\n\nHi {{1}}, your order *#{{2}}* has been successfully delivered! 🎁\n\nWe hope you love your new purchase. Don't forget to share a photo and tag us! 📸",
+        text: "✅ *Order delivered!*\n\nHi {{1}}, your order *#{{2}}* has been delivered! 🎁\n\nWe hope you love your purchase. Share a photo and tag us! 📸\n\nSomething wrong? Tap *Contact support*.",
         example: { body_text: [ ["Customer", "10294"] ] }
       },
       {
@@ -130,8 +102,8 @@ const STANDARD_TEMPLATES = [
       {
         type: 'BUTTONS',
         buttons: [
-          { type: 'QUICK_REPLY', text: 'Leave a Review' },
-          { type: 'QUICK_REPLY', text: 'Support' }
+          { type: 'QUICK_REPLY', text: 'Leave a review' },
+          { type: 'QUICK_REPLY', text: 'Contact support' }
         ]
       }
     ],

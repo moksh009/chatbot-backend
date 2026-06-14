@@ -167,7 +167,7 @@ const WizardFeaturesSchema = new mongoose.Schema({
    * may send the mapped "shipped" WhatsApp template (and session fallback text).
    * Does not alter generated chat flows — server-side automation only.
    */
-  enableAutoShopifyShippedWhatsApp: { type: Boolean, default: true }
+  enableAutoShopifyShippedWhatsApp: { type: Boolean, default: false }
 }, { _id: false });
 
 /** Per-tenant cart recovery timing + smart send (Phase 3 SSOT). */
@@ -184,6 +184,7 @@ const CartRecoveryConfigSchema = new mongoose.Schema({
   discountEnabled: { type: Boolean, default: false },
   discountStep2Pct: { type: Number, default: 0 },
   discountStep3Pct: { type: Number, default: 0 },
+  abTestEnabled: { type: Boolean, default: false },
 }, { _id: false });
 
 /** RTO Protection Suite — COD confirmation + NDR rescue (WhatsApp). */

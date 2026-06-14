@@ -208,7 +208,28 @@ async function listTemplates(req, res) {
       q.submissionStatus = status;
     }
     if (usageTagFilters.length > 0) {
-      q.usageTags = { $in: usageTagFilters };
+      const {
+        isCatalogUsageTag,
+        getCatalogMetaNamesForUsageTags,
+      } = require('../../utils/meta/templateCatalogUsageTags');
+      const catalogFilters = usageTagFilters.filter(isCatalogUsageTag);
+      const customFilters = usageTagFilters.filter((t) => !isCatalogUsageTag(t));
+      const catalogNames = getCatalogMetaNamesForUsageTags(catalogFilters);
+      const tagOr = [];
+      if (customFilters.length) tagOr.push({ usageTags: { $in: customFilters } });
+      if (catalogNames.length) tagOr.push({ name: { $in: catalogNames } });
+      if (tagOr.length === 1) {
+        Object.assign(q, tagOr[0]);
+      } else if (tagOr.length > 1) {
+        if (Array.isArray(q.$and)) {
+          q.$and.push({ $or: tagOr });
+        } else if (q.$or) {
+          q.$and = [{ $or: q.$or }, { $or: tagOr }];
+          delete q.$or;
+        } else {
+          q.$or = tagOr;
+        }
+      }
     }
     if (search) {
       const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -267,7 +288,12 @@ async function listTemplates(req, res) {
         total,
         totalPages: Math.max(Math.ceil(total / limit), 1),
       },
-      availableUsageTags: workspaceTagRows.map((tag) => tag.name),
+      availableUsageTags: [
+        ...new Set([
+          ...require('../../utils/meta/templateCatalogUsageTags').getAllCatalogUsageTags(),
+          ...workspaceTagRows.map((tag) => tag.name),
+        ]),
+      ].sort((a, b) => a.localeCompare(b)),
     });
   } catch (err) {
     console.error('[meta-templates list]', err);

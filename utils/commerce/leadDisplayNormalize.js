@@ -77,8 +77,29 @@ function hasImportSignal(lead) {
 function hasWhatsAppInbound(lead) {
   if (Number(lead?.inboundMessageCount) > 0) return true;
   if (lead?.lastInboundAt) return true;
+  if (lead?.conversationLastMessageAt) return true;
   const summary = String(lead?.chatSummary || lead?.lastMessageContent || '').trim();
   return summary.length > 0;
+}
+
+/** Channels present on this unified audience row */
+function resolveAudienceChannels(lead) {
+  const channels = [];
+  if (hasShopifyOrderSignal(lead)) channels.push('shopify');
+  if (hasWhatsAppInbound(lead)) channels.push('whatsapp');
+  return channels;
+}
+
+function formatAudienceSourceLabel(lead) {
+  const channels = resolveAudienceChannels(lead);
+  if (channels.includes('shopify') && channels.includes('whatsapp')) {
+    return 'Shopify · WhatsApp';
+  }
+  if (channels.length === 1) {
+    return formatSourceLabel(channels[0]);
+  }
+  const acquisitionKey = resolveAcquisitionSource(lead);
+  return acquisitionKey ? formatSourceLabel(acquisitionKey) : null;
 }
 
 /**
@@ -210,6 +231,7 @@ function normalizeLeadForDisplay(lead, { orders } = {}) {
   const lastPurchaseDate = resolveLastPurchaseDate(base, orders);
   const lastSeenAt = resolveLastSeenAt(base);
   const aov = computeAov(base);
+  const audienceChannels = resolveAudienceChannels(base);
 
   return {
     ...base,
@@ -218,7 +240,8 @@ function normalizeLeadForDisplay(lead, { orders } = {}) {
     lastOrderAt: lastPurchaseDate || base.lastOrderAt || null,
     lastMessageAt: lastSeenAt,
     displaySource: acquisitionKey,
-    displaySourceLabel: acquisitionKey ? formatSourceLabel(acquisitionKey) : null,
+    audienceChannels,
+    displaySourceLabel: formatAudienceSourceLabel(base),
     displayAdChannel: adKey,
     displayAdChannelLabel: adKey ? formatSourceLabel(adKey) : null,
     displayAov: aov,
@@ -231,6 +254,10 @@ module.exports = {
   normalizeLeadForDisplay,
   resolveAcquisitionSource,
   resolveAdChannel,
+  resolveAudienceChannels,
+  formatAudienceSourceLabel,
+  hasShopifyOrderSignal,
+  hasWhatsAppInbound,
   resolveLastSeenAt,
   resolveLastPurchaseDate,
   computeAov,

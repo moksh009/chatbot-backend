@@ -13,6 +13,8 @@ const OrderSchema = new mongoose.Schema({
   customerPhone: { type: String },     // New standardized field
   email: { type: String },             // Legacy field
   customerEmail: { type: String },     // New standardized field for email automation
+  /** Shopify checkout token when order webhook includes it — cart recovery reconcile */
+  checkoutToken: { type: String, default: '' },
   amount: { type: Number },            // Legacy field (not required — totalPrice is used)
   totalPrice: { type: Number },
   /** Raw Shopify Admin REST financial_status (e.g. paid, pending, partially_refunded) */

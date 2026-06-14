@@ -50,10 +50,22 @@ function cartRecoveryVariableMappings(stepNum) {
   };
 }
 
+function formatCartTotalINR(raw) {
+  const n = Number(String(raw || '').replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) {
+    const s = String(raw || '').trim();
+    return s || '—';
+  }
+  return n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+}
+
 function resolveCartRecoveryFieldValue(field, context = {}, opts = {}) {
   const ctxKey = CART_RECOVERY_FIELD_TO_CONTEXT[field];
   let val = context[ctxKey];
   if (field === 'cart_total' && (val == null || val === '')) val = '—';
+  if (field === 'cart_total' && val != null && val !== '' && val !== '—') {
+    val = formatCartTotalINR(val);
+  }
   if (field === 'discount_code') {
     val = opts.discountCode || val || context.discountCode || 'SAVE10';
   }

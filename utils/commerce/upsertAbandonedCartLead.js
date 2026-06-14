@@ -22,6 +22,42 @@ const {
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
+const LEAD_UPSERT_SELECT =
+  'cartStatus isOrderPlaced recoveryStep _id contactCapturedAt checkoutToken cartAbandonedAt createdAt phoneNumber email';
+
+/**
+ * Resolve one canonical lead for upsert — phone, checkout token, or email stub (pixel vs webhook).
+ */
+async function resolveLeadQueryForUpsert(clientId, { phoneE164, phoneLookup, email, checkoutToken }) {
+  if (phoneE164 && phoneLookup.length) {
+    const byPhone = await AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } })
+      .select(LEAD_UPSERT_SELECT)
+      .lean();
+    if (byPhone) return { query: { clientId, _id: byPhone._id }, existing: byPhone };
+  }
+
+  const token = checkoutToken ? String(checkoutToken).trim() : '';
+  if (token) {
+    const byToken = await AdLead.findOne({ clientId, checkoutToken: token })
+      .select(LEAD_UPSERT_SELECT)
+      .lean();
+    if (byToken) return { query: { clientId, _id: byToken._id }, existing: byToken };
+  }
+
+  if (email) {
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const byEmail = await AdLead.findOne({ clientId, email: normalizedEmail })
+      .select(LEAD_UPSERT_SELECT)
+      .lean();
+    if (byEmail) return { query: { clientId, _id: byEmail._id }, existing: byEmail };
+  }
+
+  const insertQuery = phoneE164
+    ? { clientId, phoneNumber: { $in: phoneLookup } }
+    : { clientId, email: String(email).trim().toLowerCase() };
+  return { query: insertQuery, existing: null };
+}
+
 async function fetchShopifyProductImage(client, productId) {
   if (!productId || !client?.shopifyAccessToken || !client?.shopDomain) return null;
   try {
@@ -78,9 +114,39 @@ async function enrichLineItemsWithImages(lineItems = [], client) {
         title: item.title || item.name || item.productName || item.product_title || 'Item',
         name: item.name || item.productName || item.title,
         price: item.price ?? item.productPrice ?? item.line_price ?? '',
+        lineTotal: (() => {
+          const qty = Number(item.quantity || item.productQuantity || item.qty || 1) || 1;
+          const lt = Number(item.lineTotal ?? item.line_total);
+          if (Number.isFinite(lt) && lt > 0) return lt;
+          const p = Number(item.price ?? item.productPrice ?? item.line_price ?? 0);
+          return Number.isFinite(p) && p > 0 ? p * qty : 0;
+        })(),
       };
     })
   );
+}
+
+function normalizeCheckoutAddress(addr) {
+  if (!addr || typeof addr !== 'object') return null;
+  const line1 = String(addr.address1 || addr.line1 || '').trim();
+  const line2 = String(addr.address2 || addr.line2 || '').trim();
+  const city = String(addr.city || '').trim();
+  const province = String(addr.province || addr.state || '').trim();
+  const zip = String(addr.zip || addr.postal_code || '').trim();
+  const country = String(addr.country || '').trim();
+  const name = [addr.first_name, addr.last_name].filter(Boolean).join(' ').trim() || String(addr.name || '').trim();
+  const phone = addr.phone ? String(addr.phone).trim() : null;
+  if (!line1 && !city && !name && !phone) return null;
+  return {
+    name: name || null,
+    phone,
+    address1: line1 || null,
+    address2: line2 || null,
+    city: city || null,
+    province: province || null,
+    zip: zip || null,
+    country: country || null,
+  };
 }
 
 function normalizeIncomingCartItems(rawItems = []) {
@@ -125,9 +191,12 @@ async function upsertAbandonedCartLead(client, data = {}) {
   const cartStatus = data.cartStatus || 'abandoned';
   const now = new Date();
 
-  const leadQuery = phoneE164
-    ? { clientId, phoneNumber: { $in: phoneLookup } }
-    : { clientId, email };
+  const { query: leadQuery, existing } = await resolveLeadQueryForUpsert(clientId, {
+    phoneE164,
+    phoneLookup,
+    email,
+    checkoutToken,
+  });
 
   /** WS-3: completed checkouts must NOT enter recovery. Shopify sets
    *  `completed_at` on the checkout payload once the order is placed. */
@@ -141,9 +210,6 @@ async function upsertAbandonedCartLead(client, data = {}) {
    *  without `completed_at` after the order webhook already fired —
    *  re-opening the lead for recovery would message a customer who
    *  already paid. Refresh snapshot fields only. */
-  const existing = await AdLead.findOne(leadQuery)
-    .select('cartStatus isOrderPlaced recoveryStep _id contactCapturedAt checkoutToken')
-    .lean();
   const alreadyPurchased =
     existing && (existing.cartStatus === 'purchased' || existing.isOrderPlaced === true);
   if (alreadyPurchased && !isPurchased) {
@@ -203,6 +269,18 @@ async function upsertAbandonedCartLead(client, data = {}) {
   if (recoveryBaseUrl) $set.recoveryUrl = recoveryBaseUrl;
   if (cartTotal != null && cartTotal !== '') {
     $set.cartValueTier = cartValueTier(Number(cartTotal) || 0);
+  }
+
+  const shippingAddress = normalizeCheckoutAddress(data.shippingAddress || data.shipping_address);
+  const billingAddress = normalizeCheckoutAddress(data.billingAddress || data.billing_address);
+  if (shippingAddress || billingAddress || email || customerName) {
+    $set['meta.checkoutContact'] = {
+      shipping: shippingAddress,
+      billing: billingAddress,
+      email: email || null,
+      name: customerName || null,
+      updatedAt: now,
+    };
   }
 
   const utmFields = extractUtmFields(data);
@@ -441,6 +519,7 @@ async function markCartLeadPurchased(clientId, { phone, checkoutToken, cartToken
 
 module.exports = {
   upsertAbandonedCartLead,
+  resolveLeadQueryForUpsert,
   markCartLeadPurchased,
   enrichLineItemsWithImages,
   normalizeIncomingCartItems,

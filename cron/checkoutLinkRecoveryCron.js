@@ -42,17 +42,8 @@ async function processOne(linkDoc) {
 
   const { isAbandonedCartEnabled } = require('../utils/core/featureFlags');
   if (isAbandonedCartEnabled(client)) {
-    const templatePathActive = (client.commerceAutomations || []).some(
-      (a) =>
-        a.meta?.category === 'abandoned_cart' &&
-        a.isActive === true &&
-        a.templateName &&
-        (!Array.isArray(a.channels) || a.channels.includes('whatsapp'))
-    );
-    if (templatePathActive) {
-      log.debug(`[CheckoutLinkRecovery] Skip ${linkDoc.clientId} — template cart recovery active`);
-      return false;
-    }
+    log.debug(`[CheckoutLinkRecovery] Skip ${linkDoc.clientId} — cart recovery feature enabled (template path)`);
+    return false;
   }
 
   const normalizedPhone = normalizePhone(linkDoc.phone);

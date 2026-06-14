@@ -69,7 +69,6 @@
     }
   ],
   "ecoStandardNames": [
-    "eco_abandoned_cart",
     "eco_order_confirmed",
     "eco_shipping_update",
     "eco_delivered",
@@ -244,12 +243,12 @@
     {
       "id": "cart_recovery",
       "label": "Cart recovery templates",
-      "description": "3-step cart leads sequence plus single-send marketing recovery.",
+      "description": "3-step cart recovery sequence with product image, Buy now link, and Contact support.",
       "slots": [
         {
           "id": "cart_recovery_1",
           "title": "Cart recovery — reminder 1",
-          "description": "First gentle nudge with checkout link.",
+          "description": "Gentle reminder with product image, Buy now checkout link, and Contact support.",
           "canonicalMetaName": "cart_recovery_1",
           "metaNames": ["cart_recovery_1", "abandoned_cart_r1_v1"],
           "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
@@ -263,7 +262,7 @@
         {
           "id": "cart_recovery_2",
           "title": "Cart recovery — reminder 2",
-          "description": "Second nudge with urgency.",
+          "description": "Urgency nudge — stock running out, Buy now + Contact support.",
           "canonicalMetaName": "cart_recovery_2",
           "metaNames": ["cart_recovery_2", "abandoned_cart_r2_v1"],
           "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
@@ -277,7 +276,7 @@
         {
           "id": "cart_recovery_3",
           "title": "Cart recovery — final offer",
-          "description": "Last chance with optional discount code.",
+          "description": "Final offer with discount code, Buy now + Contact support.",
           "canonicalMetaName": "cart_recovery_3",
           "metaNames": ["cart_recovery_3", "abandoned_cart_r3_v1"],
           "usedIn": ["Cart leads", "Order messages", "Flow Builder"],
@@ -287,20 +286,6 @@
           "prebuiltKey": "abandoned_cart_r3_v1",
           "autoTrigger": "abandoned_cart",
           "step": 3
-        },
-        {
-          "id": "eco_abandoned_cart",
-          "title": "Abandoned cart (single send)",
-          "description": "Marketing recovery for one-shot automations.",
-          "canonicalMetaName": "eco_abandoned_cart",
-          "metaNames": ["eco_abandoned_cart"],
-          "usedIn": ["Commerce hub", "Campaigns"],
-          "configureRoute": "/commerce-hub?tab=dash",
-          "pack": "eco",
-          "pushKind": "eco-standard",
-          "pushFromStandard": true,
-          "prebuiltKey": null,
-          "autoTrigger": "abandoned_cart"
         }
       ]
     },

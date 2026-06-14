@@ -24,7 +24,9 @@ const {
   resolveHeaderImageUrl,
 } = require("./templateBrandOverrides");
 const CART_RECOVERY_SLOT_IDS = new Set([
-  "eco_abandoned_cart",
+  "cart_recovery_1",
+  "cart_recovery_2",
+  "cart_recovery_3",
   "wizard_cart_1",
   "wizard_cart_2",
 ]);
@@ -527,7 +529,7 @@ async function sendByTrigger({ clientId, phone, trigger, templateName, contextDa
     return sendForAutomation({
       clientId,
       phone,
-      slotId: "eco_abandoned_cart",
+      slotId: "cart_recovery_1",
       metaName: templateName,
       contextType: "abandoned_cart",
       trigger,

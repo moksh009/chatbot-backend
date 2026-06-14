@@ -47,6 +47,11 @@ function registerCoordinatedCrons() {
         if (reconcile.runTick) await reconcile.runTick();
       } catch (_) {}
 
+      try {
+        const cartReconcile = require("./cartRecoveryReconcileCron");
+        if (cartReconcile.runTick) await cartReconcile.runTick();
+      } catch (_) {}
+
       const scheduleCsat = require("./csatCron");
       if (scheduleCsat.runPrimaryTick) {
         await scheduleCsat.runPrimaryTick();

@@ -4,19 +4,33 @@ const axios = require('axios');
 const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../../constants/shopifyWebhookTopics');
 const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 
+/** Topics required for order messages / SAC — not full app catalog (products, customers, etc.). */
+const ORDER_MESSAGE_WEBHOOK_TOPICS = [
+  'orders/create',
+  'orders/updated',
+  'orders/fulfilled',
+  'orders/cancelled',
+  'fulfillments/create',
+  'fulfillments/update',
+];
+
 /**
  * Compare Shopify-registered webhooks against app-required topics.
- * @param {{ shopDomain: string, shopifyAccessToken: string }} params
+ * @param {{ shopDomain: string, shopifyAccessToken: string, topics?: string[] }} params
  */
-async function getShopifyWebhookHealth({ shopDomain, shopifyAccessToken }) {
+async function getShopifyWebhookHealth({ shopDomain, shopifyAccessToken, topics = SHOPIFY_APP_WEBHOOK_TOPICS }) {
+  const requiredTopics = Array.isArray(topics) && topics.length ? topics : SHOPIFY_APP_WEBHOOK_TOPICS;
+
   if (!shopDomain || !shopifyAccessToken) {
     return {
       connected: false,
       allOk: false,
       registered: [],
-      missing: [...SHOPIFY_APP_WEBHOOK_TOPICS],
+      missing: [...requiredTopics],
       webhookUrl: null,
       error: 'shopify_not_connected',
+      checkFailed: false,
+      required: requiredTopics,
     };
   }
 
@@ -32,9 +46,9 @@ async function getShopifyWebhookHealth({ shopDomain, shopifyAccessToken }) {
     );
     const hooks = res.data?.webhooks || [];
     const registered = [...new Set(hooks.map((h) => h.topic).filter(Boolean))];
-    const missing = SHOPIFY_APP_WEBHOOK_TOPICS.filter((t) => !registered.includes(t));
+    const missing = requiredTopics.filter((t) => !registered.includes(t));
     const wrongAddress = hooks.filter(
-      (h) => SHOPIFY_APP_WEBHOOK_TOPICS.includes(h.topic) && h.address && h.address !== webhookUrl
+      (h) => requiredTopics.includes(h.topic) && h.address && h.address !== webhookUrl
     );
 
     return {
@@ -44,18 +58,21 @@ async function getShopifyWebhookHealth({ shopDomain, shopifyAccessToken }) {
       missing,
       webhookUrl,
       wrongAddressCount: wrongAddress.length,
-      required: SHOPIFY_APP_WEBHOOK_TOPICS,
+      required: requiredTopics,
+      checkFailed: false,
     };
   } catch (err) {
     return {
       connected: true,
       allOk: false,
       registered: [],
-      missing: [...SHOPIFY_APP_WEBHOOK_TOPICS],
+      missing: [],
       webhookUrl,
       error: err.response?.data?.errors || err.message,
+      checkFailed: true,
+      required: requiredTopics,
     };
   }
 }
 
-module.exports = { getShopifyWebhookHealth };
+module.exports = { getShopifyWebhookHealth, ORDER_MESSAGE_WEBHOOK_TOPICS, SHOPIFY_APP_WEBHOOK_TOPICS };

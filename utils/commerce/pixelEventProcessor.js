@@ -3,6 +3,7 @@
 const AdLead = require("../../models/AdLead");
 const PixelEvent = require("../../models/PixelEvent");
 const { normalizePhoneWithCountry } = require("../core/helpers");
+const { normalizeIndianPhone, indianPhoneLookupVariants } = require("../core/normalizeIndianPhone");
 const { stitchVisitorIdentity } = require("./visitorIdentityService");
 const { withPixelCaptureLock } = require("./pixelCaptureLock");
 const { attachAnonymousJourneyToLead } = require("./attachAnonymousJourney");
@@ -37,7 +38,10 @@ async function resolveCommerceLeadFilter(clientId, { phone, email, checkoutToken
       .lean();
     if (byToken) return { clientId, _id: byToken._id };
   }
-  if (phone) return { clientId, phoneNumber: phone };
+  if (phone) {
+    const variants = indianPhoneLookupVariants(phone);
+    if (variants.length) return { clientId, phoneNumber: { $in: variants } };
+  }
   if (email) return { clientId, email: String(email).toLowerCase() };
   return null;
 }
@@ -60,7 +64,7 @@ async function upsertLeadFromCommerce(client, clientId, {
   const now = new Date();
 
   const queryForPurchased = phone
-    ? { clientId, phoneNumber: phone }
+    ? { clientId, phoneNumber: { $in: indianPhoneLookupVariants(phone) } }
     : email
       ? { clientId, email: String(email).toLowerCase() }
       : filter;
@@ -92,7 +96,10 @@ async function upsertLeadFromCommerce(client, clientId, {
   if (checkoutToken) $set.checkoutToken = checkoutToken;
   if (checkoutUrl) $set.checkoutUrl = checkoutUrl;
   if (email) $set.email = String(email).toLowerCase();
-  if (phone) $set.phoneNumber = phone;
+  if (phone) {
+    const e164 = normalizeIndianPhone(phone);
+    if (e164) $set.phoneNumber = e164;
+  }
   if (cartTotal != null && cartTotal !== "") $set.cartValue = Number(cartTotal) || 0;
 
   if (cartItems?.length) {
@@ -239,8 +246,11 @@ async function processPixelEvent(clientId, eventData) {
     customer?.email || data.email || data.checkout?.email || meta.email || null;
   const rawPhone =
     customer?.phone || data.phone || data.checkout?.phone || meta.phone || null;
-  let phone = rawPhone ? normalizePhoneWithCountry(rawPhone, client) : "";
-  if (!phone && meta.phone) phone = normalizePhoneWithCountry(meta.phone, client);
+  let phone = rawPhone ? normalizeIndianPhone(rawPhone) : null;
+  if (!phone && rawPhone) {
+    const digits = normalizePhoneWithCountry(rawPhone, client);
+    phone = digits ? normalizeIndianPhone(digits) : null;
+  }
   const checkoutToken = data.checkoutToken || data.token || data.checkout_token || "";
 
   await stitchVisitorIdentity(clientId, client, {
@@ -362,11 +372,16 @@ async function processPixelEvent(clientId, eventData) {
   // --- Contact identified (storefront + third-party forms) ---
   if (eventName === "contact_identified") {
     return withPixelCaptureLock(clientId, dedupeKey, async () => {
-      const qPhone = data.phone ? normalizePhoneWithCountry(data.phone, client) : phone;
+      let qPhone = phone;
+      if (data.phone) {
+        qPhone =
+          normalizeIndianPhone(data.phone) ||
+          normalizeIndianPhone(normalizePhoneWithCountry(data.phone, client));
+      }
       const qEmail = data.email || email;
 
       const existingForContext = qPhone
-        ? await AdLead.findOne({ clientId, phoneNumber: qPhone })
+        ? await AdLead.findOne({ clientId, phoneNumber: { $in: indianPhoneLookupVariants(qPhone) } })
             .select("addToCartCount cartSnapshot cartStatus")
             .lean()
         : null;
@@ -450,13 +465,96 @@ async function processPixelEvent(clientId, eventData) {
     });
   }
 
+  if (eventName === 'checkout_completed') {
+    return withPixelCaptureLock(clientId, dedupeKey, async () => {
+      const amount =
+        parseFloat(
+          data?.checkout?.totalPrice?.amount || data?.total_price || data?.cartTotal || 0
+        ) || 0;
+      const orderId = data.orderId || data.order?.id || '';
+      const orderPayload = {
+        id: orderId || `pixel_${checkoutToken || Date.now()}`,
+        name: orderId ? `#${orderId}` : undefined,
+        created_at: timestamp || new Date(),
+        total_price: String(amount),
+        phone: rawPhone || phone,
+        email,
+        checkout_token: checkoutToken,
+        cart_token: data.cart_token || '',
+        financial_status: 'paid',
+        currency: data?.checkout?.totalPrice?.currencyCode || data?.currency || 'INR',
+      };
+
+      const { handleOrderAtomic } = require('../shopify/handleOrderAtomic');
+      const cleanDigits = phone ? normalizePhoneWithCountry(phone, client) : '';
+      let atomic = null;
+      try {
+        atomic = await handleOrderAtomic(client, orderPayload, cleanDigits || '');
+      } catch (err) {
+        log.warn(`[Pixel] checkout_completed atomic failed: ${err.message}`);
+      }
+
+      let lead = atomic?.lead || null;
+      if (!lead && (checkoutToken || phone || email)) {
+        const { findRecoveryLead } = require('../shopify/handleOrderAtomic');
+        lead = await findRecoveryLead(clientId, orderPayload, cleanDigits || '');
+        if (lead && !lead.isOrderPlaced) {
+          lead.isOrderPlaced = true;
+          lead.cartStatus = atomic?.recoveryMatched ? 'recovered' : 'purchased';
+          lead.totalSpent = (lead.totalSpent || 0) + amount;
+          lead.ordersCount = (lead.ordersCount || 0) + 1;
+          lead.lastPurchaseDate = new Date();
+          await lead.save();
+        }
+      }
+
+      await recordPixelEvent(clientId, lead?._id, 'checkout_completed', {
+        url,
+        sessionId,
+        visitorId: visitorId || data.visitorId,
+        metadata: { ...meta, source: data.source || 'shopify_web_pixel', orderId },
+        timestamp,
+        userAgent,
+        ip,
+      });
+
+      if (global.io && lead) {
+        const room = `client_${clientId}`;
+        global.io.to(room).emit('lead_purchased', {
+          leadId: lead._id,
+          phone: lead.phoneNumber,
+          cartStatus: lead.cartStatus,
+        });
+        if (atomic?.recoveryMatched) {
+          const { emitCartRecovered } = require('./pixelSocketEmit');
+          emitCartRecovered(clientId, {
+            leadId: String(lead._id),
+            orderId: String(orderId || orderPayload.id),
+            orderValue: amount,
+            recoveredViaWhatsapp: lead.recoveredViaWhatsApp === true,
+            revenue: amount,
+          });
+        }
+      }
+
+      return {
+        success: true,
+        leadId: lead?._id,
+        recovered: !!atomic?.recoveryMatched,
+        status: atomic?.duplicate ? 'duplicate' : 'processed',
+      };
+    });
+  }
+
   const hasIdentity = !!(email || phone) || eventName === "contact_identified";
 
   if (hasIdentity || ["checkout_started", "product_added_to_cart", "checkout_completed", "page_view"].includes(eventName)) {
     let lead = null;
     if (phone || email) {
       lead = await AdLead.findOne(
-        phone ? { clientId, phoneNumber: phone } : { clientId, email: String(email).toLowerCase() }
+        phone
+          ? { clientId, phoneNumber: { $in: indianPhoneLookupVariants(phone) } }
+          : { clientId, email: String(email).toLowerCase() }
       );
       if (!lead && (phone || email)) {
         lead = await upsertLeadFromCommerce(client, clientId, {

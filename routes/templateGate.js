@@ -59,12 +59,17 @@ const TEMPLATE_BLUEPRINTS = {
       {
         type: 'BODY',
         text:
-          'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.',
+          'Admin alert: {{1}} ({{2}}) needs urgent support.\nContext: {{3}}\nOpen the live chat in your dashboard.',
         example: { body_text: [['Priya Sharma', '+919876543210', 'Asked for a human on checkout']] }
       },
       {
         type: 'BUTTONS',
-        buttons: [{ type: 'QUICK_REPLY', text: 'Open Inbox' }]
+        buttons: [{
+          type: 'URL',
+          text: 'Open live chat',
+          url: 'https://dash.topedgeai.com/conversations/{{1}}',
+          example: ['abc123conversationId'],
+        }]
       }
     ]
   },

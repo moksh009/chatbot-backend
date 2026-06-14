@@ -284,6 +284,70 @@ function profilesLinkedByOrderEvidence(customerA, customerB, assignment) {
   return false;
 }
 
+const { splitDisplayName } = require('./shopifyCustomerWorkspaceSignals');
+
+function buildSyntheticCustomersFromOrders(unassignedOrders = []) {
+  if (!Array.isArray(unassignedOrders) || unassignedOrders.length === 0) return [];
+
+  const byKey = new Map();
+
+  for (const order of unassignedOrders) {
+    const phone = order.customerPhone || order.phone;
+    const email = normalizeEmailKey(order.customerEmail || order.email);
+    const sid = order.shopifyCustomerId ? String(order.shopifyCustomerId).trim() : '';
+    const ps = phoneSuffixKey(phone);
+    const key = sid
+      ? `sid:${sid}`
+      : ps
+        ? `phone:${ps}`
+        : email
+          ? `email:${email}`
+          : `order:${order.shopifyOrderId || order._id}`;
+
+    const existing = byKey.get(key);
+    const orderAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+
+    if (!existing) {
+      const { first_name, last_name } = splitDisplayName(order.customerName);
+      byKey.set(key, {
+        id: sid || `order_${ps || email || order.shopifyOrderId || order._id}`,
+        shopifyCustomerId: sid || null,
+        first_name,
+        last_name,
+        phone: ps || phone || null,
+        email: email || '',
+        linkedPhones: ps ? [ps] : phone ? [String(phone).trim()] : [],
+        linkedEmails: email ? [email] : [],
+        source: 'workspace_order',
+        created_at: order.createdAt || null,
+        updated_at: order.createdAt || null,
+        total_spent: '0',
+        orders_count: 0,
+        _latestOrderAt: orderAt,
+      });
+      continue;
+    }
+
+    if (orderAt > (existing._latestOrderAt || 0)) {
+      existing.updated_at = order.createdAt || existing.updated_at;
+      existing._latestOrderAt = orderAt;
+      const { first_name, last_name } = splitDisplayName(order.customerName);
+      if (`${first_name} ${last_name}`.trim().length > 3) {
+        existing.first_name = first_name;
+        existing.last_name = last_name;
+      }
+    }
+    if (ps && !existing.linkedPhones.includes(ps)) {
+      existing.linkedPhones.push(ps);
+    }
+    if (email && !existing.linkedEmails.includes(email)) {
+      existing.linkedEmails.push(email);
+    }
+  }
+
+  return [...byKey.values()].map(({ _latestOrderAt, ...customer }) => customer);
+}
+
 module.exports = {
   SCORE,
   PLACEHOLDER_PHONE_SUFFIX,
@@ -301,4 +365,5 @@ module.exports = {
   ordersForCustomerFromAssignment,
   applyAssignmentMetrics,
   profilesLinkedByOrderEvidence,
+  buildSyntheticCustomersFromOrders,
 };

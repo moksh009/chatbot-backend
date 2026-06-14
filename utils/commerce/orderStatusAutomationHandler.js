@@ -310,6 +310,7 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
   const result = await sendForAutomation({
     clientId: client.clientId,
     phone: phoneNorm,
+    slotId: rule.id,
     metaName: rule.templateName,
     contextType: 'order',
     trigger: null,

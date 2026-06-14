@@ -6,7 +6,8 @@ const {
   loadWarrantySignalsByIdentity,
   appendWorkspaceCustomers,
 } = require('./shopifyCustomerWorkspaceSignals');
-const { normalizePhone } = require('../core/helpers');
+const { normalizePhone, formatPhoneForDisplay } = require('../core/helpers');
+const { pickCanonicalPhone } = require('../core/phoneSanitizer');
 const {
   phoneSuffixKey: _phoneSuffixKey,
   normalizeEmailKey: _normalizeEmailKey,
@@ -17,6 +18,7 @@ const {
   applyAssignmentMetrics,
   ordersForCustomerFromAssignment,
   profilesLinkedByOrderEvidence,
+  buildSyntheticCustomersFromOrders,
 } = require('./customerOrderAttribution');
 
 async function loadClientOrdersForCustomerMetrics(clientId) {
@@ -49,7 +51,15 @@ async function hydrateCustomerSource(clientId, cacheSource = []) {
 async function buildCustomerOrderAssignment(clientId, customers) {
   const rawOrders = await loadClientOrdersForCustomerMetrics(clientId);
   let merged = mergeShopifyCustomersByIdentity(customers);
-  let { assignment } = assignOrdersToCustomers(merged, rawOrders);
+  let { assignment, unassigned } = assignOrdersToCustomers(merged, rawOrders);
+
+  if (unassigned.length) {
+    const synthetics = buildSyntheticCustomersFromOrders(unassigned);
+    if (synthetics.length) {
+      merged = mergeShopifyCustomersByIdentity([...merged, ...synthetics]);
+      ({ assignment } = assignOrdersToCustomers(merged, rawOrders));
+    }
+  }
 
   const postMerged = mergeCustomersByOrderEvidence(merged, assignment);
   if (postMerged.length < merged.length) {
@@ -61,8 +71,10 @@ async function buildCustomerOrderAssignment(clientId, customers) {
 }
 
 async function attachOrderMetrics(clientId, customers) {
-  if (!customers.length) return customers;
-  const { customers: merged, assignment } = await buildCustomerOrderAssignment(clientId, customers);
+  const { customers: merged, assignment } = await buildCustomerOrderAssignment(
+    clientId,
+    customers || []
+  );
   return applyAssignmentMetrics(merged, assignment);
 }
 
@@ -254,6 +266,7 @@ function paginateCustomers(list, { cursor, limit }) {
 
 async function syncShopifyCustomersForClient(clientId) {
   const Client = require('../../models/Client');
+  const { repairAdLeadPhonesForClient } = require('./adLeadPhoneRepair');
 
   const raw = await withShopifyRetry(clientId, async (shop) => fetchShopifyCustomersBatch(shop));
   const enriched = await enrichShopifyCustomers(clientId, raw || []);
@@ -269,6 +282,13 @@ async function syncShopifyCustomersForClient(clientId) {
       },
     }
   );
+
+  try {
+    await repairAdLeadPhonesForClient(clientId);
+  } catch (repairErr) {
+    const log = require('../core/logger')('ShopifyCustomersHub');
+    log.warn(`Phone repair after sync failed for ${clientId}: ${repairErr.message}`);
+  }
 
   return { customers: enriched, syncedAt, count: enriched.length };
 }
@@ -446,10 +466,14 @@ function _mergeCustomerGroup(group) {
   let leadName = null;
   let workspacePhone = null;
   const tags = new Set();
+  const phonePool = [];
   for (const c of group) {
     mergedCustomerIds.push(String(c.id));
     for (const ph of [c.phone, c.workspacePhone, ...(c.linkedPhones || [])]) {
-      if (ph) linkedPhones.add(String(ph).trim());
+      if (ph) {
+        linkedPhones.add(String(ph).trim());
+        phonePool.push(ph);
+      }
     }
     const em = _normalizeEmailKey(c.email);
     if (em) linkedEmails.add(em);
@@ -457,7 +481,6 @@ function _mergeCustomerGroup(group) {
       const ek = _normalizeEmailKey(em2);
       if (ek) linkedEmails.add(ek);
     }
-    if (c.workspacePhone && !workspacePhone) workspacePhone = c.workspacePhone;
     if (c.leadScore != null && (leadScore == null || Number(c.leadScore) > leadScore)) {
       leadScore = c.leadScore;
       scoreStageName = c.scoreStageName;
@@ -469,7 +492,41 @@ function _mergeCustomerGroup(group) {
     }
   }
   const primary = bySpend[0];
-  const displayPhone = workspacePhone || primary.phone || [...linkedPhones][0] || null;
+  const custCountry =
+    primary?.default_address?.country_code || primary?.default_address?.country || 'IN';
+  const countryCode = String(custCountry).length === 2 ? custCountry : 'IN';
+  const canonicalDigits = pickCanonicalPhone(phonePool, { country: countryCode });
+  workspacePhone = canonicalDigits || null;
+  const phoneCandidates = _uniqueStrings([
+    primary.phone,
+    workspacePhone,
+    ...linkedPhones,
+  ]);
+  let displayPhone = null;
+  for (const ph of phoneCandidates) {
+    const formatted = formatPhoneForDisplay(ph, countryCode);
+    if (!formatted) continue;
+    const d = String(formatted).replace(/\D/g, '');
+    if (d.length === 10 && /^[6-9]\d{9}$/.test(d)) {
+      displayPhone = formatted;
+      break;
+    }
+  }
+  if (!displayPhone) {
+    for (const ph of phoneCandidates) {
+      const formatted = formatPhoneForDisplay(ph, countryCode);
+      if (formatted) {
+        displayPhone = formatted;
+        break;
+      }
+    }
+  }
+  if (!displayPhone) {
+    displayPhone = canonicalDigits ? formatPhoneForDisplay(canonicalDigits, countryCode) : null;
+  }
+  if (!displayPhone) {
+    displayPhone = phoneCandidates[0] || null;
+  }
   return {
     ...primary,
     id: String(primary.id),

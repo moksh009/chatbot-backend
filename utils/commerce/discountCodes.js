@@ -16,8 +16,9 @@ function resolveUsageLimit(mode, count) {
 function deriveDiscountStatus(entry) {
   if (!entry) return 'unknown';
   if (entry.disabledAt) return 'disabled';
+  const noExpiry = entry.expiryMode === 'never' || (!entry.endsAt && entry.expiryHours == null);
   const endsAt = entry.endsAt ? new Date(entry.endsAt) : null;
-  if (endsAt && endsAt.getTime() <= Date.now()) return 'expired';
+  if (!noExpiry && endsAt && endsAt.getTime() <= Date.now()) return 'expired';
   const used = Number(entry.usageCount) || 0;
   const limit = entry.usageLimit;
   if (limit != null && used >= limit) return 'used_up';

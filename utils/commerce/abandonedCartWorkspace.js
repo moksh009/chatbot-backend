@@ -10,23 +10,29 @@ const {
   contactPhoneKey,
   getCartFollowupConfig,
   getWhatsappRecoveryMetrics,
-  getRecoveryTotalsFromAttempts,
   loadLatestAttemptsByPhone,
   buildWhatsappFollowupDisplay,
   recoveryStatusFromAttempt,
   buildRecoveryTimeline,
   summarizeMessageEngagement,
-  buildAbandonHeatmap: buildAbandonHeatmapData,
 } = require('./cartRecoveryAttemptService');
 const { predictRecoveryValue } = require('./cartRecoveryPrediction');
+const { CART_RECOVERY_STEP_PROBABILITIES } = require('../../constants/cartRecoveryDefaults');
 const { buildConnectionStatusPayload } = require('../core/connectionStatus');
-const { ABANDONED_CART_TAG } = require('../../constants/cartRecoveryTags');
+const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
+const {
+  reconcileOpenCartLeadsForClient,
+  orderRecoversAbandonedLead,
+  reconcileCartRecoveryFromShopifyOrder,
+  shopifyPayloadFromOrder,
+} = require('./cartRecoveryOrderReconcile');
 const {
   getCartRecoveryDelays,
   getCartRecoveryConfig,
   computeNextPromotionAt,
   buildConfigPayload,
 } = require('./cartRecoveryConfigService');
+const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
 
 const PRESETS = {
   today: () => ({ from: startOfDayIST(), to: new Date(), timezone: 'Asia/Kolkata' }),
@@ -239,23 +245,261 @@ function buildFollowupStatus(lead, schedule, now = new Date()) {
 }
 
 function buildCartTimeline(lead, followup, attempt = null) {
-  const fromAttempt = buildRecoveryTimeline(lead, attempt || followup?.attempt);
-  if (fromAttempt.length) return fromAttempt;
-
   const events = [];
-  const abandonedAt = abandonDate(lead);
-  if (abandonedAt) {
-    events.push({ at: abandonedAt, label: 'Cart abandoned', kind: 'abandon' });
+  const seen = new Set();
+
+  const push = (ev) => {
+    if (!ev?.label) return;
+    const key = `${ev.kind || 'evt'}:${ev.label}:${ev.at ? new Date(ev.at).toISOString() : 'na'}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    events.push(ev);
+  };
+
+  for (const ev of buildRecoveryTimeline(lead, attempt)) {
+    push(ev);
   }
+
+  if (isRecoveredLead(lead) && !events.some((e) => e.kind === 'recovered')) {
+    const recoveredAt =
+      lead.recoveredAt || lead.abandonedCartRecoveredAt || lead.lastPurchaseDate || null;
+    if (recoveredAt) {
+      push({
+        at: recoveredAt,
+        label: lead.recoveredViaWhatsApp ? 'Recovered via WhatsApp' : 'Order placed',
+        kind: 'recovered',
+      });
+    }
+  }
+
+  if (lead.checkoutInitiatedAt) {
+    push({
+      at: lead.checkoutInitiatedAt,
+      label: 'Started checkout',
+      kind: 'checkout',
+    });
+  }
+
   for (const line of followup?.lines || []) {
-    events.push({ at: null, label: line.text, kind: line.tone || 'followup' });
+    if (line?.text) push({ at: null, label: line.text, kind: line.tone || 'followup' });
   }
-  return events;
+
+  return events
+    .filter((e) => e.at || e.kind === 'abandon' || e.kind === 'recovered')
+    .sort((a, b) => {
+      if (!a.at) return 1;
+      if (!b.at) return -1;
+      return new Date(a.at) - new Date(b.at);
+    });
+}
+
+function isPlaceholderPhone(phone) {
+  const p = String(phone || '');
+  return !p || p.startsWith('unknown_checkout_') || p.startsWith('unknown_email_');
 }
 
 function isNonRecoverableLead(lead) {
+  return isPlaceholderPhone(lead?.phoneNumber);
+}
+
+function formatLeadContactDisplay(lead) {
   const phone = String(lead?.phoneNumber || '');
-  return !phone || phone.startsWith('unknown_checkout_') || phone.startsWith('unknown_email_');
+  if (isPlaceholderPhone(phone)) {
+    if (lead?.email) return lead.email;
+    return 'Contact pending';
+  }
+  return phone;
+}
+
+function sessionDedupeKey(lead) {
+  const token = String(lead.checkoutToken || lead.cartSnapshot?.checkoutToken || '').trim();
+  if (token) return `token:${token}`;
+
+  const phoneKey = normalizePhoneKey(lead.phoneNumber);
+  if (phoneKey && phoneKey.length >= 8 && !isPlaceholderPhone(lead.phoneNumber)) {
+    return `phone:${phoneKey}`;
+  }
+
+  if (lead.email) {
+    return `email:${String(lead.email).trim().toLowerCase()}`;
+  }
+
+  const val = Math.round(Number(lead.cartValue || lead.cartSnapshot?.total_price || 0));
+  const t = abandonDate(lead);
+  if (t && val > 0) {
+    const bucket = Math.floor(new Date(t).getTime() / (5 * 60 * 1000));
+    return `session:${val}:${bucket}`;
+  }
+
+  return `id:${lead._id}`;
+}
+
+function pickCanonicalLead(a, b) {
+  const aPlaceholder = isPlaceholderPhone(a.phoneNumber);
+  const bPlaceholder = isPlaceholderPhone(b.phoneNumber);
+  if (aPlaceholder !== bPlaceholder) return aPlaceholder ? b : a;
+
+  const scoreA = leadPriorityScore(a);
+  const scoreB = leadPriorityScore(b);
+  if (scoreA !== scoreB) return scoreB > scoreA ? b : a;
+
+  const timeA = new Date(a.lastCartEventAt || a.updatedAt || 0).getTime();
+  const timeB = new Date(b.lastCartEventAt || b.updatedAt || 0).getTime();
+  return timeB >= timeA ? b : a;
+}
+
+/** Collapse duplicate rows — checkout token, phone, email stub, or same session. */
+function dedupeLeadsForWorkspace(leads = []) {
+  const byKey = new Map();
+  for (const lead of leads) {
+    const key = sessionDedupeKey(lead);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? pickCanonicalLead(existing, lead) : lead);
+  }
+  let result = [...byKey.values()];
+
+  const byPhone = new Map();
+  for (const lead of result) {
+    const phoneKey = normalizePhoneKey(lead.phoneNumber);
+    if (phoneKey.length < 8 || isPlaceholderPhone(lead.phoneNumber)) continue;
+    const existing = byPhone.get(phoneKey);
+    byPhone.set(phoneKey, existing ? pickCanonicalLead(existing, lead) : lead);
+  }
+
+  const byToken = new Map();
+  for (const lead of result) {
+    const token = String(lead.checkoutToken || lead.cartSnapshot?.checkoutToken || '').trim();
+    if (!token) continue;
+    const existing = byToken.get(token);
+    byToken.set(token, existing ? pickCanonicalLead(existing, lead) : lead);
+  }
+
+  const seen = new Set();
+  const merged = [];
+  for (const lead of result) {
+    const phoneKey = normalizePhoneKey(lead.phoneNumber);
+    const token = String(lead.checkoutToken || lead.cartSnapshot?.checkoutToken || '').trim();
+    const canonical =
+      (phoneKey.length >= 8 && !isPlaceholderPhone(lead.phoneNumber) && byPhone.get(phoneKey)) ||
+      (token && byToken.get(token)) ||
+      lead;
+    const id = String(canonical._id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(canonical);
+  }
+  return merged;
+}
+
+function formatAddressBlock(addr = {}) {
+  if (!addr || typeof addr !== 'object') return null;
+  const line1 = String(addr.address1 || addr.line1 || '').trim();
+  const line2 = String(addr.address2 || addr.line2 || '').trim();
+  const city = String(addr.city || '').trim();
+  const province = String(addr.province || addr.state || '').trim();
+  const zip = String(addr.zip || addr.postal_code || '').trim();
+  const country = String(addr.country || '').trim();
+  const name = [addr.first_name, addr.last_name].filter(Boolean).join(' ').trim() || String(addr.name || '').trim();
+  const phone = addr.phone ? String(addr.phone).trim() : null;
+  if (!line1 && !city && !name && !phone) return null;
+  const parts = [name, line1, line2, [city, province, zip].filter(Boolean).join(', '), country].filter(Boolean);
+  return {
+    name: name || null,
+    phone,
+    address1: line1 || null,
+    address2: line2 || null,
+    city: city || null,
+    province: province || null,
+    zip: zip || null,
+    country: country || null,
+    formatted: parts.join(' · ') || null,
+  };
+}
+
+function buildCheckoutContact(lead) {
+  const meta = lead?.meta && typeof lead.meta === 'object' ? lead.meta : {};
+  const checkout = meta.checkoutContact && typeof meta.checkoutContact === 'object' ? meta.checkoutContact : {};
+  const shipping = formatAddressBlock(checkout.shipping);
+  const billing = formatAddressBlock(checkout.billing);
+  return {
+    name: lead?.name || checkout.name || shipping?.name || billing?.name || null,
+    phone: lead?.phoneNumber && !isPlaceholderPhone(lead.phoneNumber) ? lead.phoneNumber : shipping?.phone || billing?.phone || null,
+    email: lead?.email || checkout.email || null,
+    shipping,
+    billing,
+    utmSource: lead?.utmSource || null,
+    utmMedium: lead?.utmMedium || null,
+    utmCampaign: lead?.utmCampaign || null,
+    referrerDomain: lead?.referrerDomain || null,
+    source: lead?.source || null,
+  };
+}
+
+function resolveCustomerTags(lead, { recovered, nonRecoverable }) {
+  const leadTags = Array.isArray(lead.tags) ? [...lead.tags] : [];
+  if (recovered) {
+    const withoutAbandon = leadTags.filter(
+      (t) => String(t).trim().toLowerCase() !== ABANDONED_CART_TAG.toLowerCase()
+    );
+    if (!withoutAbandon.some((t) => String(t).trim().toLowerCase() === RECOVERED_CART_TAG.toLowerCase())) {
+      return [...withoutAbandon, RECOVERED_CART_TAG];
+    }
+    return withoutAbandon;
+  }
+  if (!nonRecoverable && !leadTags.some((t) => String(t).trim().toLowerCase() === ABANDONED_CART_TAG.toLowerCase())) {
+    return [...leadTags, ABANDONED_CART_TAG];
+  }
+  return leadTags;
+}
+
+async function ensureCartRecoveryTagsForLeads(leads = []) {
+  if (!leads.length) return;
+  const bulk = [];
+  for (const lead of leads) {
+    const tags = Array.isArray(lead.tags) ? lead.tags : [];
+    if (isRecoveredLead(lead)) {
+      if (!tags.some((t) => String(t).trim().toLowerCase() === RECOVERED_CART_TAG.toLowerCase())) {
+        bulk.push({
+          updateOne: {
+            filter: { _id: lead._id },
+            update: { $pull: { tags: ABANDONED_CART_TAG }, $addToSet: { tags: RECOVERED_CART_TAG } },
+          },
+        });
+      }
+      continue;
+    }
+    if (
+      lead.cartStatus === 'abandoned' &&
+      !isPlaceholderPhone(lead.phoneNumber) &&
+      !tags.some((t) => String(t).trim().toLowerCase() === ABANDONED_CART_TAG.toLowerCase())
+    ) {
+      bulk.push({
+        updateOne: {
+          filter: { _id: lead._id },
+          update: { $addToSet: { tags: ABANDONED_CART_TAG } },
+        },
+      });
+    }
+  }
+  if (!bulk.length) return;
+  await AdLead.bulkWrite(bulk, { ordered: false }).catch((err) => {
+    log.warn(`[AbandonedCartWorkspace] tag backfill skipped: ${err.message}`);
+  });
+}
+
+function normalizePhoneKey(phone) {
+  return String(phone || '').replace(/\D/g, '').slice(-10);
+}
+
+function leadPriorityScore(lead) {
+  let score = 0;
+  if (!isPlaceholderPhone(lead.phoneNumber)) score += 40;
+  if (lead.cartStatus === 'abandoned') score += 30;
+  else if (lead.cartStatus === 'active') score += 20;
+  else if (isRecoveredLead(lead)) score += 10;
+  if (lead.contactCapturedAt) score += 5;
+  if (lead.checkoutToken || lead.cartSnapshot?.checkoutToken) score += 3;
+  return score;
 }
 
 function recoveryStatusLabel(lead) {
@@ -267,28 +511,94 @@ function recoveryStatusLabel(lead) {
   return { key: 'active', label: 'Active abandoned' };
 }
 
-function normalizePhoneKey(phone) {
-  return String(phone || '').replace(/\D/g, '').slice(-10);
-}
-
-async function latestOrdersByPhone(clientId, phones = []) {
+async function latestOrdersByPhone(clientId, phones = [], leadsByPhone = new Map()) {
   const suffixes = [...new Set(phones.map(normalizePhoneKey).filter((p) => p.length >= 8))];
   if (!suffixes.length) return new Map();
 
   const orders = await Order.find({ clientId })
     .sort({ createdAt: -1 })
-    .select('phone customerPhone financialStatus fulfillmentStatus status totalPrice amount createdAt')
+    .select(
+      'phone customerPhone orderId orderNumber shopifyOrderId financialStatus fulfillmentStatus status totalPrice amount createdAt customerEmail'
+    )
     .limit(5000)
     .lean();
 
-  const map = new Map();
+  const candidates = new Map();
   for (const o of orders) {
     const key = normalizePhoneKey(o.customerPhone || o.phone);
-    if (!key || map.has(key)) continue;
-    if (!suffixes.includes(key)) continue;
-    map.set(key, o);
+    if (!key || !suffixes.includes(key)) continue;
+    if (!candidates.has(key)) candidates.set(key, []);
+    candidates.get(key).push(o);
+  }
+
+  const map = new Map();
+  for (const [key, list] of candidates) {
+    const lead = leadsByPhone.get(key);
+    const abandonAt = lead ? abandonDate(lead) : null;
+    const recoveredId = String(lead?.recoveredOrderId || lead?.lastOrderId || '').trim();
+
+    let pick = null;
+    if (recoveredId) {
+      pick = list.find((o) => {
+        const ids = [o.orderId, o.orderNumber, o.shopifyOrderId].map((v) => String(v || '').replace(/^#/, '').trim());
+        const rid = recoveredId.replace(/^#/, '').trim();
+        return ids.some((id) => id && (id === rid || id.endsWith(rid) || rid.endsWith(id)));
+      });
+    }
+    if (!pick && abandonAt) {
+      const abandonMs = new Date(abandonAt).getTime() - 2 * 60 * 1000;
+      pick = list.find((o) => o.createdAt && new Date(o.createdAt).getTime() >= abandonMs);
+    }
+    map.set(key, pick || list[0] || null);
   }
   return map;
+}
+
+function formatOrderRef(order, lead = null, attempt = null) {
+  const candidates = [
+    order?.orderNumber,
+    order?.orderId,
+    order?.shopifyOrderId,
+    lead?.recoveredOrderId,
+    lead?.lastOrderId,
+    attempt?.recoveredOrderId,
+    attempt?.shopifyOrderId,
+  ];
+  for (const raw of candidates) {
+    const s = String(raw || '').replace(/^#/, '').trim();
+    if (s) return s;
+  }
+  return null;
+}
+
+function buildRecoveredOrderPayload(lead, latestOrder, attempt, recovered) {
+  if (!recovered) return null;
+
+  const orderRef = formatOrderRef(latestOrder, lead, attempt);
+  const totalPrice =
+    Number(latestOrder?.totalPrice || latestOrder?.amount || 0) ||
+    Number(attempt?.recoveredOrderValue || attempt?.recoveredOrderAmount || 0) ||
+    Number(lead?.lifetimeValue || lead?.cartValue || 0);
+
+  const createdAt =
+    latestOrder?.createdAt ||
+    attempt?.recoveredAt ||
+    lead?.recoveredAt ||
+    lead?.abandonedCartRecoveredAt ||
+    lead?.lastPurchaseDate ||
+    null;
+
+  if (!orderRef && !totalPrice && !createdAt) return null;
+
+  return {
+    orderNumber: orderRef || '',
+    orderId: orderRef || String(latestOrder?._id || ''),
+    shopifyOrderId: latestOrder?.shopifyOrderId || null,
+    totalPrice,
+    createdAt,
+    recoveredViaWhatsapp: Boolean(attempt?.recoveredViaWhatsapp || isWaRecoveredLead(lead)),
+    displayLabel: orderRef ? `Order #${orderRef}` : 'Order placed',
+  };
 }
 
 function orderStatusLabel(order, lead, delay1Min = 45) {
@@ -359,8 +669,30 @@ function buildSetupStatus(client, flags = {}) {
   };
 }
 
+async function persistRecoveriesFromOrderMap(client, leads, orderMap) {
+  if (!client?.clientId || !leads?.length || !orderMap?.size) return 0;
+  let persisted = 0;
+  for (const lead of leads) {
+    if (isRecoveredLead(lead)) continue;
+    const order = orderMap.get(normalizePhoneKey(lead.phoneNumber));
+    if (!order || !orderRecoversAbandonedLead(order, lead)) continue;
+    const out = await reconcileCartRecoveryFromShopifyOrder(
+      client,
+      shopifyPayloadFromOrder(order, lead),
+      { source: 'workspace_order_map' }
+    );
+    if (out.matched && !out.duplicate && !out.error) persisted += 1;
+  }
+  return persisted;
+}
+
 async function buildAbandonedCartWorkspace(clientId, query = {}) {
   const { from, to, preset } = parseDateRange(query);
+  const reconcileSince = new Date(Math.min(from.getTime(), Date.now() - 90 * 86400000));
+  await reconcileOpenCartLeadsForClient(clientId, { since: reconcileSince, maxLeads: 400 }).catch((err) => {
+    log.warn(`[AbandonedCartWorkspace] recovery reconcile skipped: ${err.message}`);
+  });
+
   const client = await Client.findOne({ clientId })
     .select('wizardFeatures cartRecoveryConfig timezone commerceAutomations shopifyConnected shopifyAccessToken whatsappToken phoneNumberId wabaId')
     .lean();
@@ -374,7 +706,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     $or: [
       { cartAbandonedAt: { $gte: from, $lte: to } },
       {
-        cartStatus: { $in: ['abandoned', 'recovered', 'active'] },
+        cartStatus: { $in: ['abandoned', 'recovered', 'active', 'purchased'] },
         updatedAt: { $gte: from, $lte: to },
         addToCartCount: { $gt: 0 },
       },
@@ -385,144 +717,148 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     ],
   })
     .select(
-      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt tags nextPromotionAt nextAllowedSendAt cartValueTier recoveryUrl exitIntentAt visitorFirstVisitAt visitorVisitCount'
+      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt checkoutToken tags nextPromotionAt nextAllowedSendAt cartValueTier recoveryUrl exitIntentAt visitorFirstVisitAt visitorVisitCount meta utmSource utmMedium utmCampaign referrerDomain source recoveredAt recoveredOrderId lastOrderId lastPurchaseDate lifetimeValue totalSpent'
     )
     .limit(8000)
     .lean();
 
-  const filtered = leads.filter((l) => isAbandonCandidate(l) && leadInAbandonWindow(l, from, to));
+  const filtered = dedupeLeadsForWorkspace(
+    leads.filter((l) => isAbandonCandidate(l) && leadInAbandonWindow(l, from, to))
+  );
   const phones = filtered.map((l) => l.phoneNumber);
-  const orderMap = await latestOrdersByPhone(clientId, phones);
+  const leadsByPhone = new Map();
+  for (const lead of filtered) {
+    const key = normalizePhoneKey(lead.phoneNumber);
+    if (key.length >= 8 && !isPlaceholderPhone(lead.phoneNumber)) {
+      leadsByPhone.set(key, lead);
+    }
+  }
+  const orderMap = await latestOrdersByPhone(clientId, phones, leadsByPhone);
 
-  const [followupConfig, whatsappMetrics, recoveryTotals, attemptByPhone] = await Promise.all([
+  const persisted = await persistRecoveriesFromOrderMap(client, filtered, orderMap).catch((err) => {
+    log.warn(`[AbandonedCartWorkspace] order-map reconcile skipped: ${err.message}`);
+    return 0;
+  });
+
+  let workingLeads = filtered;
+  if (persisted > 0) {
+    const refreshed = await AdLead.find({
+      clientId,
+      _id: { $in: filtered.map((l) => l._id) },
+    })
+      .select(
+        'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt checkoutToken tags nextPromotionAt nextAllowedSendAt cartValueTier recoveryUrl exitIntentAt visitorFirstVisitAt visitorVisitCount recoveredAt lastPurchaseDate lifetimeValue totalSpent recoveredOrderId lastOrderId meta utmSource utmMedium utmCampaign referrerDomain source'
+      )
+      .lean();
+    const byId = new Map(refreshed.map((l) => [String(l._id), l]));
+    workingLeads = filtered.map((l) => byId.get(String(l._id)) || l);
+  }
+
+  const [followupConfig, whatsappMetrics, attemptByPhone] = await Promise.all([
     getCartFollowupConfig(clientId),
     getWhatsappRecoveryMetrics(clientId, from, to),
-    getRecoveryTotalsFromAttempts(clientId, from, to),
     loadLatestAttemptsByPhone(clientId, phones),
   ]);
 
+  ensureCartRecoveryTagsForLeads(workingLeads).catch(() => {});
+
+  const canonical = await calculateRecoveryMetrics(clientId, {
+    from,
+    to,
+    mode: 'cohort',
+    includeFunnel: true,
+    includeRows: false,
+    reconcileFirst: false,
+    persistOrderMap: false,
+  });
+
   const rows = [];
   let metrics = {
-    totalAbandoned: 0,
+    totalAbandoned: canonical.totalAbandoned,
     activeAbandoned: 0,
     recoverableRevenue: 0,
     nonRecoverableCount: 0,
-    recoveredCarts: 0,
-    revenueRecovered: 0,
-    recoveredFromWhatsapp: 0,
-    revenueRecoveredFromWhatsapp: 0,
-    organicRecovered: 0,
-    organicRevenue: 0,
+    recoveredCarts: canonical.recoveredCarts,
+    revenueRecovered: canonical.revenueRecovered,
+    recoveredFromWhatsapp: canonical.whatsappRecovered,
+    revenueRecoveredFromWhatsapp: canonical.revenueRecoveredFromWhatsapp,
+    organicRecovered: canonical.organicRecovered,
+    organicRevenue: canonical.organicRevenue,
     linkClicks: 0,
     buttonClicks: 0,
-    averageAbandonedCartValue: 0,
+    averageAbandonedCartValue: canonical.averageAbandonedCartValue,
+    recoveryRate: canonical.recoveryRate,
   };
 
-  let valueSum = 0;
   let unknownPhoneCount = 0;
   const funnel = {
-    msg1Sent: 0,
-    msg2Sent: 0,
-    msg3Sent: 0,
-    recoveredAfterMsg1: 0,
-    recoveredAfterMsg2: 0,
-    recoveredAfterMsg3: 0,
+    msg1Sent: canonical.funnel.msg1Sent,
+    msg2Sent: canonical.funnel.msg2Sent,
+    msg3Sent: canonical.funnel.msg3Sent,
+    recoveredAfterMsg1: canonical.funnel.recoveredAfterMsg1,
+    recoveredAfterMsg2: canonical.funnel.recoveredAfterMsg2,
+    recoveredAfterMsg3: canonical.funnel.recoveredAfterMsg3,
   };
   const { delay1Min, promotionDelayMin } = getCartRecoveryDelays(client || {});
 
-  for (const lead of filtered) {
+  for (const lead of workingLeads) {
     const nonRecoverable = isNonRecoverableLead(lead);
     if (nonRecoverable) {
       unknownPhoneCount += 1;
       metrics.nonRecoverableCount += 1;
     }
 
-    const step = Number(lead.recoveryStep || 0);
-    const logs = Array.isArray(lead.activityLog) ? lead.activityLog : [];
-    const sentSteps = new Set();
-    if (step >= 1) sentSteps.add(1);
-    if (step >= 2) sentSteps.add(2);
-    if (step >= 3) sentSteps.add(3);
-    logs.forEach((l) => {
-      const d = String(l?.details || '');
-      if (d.includes('cart_step_1')) sentSteps.add(1);
-      if (d.includes('cart_step_2')) sentSteps.add(2);
-      if (d.includes('cart_step_3')) sentSteps.add(3);
-    });
-    if (sentSteps.has(1)) funnel.msg1Sent += 1;
-    if (sentSteps.has(2)) funnel.msg2Sent += 1;
-    if (sentSteps.has(3)) funnel.msg3Sent += 1;
-
     const phoneKey = contactPhoneKey(lead.phoneNumber) || normalizePhoneKey(lead.phoneNumber);
     const attempt = attemptByPhone.get(phoneKey) || null;
 
-    if (attempt?.recoveredViaWhatsapp) {
-      const sentNums = (attempt.whatsappTemplatesSent || []).map((t) => Number(t.followupNumber)).filter(Boolean);
-      const recoverStep = sentNums.length ? Math.max(...sentNums) : Number(lead.recoveryStep || 1);
-      if (recoverStep >= 3) funnel.recoveredAfterMsg3 += 1;
-      else if (recoverStep >= 2) funnel.recoveredAfterMsg2 += 1;
-      else funnel.recoveredAfterMsg1 += 1;
-    } else if (isWaRecoveredLead(lead)) {
-      const recoverStep = step || 1;
-      if (recoverStep >= 3) funnel.recoveredAfterMsg3 += 1;
-      else if (recoverStep >= 2) funnel.recoveredAfterMsg2 += 1;
-      else funnel.recoveredAfterMsg1 += 1;
-    }
-
     const items = normalizeItems(lead);
     const totals = cartTotals(items, lead.cartSnapshot || {}, lead);
+    const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
+    const latestOrder = orderMap.get(phoneKeyOrder) || null;
+    const orderRecovered = orderRecoversAbandonedLead(latestOrder, lead);
     const recovered =
-      attempt?.status === 'recovered' || isRecoveredLead(lead);
+      attempt?.status === 'recovered' || isRecoveredLead(lead) || orderRecovered;
     const active = !recovered;
-
-    metrics.totalAbandoned += 1;
-    valueSum += totals.cartValue;
 
     if (active) {
       if (!nonRecoverable) {
         metrics.activeAbandoned += 1;
         metrics.recoverableRevenue += totals.cartValue;
       }
-    } else {
-      metrics.recoveredCarts += 1;
-      const recoveredValue =
-        Number(attempt?.recoveredOrderValue || attempt?.recoveredOrderAmount || 0) ||
-        totals.cartValue;
-      metrics.revenueRecovered += recoveredValue;
-      if (attempt?.recoveredViaWhatsapp || isWaRecoveredLead(lead)) {
-        metrics.recoveredFromWhatsapp += 1;
-        metrics.revenueRecoveredFromWhatsapp += recoveredValue;
-      } else {
-        metrics.organicRecovered += 1;
-        metrics.organicRevenue += recoveredValue;
-      }
     }
 
-    const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
-    const latestOrder = orderMap.get(phoneKeyOrder) || null;
     const followup = buildWhatsappFollowupDisplay(
       attempt,
       followupConfig,
-      Number(lead.recoveryStep || 0)
+      Number(lead.recoveryStep || 0),
+      lead
     );
-    const recovery = recoveryStatusFromAttempt(attempt, lead);
+    let recovery = recoveryStatusFromAttempt(attempt, lead);
+    if (orderRecovered && recovery.key === 'active') {
+      recovery = { key: 'organic', label: 'Recovered' };
+    }
 
     const engagement = summarizeMessageEngagement(attempt);
     metrics.linkClicks += engagement.linkClicks;
     metrics.buttonClicks += engagement.buttonClicks;
-    const leadTags = Array.isArray(lead.tags) ? lead.tags : [];
+    const recoveryStepNum = Number(lead.recoveryStep || 0);
+    const stepClamped = Math.min(3, Math.max(0, recoveryStepNum));
+    const recoveryProbability =
+      CART_RECOVERY_STEP_PROBABILITIES[stepClamped] ?? CART_RECOVERY_STEP_PROBABILITIES[0];
+    const isInCheckout = lead.cartStatus === 'active' && !!lead.contactCapturedAt;
+    const canShowPredicted = active && !nonRecoverable && !isInCheckout;
+    const leadTags = resolveCustomerTags(lead, { recovered, nonRecoverable });
+    const checkoutContact = buildCheckoutContact(lead);
 
     rows.push({
       id: String(lead._id),
       customer: {
         name: lead.name || 'Guest',
         phone: lead.phoneNumber,
-        phoneDisplay: lead.phoneNumber,
-        tags: leadTags.includes(ABANDONED_CART_TAG)
-          ? leadTags
-          : !recovered && !nonRecoverable
-            ? [...leadTags, ABANDONED_CART_TAG]
-            : leadTags,
+        email: lead.email || checkoutContact.email || null,
+        phoneDisplay: formatLeadContactDisplay(lead),
+        tags: leadTags,
+        contact: checkoutContact,
       },
       cart: {
         items,
@@ -555,10 +891,14 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
             at: attempt.lastSendFailure.at,
           }
         : null,
-      recoveryStep: lead.recoveryStep || 0,
-      predictedRecoveryValue: active && !nonRecoverable
-        ? predictRecoveryValue(totals.cartValue, lead.recoveryStep || 0)
+      recoveryStep: recoveryStepNum,
+      predictedRecoveryValue: canShowPredicted
+        ? predictRecoveryValue(totals.cartValue, recoveryStepNum)
         : 0,
+      predictedRecoveryPct: Math.round(recoveryProbability * 1000) / 10,
+      predictedRecoveryStep: stepClamped,
+      showPredictedRecovery: canShowPredicted,
+      isInCheckout,
       cartValueTier: lead.cartValueTier || '',
       exitIntentAt: lead.exitIntentAt || null,
       hasExitIntent: !!lead.exitIntentAt,
@@ -574,31 +914,10 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       timeline: buildCartTimeline(lead, followup, attempt),
       leadId: String(lead._id),
       inboxPath: `/conversations?phone=${encodeURIComponent(lead.phoneNumber || '')}`,
+      recoveredOrder: buildRecoveredOrderPayload(lead, latestOrder, attempt, recovered),
     });
   }
 
-  metrics.averageAbandonedCartValue =
-    metrics.totalAbandoned > 0
-      ? Math.round((valueSum / metrics.totalAbandoned) * 100) / 100
-      : 0;
-
-  if (recoveryTotals.recoveredCarts > metrics.recoveredCarts) {
-    metrics.recoveredCarts = recoveryTotals.recoveredCarts;
-    metrics.revenueRecovered = recoveryTotals.revenueRecovered;
-    metrics.organicRecovered = recoveryTotals.organicRecovered || 0;
-    metrics.organicRevenue = recoveryTotals.organicRevenue || 0;
-  }
-  if (whatsappMetrics.configured) {
-    if (whatsappMetrics.recoveredViaWhatsapp > metrics.recoveredFromWhatsapp) {
-      metrics.recoveredFromWhatsapp = whatsappMetrics.recoveredViaWhatsapp;
-    }
-    if (whatsappMetrics.waRevenueRecovered > metrics.revenueRecoveredFromWhatsapp) {
-      metrics.revenueRecoveredFromWhatsapp = whatsappMetrics.waRevenueRecovered;
-    }
-  } else {
-    metrics.recoveredFromWhatsapp = metrics.recoveredFromWhatsapp || 0;
-    metrics.revenueRecoveredFromWhatsapp = metrics.revenueRecoveredFromWhatsapp || 0;
-  }
   metrics.whatsappRecovery = whatsappMetrics;
 
   metrics.unknownPhoneCount = unknownPhoneCount;
@@ -623,11 +942,6 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
         ? Math.round((funnel.recoveredAfterMsg3 / totalWaRecovered) * 100)
         : 0,
   };
-
-  metrics.recoveryRate =
-    metrics.totalAbandoned > 0
-      ? Math.round((metrics.recoveredCarts / metrics.totalAbandoned) * 10000) / 100
-      : 0;
 
   metrics.messagesSent = (funnel.msg1Sent || 0) + (funnel.msg2Sent || 0) + (funnel.msg3Sent || 0);
   metrics.hero = {
@@ -658,11 +972,85 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
 
 async function buildAbandonHeatmap(clientId, query = {}) {
   const { from, to, preset } = parseDateRange(query);
-  const heatmap = await buildAbandonHeatmapData(clientId, from, to);
+
+  const leads = await AdLead.find({
+    clientId,
+    $or: [
+      { cartAbandonedAt: { $gte: from, $lte: to } },
+      {
+        cartStatus: { $in: ['abandoned', 'recovered', 'active', 'purchased'] },
+        updatedAt: { $gte: from, $lte: to },
+        addToCartCount: { $gt: 0 },
+      },
+      {
+        addToCartCount: { $gt: 0 },
+        lastInteraction: { $gte: from, $lte: to },
+      },
+    ],
+  })
+    .select(
+      'phoneNumber email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt checkoutToken addToCartCount'
+    )
+    .limit(8000)
+    .lean();
+
+  const filtered = dedupeLeadsForWorkspace(
+    leads.filter((l) => isAbandonCandidate(l) && leadInAbandonWindow(l, from, to))
+  );
+
+  const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
+  const cellMeta = Array.from({ length: 7 }, () =>
+    Array.from({ length: 24 }, () => ({
+      carts: 0,
+      totalItems: 0,
+      itemBuckets: {},
+    }))
+  );
+  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  for (const lead of filtered) {
+    const abandonAt = abandonDate(lead);
+    if (!abandonAt) continue;
+    const istMs = new Date(abandonAt).getTime() + 5.5 * 60 * 60 * 1000;
+    const ist = new Date(istMs);
+    const dow = ist.getUTCDay();
+    const hour = ist.getUTCHours();
+
+    const items = normalizeItems(lead);
+    const itemCount = items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
+    const bucket = itemCount <= 1 ? '1' : itemCount === 2 ? '2' : itemCount === 3 ? '3' : '4+';
+
+    grid[dow][hour] += 1;
+    const meta = cellMeta[dow][hour];
+    meta.carts += 1;
+    meta.totalItems += itemCount;
+    meta.itemBuckets[bucket] = (meta.itemBuckets[bucket] || 0) + 1;
+  }
+
+  const flat = grid.flat();
+  const max = Math.max(...flat, 1);
+  const peak = flat.reduce(
+    (best, count, idx) => (count > best.count ? { count, dow: Math.floor(idx / 24), hour: idx % 24 } : best),
+    { count: 0, dow: 0, hour: 0 }
+  );
+
   return {
     success: true,
     range: { from, to, preset },
-    ...heatmap,
+    timezone: 'Asia/Kolkata',
+    dayLabels,
+    hourLabels: Array.from({ length: 24 }, (_, i) => i),
+    grid,
+    cellMeta,
+    max,
+    total: filtered.length,
+    peak: {
+      count: peak.count,
+      dow: peak.dow,
+      hour: peak.hour,
+      day: dayLabels[peak.dow],
+      label: `${dayLabels[peak.dow]} ${peak.hour}:00 IST`,
+    },
   };
 }
 

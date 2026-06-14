@@ -1,6 +1,7 @@
 'use strict';
 
-const { normalizePhone } = require('../core/helpers');
+const { normalizePhone, formatPhoneForDisplay } = require('../core/helpers');
+const { pickCanonicalPhone } = require('../core/phoneSanitizer');
 const {
   phoneSuffixKey,
   normalizeEmailKey,
@@ -38,6 +39,14 @@ function mergeWarrantyCounts(warrantyEnabled, canonical, legacyRecords) {
   };
 }
 
+function shopifyCustomerCountry(customer) {
+  const code = customer?.default_address?.country_code || customer?.default_address?.country;
+  if (code && String(code).trim().length === 2) {
+    return String(code).trim().toUpperCase();
+  }
+  return 'IN';
+}
+
 /**
  * Attach TopEdge workspace signals (warranty, lead) to Shopify customers.
  * Warranty uses canonical WarrantyRecord + Contact, with legacy AdLead fallback.
@@ -60,14 +69,15 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = [], preloaded
   const emailSet = new Set();
   const suffixSet = new Set();
   for (const c of shopifyCustomers) {
-    const p = normalizePhone(c.phone);
+    const custCountry = shopifyCustomerCountry(c);
+    const p = normalizePhone(c.phone, custCountry);
     if (p) phoneSet.add(p);
     const ps = phoneSuffixKey(c.phone);
     if (ps) suffixSet.add(ps);
     const em = normalizeEmailKey(c.email);
     if (em) emailSet.add(em);
     for (const lp of c.linkedPhones || []) {
-      const n = normalizePhone(lp);
+      const n = normalizePhone(lp, custCountry);
       if (n) phoneSet.add(n);
       const lps = phoneSuffixKey(lp);
       if (lps) suffixSet.add(lps);
@@ -91,7 +101,9 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = [], preloaded
 
   const phoneOr = [{ phoneNumber: { $in: phones } }];
   for (const s of suffixes) {
-    phoneOr.push({ phoneNumber: { $regex: `${s}$` } });
+    if (/^[6-9]\d{9}$/.test(s)) {
+      phoneOr.push({ phoneNumber: { $regex: `${s}$` } });
+    }
   }
 
   const [leadsByPhone, leadsByEmail, warrantyMaps] = await Promise.all([
@@ -124,25 +136,37 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = [], preloaded
   }
 
   return shopifyCustomers.map((c) => {
-    const phone = normalizePhone(c.phone);
+    const custCountry = shopifyCustomerCountry(c);
+    const phone = normalizePhone(c.phone, custCountry);
     const email = normalizeEmailKey(c.email);
     const lead =
       (phoneSuffixKey(phone) && leadByPhoneSuffix.get(phoneSuffixKey(phone))) ||
       (email && leadByEmail.get(email)) ||
       null;
 
-    const leadPhone = normalizePhone(lead?.phoneNumber);
-    const shopifyPhone = normalizePhone(c.phone);
+    const leadPhone = normalizePhone(lead?.phoneNumber, 'IN');
+    const shopifyPhone = normalizePhone(c.phone, custCountry);
     const leadEmail = normalizeEmailKey(lead?.email);
     const linkedPhones = [];
     if (shopifyPhone) linkedPhones.push(shopifyPhone);
-    if (leadPhone) linkedPhones.push(leadPhone);
+    if (leadPhone && leadPhone !== shopifyPhone) linkedPhones.push(leadPhone);
     const linkedEmails = [...new Set([email, leadEmail].filter(Boolean))];
+
+    const canonicalDigits = pickCanonicalPhone(
+      [shopifyPhone, leadPhone, ...(c.linkedPhones || [])],
+      { country: custCountry }
+    );
+
+    const displayPhone =
+      formatPhoneForDisplay(c.phone, custCountry) ||
+      (canonicalDigits ? formatPhoneForDisplay(canonicalDigits, custCountry) : null) ||
+      (canonicalDigits ? canonicalDigits : null);
 
     const draft = {
       ...c,
-      phone: shopifyPhone || leadPhone || c.phone || null,
-      workspacePhone: leadPhone || shopifyPhone || null,
+      phone: displayPhone,
+      phoneNormalized: canonicalDigits || null,
+      workspacePhone: canonicalDigits || null,
       linkedPhones: [...new Set(linkedPhones.filter(Boolean))],
       linkedEmails,
     };

@@ -3,14 +3,66 @@
 const { buildRecoveryUrl, buildLeadRecoveryBaseUrl, buildLeadRecoveryUrl } = require('./buildRecoveryUrl');
 const { buildCartRecoveryBodyParameters } = require('../../constants/cartRecoverySlotPresets');
 
-function firstCartItem(lead = {}) {
+function cartLineItems(lead = {}) {
   const snap = lead.cartSnapshot || {};
-  const items = Array.isArray(snap.items) ? snap.items : Array.isArray(lead.cartItems) ? lead.cartItems : [];
-  return items[0] || null;
+  if (Array.isArray(snap.items) && snap.items.length) return snap.items;
+  if (Array.isArray(lead.cartItems) && lead.cartItems.length) return lead.cartItems;
+  return [];
+}
+
+function lineItemValue(item = {}) {
+  const qty = Number(item.quantity || item.qty || 1) || 1;
+  const lineTotal = Number(item.lineTotal);
+  if (Number.isFinite(lineTotal) && lineTotal > 0) return lineTotal;
+  const price = Number(item.price ?? item.productPrice ?? item.line_price ?? 0);
+  if (Number.isFinite(price) && price > 0) return price * qty;
+  return 0;
+}
+
+/** Pick highest cart line value; ties keep first max. */
+function pickBestCartItem(lead = {}) {
+  const items = cartLineItems(lead);
+  if (!items.length) return null;
+  return items.reduce((best, item) => {
+    if (!best) return item;
+    return lineItemValue(item) >= lineItemValue(best) ? item : best;
+  }, null);
+}
+
+function firstCartItem(lead = {}) {
+  return pickBestCartItem(lead) || cartLineItems(lead)[0] || null;
+}
+
+function formatCartTotalINR(raw) {
+  const n = Number(String(raw || '').replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) {
+    const s = String(raw || '').trim();
+    return s || '—';
+  }
+  return n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+}
+
+function resolveHttpsImage(url) {
+  const s = String(url || '').trim();
+  if (!s.startsWith('https://')) return null;
+  return s.slice(0, 2048);
+}
+
+function resolveProductImage(item, client = {}) {
+  const fromItem = resolveHttpsImage(
+    item?.image || item?.image_url || item?.imageUrl || item?.featured_image?.src
+  );
+  if (fromItem) return fromItem;
+  const brand =
+    client?.businessLogo ||
+    client?.nicheData?.businessLogo ||
+    client?.brand?.logoUrl ||
+    null;
+  return resolveHttpsImage(brand);
 }
 
 function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
-  const item = firstCartItem(lead);
+  const item = pickBestCartItem(lead);
   const snap = lead.cartSnapshot || {};
   const nameParts = String(lead.name || '').trim().split(/\s+/).filter(Boolean);
   const customerName =
@@ -18,22 +70,25 @@ function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
     nameParts[0] ||
     lead.name ||
     (lead.phoneNumber && !/^unknown_/i.test(String(lead.phoneNumber)) ? lead.phoneNumber : 'there');
+
+  const items = cartLineItems(lead);
   const productName =
     item?.title ||
     item?.name ||
     item?.productName ||
     item?.product_title ||
-    'items in your cart';
-  let productImage = item?.image || item?.image_url || item?.imageUrl || null;
-  if (productImage && !String(productImage).startsWith('https')) productImage = null;
+    (items.length > 1 ? `${items.length} items in your cart` : 'items in your cart');
+
+  const productImage = resolveProductImage(item, client);
 
   const cartTotalRaw =
     lead.cartValue ??
     snap.total_price ??
     snap.totalPrice ??
-    item?.price ??
+    snap.cartValue ??
+    (items.length ? items.reduce((s, i) => s + lineItemValue(i), 0) : '') ??
     '';
-  const cartTotal = cartTotalRaw !== '' && cartTotalRaw != null ? String(cartTotalRaw) : '';
+  const cartTotal = formatCartTotalINR(cartTotalRaw);
 
   const baseUrl =
     buildLeadRecoveryBaseUrl(client, lead) ||
@@ -52,6 +107,7 @@ function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
     cartTotal,
     recoveryUrl,
     discountCode,
+    itemCount: items.length,
   };
 }
 
@@ -60,19 +116,19 @@ function resolveCartRecoveryContext(lead = {}, client = {}, stepNum = 1) {
  * @param {object} lead
  * @param {object} client
  * @param {number} stepNum 1|2|3
- * @param {{ includeHeaderImage?: boolean, discountCode?: string }} opts
+ * @param {{ includeHeaderImage?: boolean, discountCode?: string, recoveryUrl?: string }} opts
  */
 function buildCartRecoveryComponents(lead, client, stepNum = 1, opts = {}) {
   const ctx = resolveCartRecoveryContext(lead, client, stepNum);
   if (opts.recoveryUrl) ctx.recoveryUrl = String(opts.recoveryUrl).slice(0, 2000);
   const discountCode = opts.discountCode || ctx.discountCode || '';
-  const includeImage = opts.includeHeaderImage !== false && stepNum !== 2;
+  const includeImage = opts.includeHeaderImage !== false;
   const components = [];
 
   if (includeImage && ctx.productImage) {
     components.push({
       type: 'header',
-      parameters: [{ type: 'image', image: { link: String(ctx.productImage).slice(0, 2048) } }],
+      parameters: [{ type: 'image', image: { link: ctx.productImage } }],
     });
   }
 
@@ -102,4 +158,7 @@ module.exports = {
   buildCartRecoveryComponents,
   resolveCartRecoveryContext,
   firstCartItem,
+  pickBestCartItem,
+  formatCartTotalINR,
+  lineItemValue,
 };

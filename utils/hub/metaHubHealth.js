@@ -108,7 +108,7 @@ async function buildMetaHubHealth(clientId, clientConfig) {
       liveCount: liveStatuses,
       webhooksOk: webhooks?.allOk !== false,
       webhooksMissing: webhooks?.missing?.length || 0,
-      shippedAuto: orderMessages?.features?.enableAutoShopifyShippedWhatsApp !== false,
+      shippedAuto: orderMessages?.features?.enableAutoShopifyShippedWhatsApp === true,
       sent7d: orderMessages?.messagingActivity?.sends?.last7d?.sent ?? 0,
       estMtdInr: orderMessages?.messagingActivity?.billing?.estimatedMtdInr ?? null,
       metaMtdInr: orderMessages?.messagingActivity?.billing?.metaMtdInr ?? null,

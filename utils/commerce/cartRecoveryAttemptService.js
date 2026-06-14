@@ -485,13 +485,26 @@ async function getRecoveryTotalsFromAttempts(clientId, from, to) {
     },
   ]);
 
-  return {
+  const attemptTotals = {
     recoveredCarts: result[0]?.count || 0,
     revenueRecovered: result[0]?.totalRevenue || 0,
     organicRecovered: result[0]?.organicCount || 0,
     waRecovered: result[0]?.waCount || 0,
     organicRevenue: result[0]?.organicRevenue || 0,
     waRevenue: result[0]?.waRevenue || 0,
+  };
+
+  const { getRecoveredCartLeadTotals } = require('./recoveredCartMetrics');
+  const leadTotals = await getRecoveredCartLeadTotals(clientId, from, to).catch(() => null);
+  if (!leadTotals) return attemptTotals;
+
+  return {
+    recoveredCarts: Math.max(attemptTotals.recoveredCarts, leadTotals.recoveredCarts),
+    revenueRecovered: Math.max(attemptTotals.revenueRecovered, leadTotals.revenueRecovered),
+    organicRecovered: Math.max(attemptTotals.organicRecovered, leadTotals.organicRecovered),
+    waRecovered: Math.max(attemptTotals.waRecovered, leadTotals.recoveredFromWhatsapp),
+    organicRevenue: Math.max(attemptTotals.organicRevenue, leadTotals.organicRevenue),
+    waRevenue: Math.max(attemptTotals.waRevenue, leadTotals.revenueRecoveredFromWhatsapp),
   };
 }
 
@@ -588,12 +601,17 @@ async function recordCartRecoveryLinkClickFromShortCode(shortCode) {
   });
 }
 
-function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
+function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoveryStep = 0, lead = null) {
   const sentByNum = new Map();
   for (const t of attempt?.whatsappTemplatesSent || []) {
     const n = Number(t.followupNumber);
     if (n) sentByNum.set(n, t);
   }
+
+  const recoveredWithoutSends =
+    (attempt?.status === 'recovered' || lead?.cartStatus === 'recovered' || lead?.cartStatus === 'purchased' || lead?.isOrderPlaced) &&
+    sentByNum.size === 0 &&
+    Number(leadRecoveryStep || 0) === 0;
 
   const labels = [1, 2, 3].map((n) => {
     const fromConfig = (config.followups || []).find((f) => f.followupNumber === n);
@@ -609,6 +627,7 @@ function buildFollowupSteps(attempt, config = { followups: [] }, leadRecoverySte
     else if (tpl?.deliveredAt) status = 'delivered';
     else if (tpl || Number(leadRecoveryStep) >= stepNum) status = 'sent';
     else if (failStep === stepNum) status = 'failed';
+    else if (recoveredWithoutSends) status = 'skipped';
 
     return {
       step: stepNum,
@@ -635,8 +654,8 @@ function summarizeMessageEngagement(attempt) {
   return { linkClicks, buttonClicks, messagesSent: sent.length };
 }
 
-function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }, leadRecoveryStep = 0) {
-  const steps = buildFollowupSteps(attempt, config, leadRecoveryStep);
+function buildWhatsappFollowupDisplay(attempt, config = { followups: [] }, leadRecoveryStep = 0, lead = null) {
+  const steps = buildFollowupSteps(attempt, config, leadRecoveryStep, lead);
 
   if (!attempt) {
     return {
@@ -830,6 +849,24 @@ function buildRecoveryTimeline(lead, attempt) {
       label: `Order placed (${via})${amt}`,
       kind: 'recovered',
     });
+  } else if (
+    lead &&
+    (lead.cartStatus === 'recovered' ||
+      lead.cartStatus === 'purchased' ||
+      lead.isOrderPlaced === true)
+  ) {
+    const recoveredAt =
+      lead.recoveredAt || lead.abandonedCartRecoveredAt || lead.lastPurchaseDate || null;
+    if (recoveredAt) {
+      const via = lead.recoveredViaWhatsApp ? 'via WhatsApp' : 'organic';
+      const val = lead.lifetimeValue || lead.cartValue;
+      const amt = val ? ` — ₹${Math.round(Number(val))}` : '';
+      events.push({
+        at: fmt(recoveredAt),
+        label: `Order placed (${via})${amt}`,
+        kind: 'recovered',
+      });
+    }
   }
 
   return events

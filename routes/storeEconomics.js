@@ -3,13 +3,14 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const StoreEconomicsConfig = require('../models/StoreEconomicsConfig');
 const StoreEconomicsProduct = require('../models/StoreEconomicsProduct');
-const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
+const { calculateRecoveryMetrics } = require('../services/cartRecoveryMetricsService');
 const {
   calculateAndStoreAllProducts,
   buildDashboardMetrics,
   buildProductIntelligence,
   getOrdersByState,
 } = require('../utils/commerce/storeEconomicsEngine');
+const { hasEconomicsInputs, isEconomicsSetupReady } = require('../utils/commerce/storeEconomicsSetup');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 
 // Apply auth middleware to all routes
@@ -29,7 +30,13 @@ router.get('/status', async (req, res) => {
       products = await StoreEconomicsProduct.find({ clientId }).lean();
     }
 
-    res.json({ success: true, config, products });
+    res.json({
+      success: true,
+      config,
+      products,
+      setupReady: isEconomicsSetupReady(config, products),
+      hasInputs: hasEconomicsInputs(config, products),
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -121,6 +128,24 @@ router.post('/wizard/finish', async (req, res) => {
     const { clientId } = req.body;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
 
+    const config = await StoreEconomicsConfig.findOne({ clientId });
+    if (!config) {
+      return res.status(400).json({
+        success: false,
+        error: 'SETUP_INCOMPLETE',
+        message: 'Complete all setup steps before activating economics.',
+      });
+    }
+
+    const products = await StoreEconomicsProduct.find({ clientId }).lean();
+    if (!hasEconomicsInputs(config, products)) {
+      return res.status(400).json({
+        success: false,
+        error: 'NO_COST_DATA',
+        message: 'Add product COGS and at least one cost — delivery, CAC, packaging, fees, or RTO — before activating.',
+      });
+    }
+
     await calculateAndStoreAllProducts(clientId);
     
     const finishedAt = new Date();
@@ -129,8 +154,8 @@ router.post('/wizard/finish', async (req, res) => {
       { $set: { setupCompleted: true, setupCompletedAt: finishedAt, lastRecomputedAt: finishedAt } }
     );
 
-    const products = await StoreEconomicsProduct.find({ clientId }).lean();
-    res.json({ success: true, products });
+    const refreshedProducts = await StoreEconomicsProduct.find({ clientId }).lean();
+    res.json({ success: true, products: refreshedProducts, setupReady: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -147,13 +172,26 @@ router.get('/dashboard', async (req, res) => {
     const rangeStart = startDate && String(startDate) !== 'null' ? startDate : null;
     const rangeEnd = endDate && String(endDate) !== 'null' ? endDate : null;
 
+    const [configDoc, products] = await Promise.all([
+      StoreEconomicsConfig.findOne({ clientId }).lean(),
+      StoreEconomicsProduct.find({ clientId }).lean(),
+    ]);
+
+    if (!isEconomicsSetupReady(configDoc, products)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ECONOMICS_SETUP_REQUIRED',
+        message: 'Add your store cost statistics before viewing profit analytics.',
+      });
+    }
+
     const [metrics, productIntelligence, ordersByState] = await Promise.all([
       buildDashboardMetrics(clientId, rangeStart, rangeEnd),
       buildProductIntelligence(clientId, rangeStart, rangeEnd),
       getOrdersByState(clientId, rangeStart, rangeEnd),
     ]);
 
-    const configDoc = await StoreEconomicsConfig.findOne({ clientId })
+    const configMetaDoc = await StoreEconomicsConfig.findOne({ clientId })
       .select('gstEnabled gstRate lastRecomputedAt setupCompletedAt')
       .lean();
 
@@ -163,11 +201,11 @@ router.get('/dashboard', async (req, res) => {
         ...metrics,
         ...productIntelligence,
         ordersByState,
-        configMeta: configDoc
+        configMeta: configMetaDoc
           ? {
-              gstEnabled: !!configDoc.gstEnabled,
-              gstRatePercent: configDoc.gstRate ? Math.round(configDoc.gstRate * 100) : null,
-              lastRecomputedAt: configDoc.lastRecomputedAt || configDoc.setupCompletedAt || null,
+              gstEnabled: !!configMetaDoc.gstEnabled,
+              gstRatePercent: configMetaDoc.gstRate ? Math.round(configMetaDoc.gstRate * 100) : null,
+              lastRecomputedAt: configMetaDoc.lastRecomputedAt || configMetaDoc.setupCompletedAt || null,
             }
           : null,
       },
@@ -259,76 +297,50 @@ router.post('/recompute', async (req, res) => {
  */
 router.get('/cart-recovery', async (req, res) => {
   try {
-    const { clientId, startDate, endDate } = req.query;
+    const { clientId, startDate, endDate, from: fromRaw, to: toRaw, preset } = req.query;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
 
-    const start = startDate ? new Date(startDate) : new Date(0);
-    const end = endDate ? new Date(endDate) : new Date();
-    end.setHours(23, 59, 59, 999);
+    const { parseDateRange } = require('../utils/commerce/abandonedCartWorkspace');
+    const { startOfDayForDateStrIST, endOfDayForDateStrIST } = require('../utils/core/queryHelpers');
 
-    const AdLead = require('../models/AdLead');
-    const { getRecoveryTotalsFromAttempts } = require('../utils/commerce/cartRecoveryAttemptService');
+    let from;
+    let to;
+    if (fromRaw && toRaw) {
+      const fromStr = String(fromRaw).slice(0, 10);
+      const toStr = String(toRaw).slice(0, 10);
+      from = startOfDayForDateStrIST(fromStr);
+      to = endOfDayForDateStrIST(toStr);
+    } else if (startDate && endDate) {
+      from = startOfDayForDateStrIST(String(startDate).slice(0, 10));
+      to = endOfDayForDateStrIST(String(endDate).slice(0, 10));
+    } else {
+      ({ from, to } = parseDateRange({ preset: preset || '30d', from: fromRaw, to: toRaw }));
+    }
 
-    const [automationRows, leadRows, attemptTotals] = await Promise.all([
-      CartRecoveryAttempt.aggregate([
-        { $match: { clientId, attemptTimestamp: { $gte: start, $lte: end } } },
-        {
-          $group: {
-            _id: null,
-            automationAttempts: { $sum: 1 },
-            automationRecovered: { $sum: { $cond: [{ $eq: ['$status', 'recovered'] }, 1, 0] } },
-            revenueRecovered: { $sum: { $ifNull: ['$recoveredOrderAmount', 0] } },
-          },
-        },
-      ]),
-      AdLead.aggregate([
-        {
-          $match: {
-            clientId,
-            lastInteraction: { $gte: start, $lte: end },
-            cartStatus: { $in: ['abandoned', 'recovered', 'active', 'cart_added'] },
-          },
-        },
-        { $group: { _id: '$cartStatus', count: { $sum: 1 } } },
-      ]),
-      getRecoveryTotalsFromAttempts(clientId, start, end).catch(() => null),
-    ]);
-
-    const auto = automationRows[0] || { automationAttempts: 0, automationRecovered: 0, revenueRecovered: 0 };
-    const leadByStatus = Object.fromEntries((leadRows || []).map((r) => [r._id, r.count]));
-
-    const abandonedCarts = Number(leadByStatus.abandoned) || 0;
-    const recoveredCarts = Math.max(
-      Number(leadByStatus.recovered) || 0,
-      attemptTotals?.recoveredCarts || auto.automationRecovered || 0
-    );
-    const activeCarts = (Number(leadByStatus.active) || 0) + (Number(leadByStatus.cart_added) || 0);
-    const didNotBuy = Math.max(0, abandonedCarts - recoveredCarts);
-    const revenueRecovered = Math.round(
-      Number(attemptTotals?.revenueRecovered) ||
-        Number(auto.revenueRecovered) ||
-        0
-    );
-
-    const recoveryRate = abandonedCarts > 0
-      ? Math.round((recoveredCarts / abandonedCarts) * 10000) / 100
-      : auto.automationAttempts > 0
-        ? Math.round((auto.automationRecovered / auto.automationAttempts) * 10000) / 100
-        : 0;
+    const metrics = await calculateRecoveryMetrics(clientId, {
+      mode: 'cohort',
+      from,
+      to,
+      includeFunnel: true,
+      includeRows: false,
+    });
 
     res.json({
       success: true,
       data: {
-        abandonedCarts,
-        recoveredCarts,
-        didNotBuy,
-        activeCarts,
-        revenueRecovered,
-        waRevenueRecovered: Math.round(Number(attemptTotals?.waRevenue) || 0),
-        organicRevenueRecovered: Math.round(Number(attemptTotals?.organicRevenue) || 0),
-        recoveryRate,
-        automationAttempts: auto.automationAttempts,
-        automationRecovered: auto.automationRecovered,
+        totalAbandoned: metrics.totalAbandoned,
+        abandonedCarts: metrics.totalAbandoned,
+        recoveredCarts: metrics.recoveredCarts,
+        didNotBuy: Math.max(0, metrics.totalAbandoned - metrics.recoveredCarts),
+        activeCarts: 0,
+        revenueRecovered: metrics.revenueRecovered,
+        waRevenueRecovered: metrics.revenueRecoveredFromWhatsapp,
+        organicRevenueRecovered: metrics.organicRevenue,
+        whatsappRecovered: metrics.whatsappRecovered,
+        organicRecovered: metrics.organicRecovered,
+        recoveryRate: metrics.recoveryRate,
+        messageEfficiencyRate: metrics.funnel?.messageEfficiencyRate ?? 0,
+        funnel: metrics.funnel,
       },
     });
   } catch (error) {

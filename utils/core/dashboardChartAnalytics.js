@@ -2,8 +2,13 @@
 
 const AdLead = require('../../models/AdLead');
 const Order = require('../../models/Order');
-const CartRecoveryAttempt = require('../../models/CartRecoveryAttempt');
 const { buildSuccessfulOrderMatch } = require('../commerce/customerOrderMetrics');
+const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
+const {
+  istDateRangeStrings,
+  startOfDayForDateStrIST,
+  formatDateStrIST,
+} = require('./queryHelpers');
 
 const PERIOD_MAP = {
   '7d': 7,
@@ -216,55 +221,53 @@ async function getAnalyticsChart(clientId, field = 'customers', period = '30d') 
 
 /**
  * GET /api/dashboard/cart-recovery-chart
+ * Cohort abandon-date axis — same SSOT as /api/cart-recovery/metrics.
  */
 async function getCartRecoveryChart(clientId, period = '30d') {
-  const { startDate, endDate } = resolvePeriodRange(period);
+  const days = PERIOD_MAP[period] || 30;
+  const { start: startStr } = istDateRangeStrings(days);
+  const from = startOfDayForDateStrIST(startStr);
+  const to = new Date();
   const unit = bucketUnit(period);
+
   const map = new Map();
-  dateKeysInRange(startDate, endDate, unit).forEach((k) => {
+  dateKeysInRange(from, to, unit).forEach((k) => {
     map.set(k, { date: k, abandoned: 0, recovered: 0, stillAbandoned: 0, messaged: 0 });
   });
 
-  const attempts = await CartRecoveryAttempt.find({
-    clientId,
-    attemptTimestamp: { $gte: startDate, $lte: endDate },
-  })
-    .select('attemptTimestamp messaged recovered')
-    .lean();
+  const metrics = await calculateRecoveryMetrics(clientId, {
+    mode: 'cohort',
+    from,
+    to,
+    includeFunnel: true,
+    includeRows: true,
+  });
 
-  let totalAbandoned = 0;
-  let totalRecovered = 0;
-  let stillAbandoned = 0;
-  let totalMessaged = 0;
-
-  attempts.forEach((a) => {
-    totalAbandoned += 1;
-    if (a.messaged) totalMessaged += 1;
-    if (a.recovered) totalRecovered += 1;
-    else if (a.messaged) stillAbandoned += 1;
-
-    const key = bucketKey(a.attemptTimestamp || a.createdAt, unit);
+  for (const row of metrics.rows || []) {
+    if (!row.abandonedAt) continue;
+    const dayKey = formatDateStrIST(row.abandonedAt);
+    const key = unit === 'day' ? dayKey : bucketKey(startOfDayForDateStrIST(dayKey), unit);
     if (!map.has(key)) {
       map.set(key, { date: key, abandoned: 0, recovered: 0, stillAbandoned: 0, messaged: 0 });
     }
-    const row = map.get(key);
-    row.abandoned += 1;
-    if (a.messaged) row.messaged += 1;
-    if (a.recovered) row.recovered += 1;
-    else if (a.messaged) row.stillAbandoned += 1;
-  });
+    const pt = map.get(key);
+    pt.abandoned += 1;
+    if (row.recovered) pt.recovered += 1;
+    else pt.stillAbandoned += 1;
+    if (row.messaged) pt.messaged += 1;
+  }
 
-  const recoveryRate =
-    totalAbandoned > 0 ? Number(((totalRecovered / totalAbandoned) * 100).toFixed(1)) : 0;
+  const totalMessaged = (metrics.rows || []).filter((r) => r.messaged).length;
 
   return {
     period,
     summary: {
-      totalAbandoned,
-      totalRecovered,
-      stillAbandoned,
-      recoveryRate,
+      totalAbandoned: metrics.totalAbandoned,
+      totalRecovered: metrics.recoveredCarts,
+      stillAbandoned: Math.max(0, metrics.totalAbandoned - metrics.recoveredCarts),
+      recoveryRate: metrics.recoveryRate,
       totalMessaged,
+      messageEfficiencyRate: metrics.funnel?.messageEfficiencyRate ?? 0,
     },
     dataPoints: Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)),
   };

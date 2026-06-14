@@ -1948,6 +1948,49 @@ router.patch('/my-settings', protect, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+// POST /api/admin/test-admin-alert — dry-run admin escalation to configured team contacts
+router.post('/test-admin-alert', protect, async (req, res) => {
+  try {
+    const { clientId: bodyClientId } = req.body || {};
+    let targetClientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && bodyClientId) {
+      targetClientId = bodyClientId;
+    } else if (
+      bodyClientId &&
+      String(bodyClientId).trim() &&
+      String(bodyClientId).trim() !== String(req.user.clientId || '')
+    ) {
+      return res.status(403).json({ success: false, message: 'Cannot test alerts for another workspace' });
+    }
+
+    const client = await Client.findOne({ clientId: targetClientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Workspace not found' });
+    }
+
+    const NotificationService = require('../utils/core/notificationService');
+    const { resolveAdminAlertTemplateName } = require('../utils/core/notificationService');
+    const templateName = resolveAdminAlertTemplateName(client);
+
+    const results = await NotificationService.sendAdminAlert(client, {
+      customerPhone: req.body?.customerPhone || client.supportPhone || client.adminPhone || '+919999999999',
+      topic: 'Test admin alert — please confirm you received this',
+      triggerSource: 'Settings test button',
+      customerQuery: 'This is a test escalation from TopEdge AI settings.',
+      skipDedup: true,
+    });
+
+    return res.json({
+      success: true,
+      templateApproved: !!templateName,
+      templateName: templateName || 'admin_human_alert',
+      results,
+    });
+  } catch (err) {
+    log.error('test-admin-alert error', { error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 // --- GET PRESET FLOW BY BUSINESS TYPE ---
 const flowPresets = require('../utils/flow/flowPresets');
 

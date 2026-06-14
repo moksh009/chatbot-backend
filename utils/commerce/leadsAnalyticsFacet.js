@@ -1,10 +1,18 @@
 'use strict';
 
 const AdLead = require('../../models/AdLead');
+const Order = require('../../models/Order');
 const Conversation = require('../../models/Conversation');
-const { normalizeLeadForDisplay } = require('./leadDisplayNormalize');
+const {
+  normalizeLeadForDisplay,
+  hasShopifyOrderSignal,
+  hasWhatsAppInbound,
+  resolveAcquisitionSource,
+} = require('./leadDisplayNormalize');
 const { findOrdersForLead } = require('../customer360/leadLookupHelpers');
 const { phoneVariants } = require('../messaging/cancelAllAutomationsFor');
+const { phoneSuffixKey } = require('../shopify/customerOrderAttribution');
+const { pickCanonicalPhone, phoneForAdLeadStorage, isShopifyTestPhone } = require('../core/phoneSanitizer');
 
 const LEAD_LIST_PROJECTION = {
   name: 1,
@@ -225,10 +233,451 @@ async function enrichLeadRow(clientId, row) {
   return normalized;
 }
 
+function shouldUseOrderBackedAudience(opts = {}) {
+  if (opts.importBatchId) return false;
+  const src = String(opts.source || '').trim().toLowerCase();
+  if (src === 'import' || src === 'csv_import') return false;
+  if (opts.includeAll === true || String(opts.includeAll).toLowerCase() === 'true') return false;
+  return true;
+}
+
+function resolveDisplayPhone(order) {
+  const raw = order.customerPhone || order.phone;
+  if (!raw || isShopifyTestPhone(raw)) return null;
+  const canonical = pickCanonicalPhone([order.customerPhone, order.phone], { country: 'IN' });
+  const storage = phoneForAdLeadStorage(canonical || raw, 'IN');
+  return storage || String(raw).trim();
+}
+
+async function loadOrderBackedCustomerRows(clientId) {
+  const orders = await Order.find({ clientId })
+    .select(
+      'customerName customerPhone phone customerEmail email totalPrice amount createdAt shopifyOrderId orderNumber'
+    )
+    .sort({ createdAt: -1 })
+    .limit(15000)
+    .lean();
+
+  const bySuffix = new Map();
+
+  for (const order of orders) {
+    const phoneNumber = resolveDisplayPhone(order);
+    if (!phoneNumber) continue;
+    const suffix = phoneSuffixKey(phoneNumber);
+    if (!suffix) continue;
+
+    const amount = parseFloat(order.totalPrice ?? order.amount ?? 0) || 0;
+    const orderAt = order.createdAt ? new Date(order.createdAt) : null;
+    const existing = bySuffix.get(suffix);
+
+    if (!existing) {
+      bySuffix.set(suffix, {
+        phoneSuffix: suffix,
+        phoneNumber,
+        name: String(order.customerName || '').trim() || 'Customer',
+        email: String(order.customerEmail || order.email || '').trim(),
+        ordersCount: 1,
+        totalSpent: amount,
+        lastPurchaseDate: order.createdAt || null,
+        lastOrderAt: order.createdAt || null,
+        isOrderPlaced: true,
+        source: 'shopify',
+        _latestOrderAt: orderAt,
+      });
+      continue;
+    }
+
+    existing.ordersCount += 1;
+    existing.totalSpent += amount;
+    if (orderAt && (!existing._latestOrderAt || orderAt > existing._latestOrderAt)) {
+      existing._latestOrderAt = orderAt;
+      existing.lastPurchaseDate = order.createdAt;
+      existing.lastOrderAt = order.createdAt;
+      const nm = String(order.customerName || '').trim();
+      if (nm.length > 2) existing.name = nm;
+    }
+    if (!existing.email) {
+      const em = String(order.customerEmail || order.email || '').trim();
+      if (em) existing.email = em;
+    }
+  }
+
+  return [...bySuffix.values()].map(({ _latestOrderAt, ...row }) => row);
+}
+
+function mergeOrderRowWithLead(orderCustomer, lead, clientId) {
+  if (lead) {
+    return normalizeLeadForDisplay({
+      ...lead,
+      name: orderCustomer.name || lead.name,
+      phoneNumber: orderCustomer.phoneNumber,
+      email: orderCustomer.email || lead.email,
+      ordersCount: orderCustomer.ordersCount,
+      totalSpent: orderCustomer.totalSpent,
+      lifetimeValue: orderCustomer.totalSpent,
+      lastPurchaseDate: orderCustomer.lastPurchaseDate,
+      lastOrderAt: orderCustomer.lastOrderAt,
+      isOrderPlaced: true,
+      source: lead.source || 'shopify',
+    });
+  }
+  return normalizeLeadForDisplay({
+    _id: `order_${orderCustomer.phoneSuffix}`,
+    clientId,
+    name: orderCustomer.name,
+    phoneNumber: orderCustomer.phoneNumber,
+    email: orderCustomer.email,
+    ordersCount: orderCustomer.ordersCount,
+    totalSpent: orderCustomer.totalSpent,
+    lifetimeValue: orderCustomer.totalSpent,
+    lastPurchaseDate: orderCustomer.lastPurchaseDate,
+    lastOrderAt: orderCustomer.lastOrderAt,
+    isOrderPlaced: true,
+    source: 'shopify',
+    leadScore: 0,
+    tags: [],
+    optStatus: 'unknown',
+  });
+}
+
+async function loadWhatsAppOnlyLeadRows(clientId, orderSuffixSet) {
+  const leads = await AdLead.find({
+    clientId,
+    phoneNumber: { $exists: true, $nin: ['', null] },
+    $or: [
+      { inboundMessageCount: { $gt: 0 } },
+      { lastInboundAt: { $exists: true, $ne: null } },
+      { chatSummary: { $exists: true, $nin: ['', null] } },
+      { lastMessageContent: { $exists: true, $nin: ['', null] } },
+    ],
+  })
+    .select(LEAD_LIST_PROJECTION)
+    .limit(8000)
+    .lean();
+
+  const out = [];
+  for (const lead of leads) {
+    if (!lead?.phoneNumber || isShopifyTestPhone(lead.phoneNumber)) continue;
+    const suffix = phoneSuffixKey(lead.phoneNumber);
+    if (!suffix || orderSuffixSet.has(suffix)) continue;
+    if (!hasWhatsAppInbound(lead)) continue;
+    out.push(normalizeLeadForDisplay(lead));
+  }
+  return out;
+}
+
+/**
+ * Resolve a lead doc for Customer 360 — supports Mongo AdLead ids and synthetic order_{suffix} ids.
+ */
+async function resolveAudienceLeadById(clientId, id) {
+  const rawId = String(id || '').trim();
+  if (!rawId || !clientId) return null;
+
+  if (/^[0-9a-fA-F]{24}$/.test(rawId)) {
+    const lead = await AdLead.findOne({ _id: rawId, clientId }).lean();
+    if (lead) return lead;
+  }
+
+  const suffix = rawId.startsWith('order_') ? rawId.slice('order_'.length) : phoneSuffixKey(rawId);
+  if (!suffix || suffix.length < 8) return null;
+
+  const orderRows = await loadOrderBackedCustomerRows(clientId);
+  const orderCustomer = orderRows.find((r) => r.phoneSuffix === suffix);
+  if (!orderCustomer) return null;
+
+  const phoneRegex = new RegExp(`${suffix}$`);
+  const adLead = await AdLead.findOne({
+    clientId,
+    phoneNumber: phoneRegex,
+  })
+    .lean();
+
+  if (adLead) {
+    return {
+      ...adLead,
+      name: orderCustomer.name || adLead.name,
+      phoneNumber: orderCustomer.phoneNumber,
+      email: orderCustomer.email || adLead.email,
+      ordersCount: orderCustomer.ordersCount,
+      totalSpent: orderCustomer.totalSpent,
+      lifetimeValue: orderCustomer.totalSpent,
+      lastPurchaseDate: orderCustomer.lastPurchaseDate,
+      lastOrderAt: orderCustomer.lastOrderAt,
+      isOrderPlaced: true,
+    };
+  }
+
+  return {
+    _id: `order_${suffix}`,
+    clientId,
+    name: orderCustomer.name,
+    phoneNumber: orderCustomer.phoneNumber,
+    email: orderCustomer.email,
+    ordersCount: orderCustomer.ordersCount,
+    totalSpent: orderCustomer.totalSpent,
+    lifetimeValue: orderCustomer.totalSpent,
+    lastPurchaseDate: orderCustomer.lastPurchaseDate,
+    lastOrderAt: orderCustomer.lastOrderAt,
+    isOrderPlaced: true,
+    source: 'shopify',
+    leadScore: 0,
+    tags: [],
+    optStatus: 'unknown',
+  };
+}
+
+function applyOrderBackedFilters(rows, opts = {}) {
+  const {
+    search = '',
+    tag,
+    segmentScore,
+    lastSeen,
+    stage,
+    engagement,
+    convStatus,
+    optStatus,
+    source,
+  } = opts;
+
+  let out = rows;
+
+  if (search) {
+    const q = String(search).trim().toLowerCase();
+    out = out.filter(
+      (r) =>
+        String(r.name || '').toLowerCase().includes(q) ||
+        String(r.phoneNumber || '').toLowerCase().includes(q) ||
+        String(r.email || '').toLowerCase().includes(q)
+    );
+  }
+
+  if (tag) {
+    out = out.filter((r) => Array.isArray(r.tags) && r.tags.includes(tag));
+  }
+
+  if (segmentScore) {
+    const [min, max] = String(segmentScore).split('-').map(Number);
+    if (!Number.isNaN(min) && !Number.isNaN(max)) {
+      out = out.filter((r) => {
+        const s = Number(r.leadScore) || 0;
+        return s >= min && s <= max;
+      });
+    }
+  }
+
+  const stageKey = String(stage || '').toLowerCase();
+  if (stageKey === 'hot') out = out.filter((r) => (Number(r.leadScore) || 0) >= 80);
+  else if (stageKey === 'warm') {
+    out = out.filter((r) => {
+      const s = Number(r.leadScore) || 0;
+      return s >= 50 && s < 80;
+    });
+  } else if (stageKey === 'cold') out = out.filter((r) => (Number(r.leadScore) || 0) < 50);
+
+  const engagementKey = String(engagement || '').toLowerCase();
+  if (engagementKey === 'high') out = out.filter((r) => (Number(r.linkClicks) || 0) > 5);
+  else if (engagementKey === 'medium') {
+    out = out.filter((r) => {
+      const c = Number(r.linkClicks) || 0;
+      return c >= 1 && c <= 5;
+    });
+  } else if (engagementKey === 'low') out = out.filter((r) => (Number(r.linkClicks) || 0) === 0);
+
+  const convKey = String(convStatus || '').toLowerCase();
+  if (convKey === 'has_conv') {
+    out = out.filter(
+      (r) =>
+        String(r.chatSummary || r.lastMessageContent || '').trim().length > 0 ||
+        Number(r.inboundMessageCount) > 0
+    );
+  } else if (convKey === 'no_conv') {
+    out = out.filter(
+      (r) =>
+        !String(r.chatSummary || r.lastMessageContent || '').trim() &&
+        !(Number(r.inboundMessageCount) > 0)
+    );
+  }
+
+  if (optStatus) {
+    const status = String(optStatus).trim().toLowerCase();
+    out = out.filter((r) => String(r.optStatus || 'unknown').toLowerCase() === status);
+  }
+
+  const sourceKey = String(source || '').trim().toLowerCase();
+  if (sourceKey === 'shopify') {
+    out = out.filter((r) => hasShopifyOrderSignal(r));
+  } else if (sourceKey === 'whatsapp') {
+    out = out.filter((r) => hasWhatsAppInbound(r));
+  } else if (sourceKey === 'both') {
+    out = out.filter((r) => hasShopifyOrderSignal(r) && hasWhatsAppInbound(r));
+  } else if (sourceKey === 'import' || sourceKey === 'csv_import') {
+    out = out.filter(
+      (r) =>
+        Boolean(r.importBatchId) ||
+        (Array.isArray(r.tags) && r.tags.some((t) => /^import/i.test(String(t || ''))))
+    );
+  } else if (sourceKey === 'website') {
+    out = out.filter((r) => {
+      const key = String(resolveAcquisitionSource(r) || '').toLowerCase();
+      return key.includes('website') || key.includes('widget');
+    });
+  } else if (sourceKey) {
+    out = out.filter((r) => String(resolveAcquisitionSource(r) || '').toLowerCase() === sourceKey);
+  }
+
+  if (lastSeen) {
+    const days =
+      lastSeen === '24h' ? 1 : lastSeen === '7d' ? 7 : lastSeen === '14d' ? 14 : lastSeen === '1m' ? 30 : lastSeen === '6m' ? 180 : 0;
+    if (days > 0) {
+      const since = new Date();
+      since.setDate(since.getDate() - days);
+      out = out.filter((r) => {
+        const seen = r.lastInteraction || r.lastInboundAt || r.lastPurchaseDate;
+        return seen && new Date(seen) >= since;
+      });
+    }
+  }
+
+  return out;
+}
+
+function sortOrderBackedRows(rows, sortBy) {
+  const key = sortBy === 'spend' ? 'ltv' : sortBy;
+  const list = [...rows];
+  const cmp = (a, b) => {
+    if (key === 'score') return (Number(b.leadScore) || 0) - (Number(a.leadScore) || 0);
+    if (key === 'ltv' || key === 'spend') return (Number(b.totalSpent) || 0) - (Number(a.totalSpent) || 0);
+    if (key === 'name') return String(a.name || '').localeCompare(String(b.name || ''));
+    if (key === 'clicks') return (Number(b.linkClicks) || 0) - (Number(a.linkClicks) || 0);
+    if (key === 'lastPurchase') {
+      return new Date(b.lastPurchaseDate || 0) - new Date(a.lastPurchaseDate || 0);
+    }
+    if (key === 'orders') return (Number(b.ordersCount) || 0) - (Number(a.ordersCount) || 0);
+    if (key === 'cartValue') return (Number(b.cartValue) || 0) - (Number(a.cartValue) || 0);
+    if (key === 'aov') {
+      const aAov = (Number(a.ordersCount) || 0) > 0 ? (Number(a.totalSpent) || 0) / a.ordersCount : 0;
+      const bAov = (Number(b.ordersCount) || 0) > 0 ? (Number(b.totalSpent) || 0) / b.ordersCount : 0;
+      return bAov - aAov;
+    }
+    const aSeen = new Date(a.lastInteraction || a.lastInboundAt || a.lastPurchaseDate || 0).getTime();
+    const bSeen = new Date(b.lastInteraction || b.lastInboundAt || b.lastPurchaseDate || 0).getTime();
+    return bSeen - aSeen;
+  };
+  list.sort(cmp);
+  return list;
+}
+
+/**
+ * Unified audience: Shopify order customers + WhatsApp live-chat contacts (deduped by phone).
+ */
+async function fetchOrderBackedAudienceBundle(clientId, opts = {}) {
+  const {
+    search = '',
+    tag,
+    segmentScore,
+    lastSeen,
+    sortBy,
+    page = 1,
+    limit = 20,
+    optStatus,
+    stage,
+    engagement,
+    convStatus,
+    source,
+  } = opts;
+
+  const pageNum = parseInt(page, 10) || 1;
+  const limitNum = Math.min(parseInt(limit, 10) || 20, 500);
+
+  const orderRows = await loadOrderBackedCustomerRows(clientId);
+  const suffixSet = new Set(orderRows.map((r) => r.phoneSuffix).filter(Boolean));
+
+  const adLeadRows = await AdLead.find({
+    clientId,
+    phoneNumber: { $exists: true, $ne: '' },
+  })
+    .select(LEAD_LIST_PROJECTION)
+    .lean();
+
+  const leadBySuffix = new Map();
+  for (const lead of adLeadRows) {
+    const suffix = phoneSuffixKey(lead.phoneNumber);
+    if (!suffix) continue;
+    if (!leadBySuffix.has(suffix)) leadBySuffix.set(suffix, lead);
+  }
+
+  const shopifyMerged = orderRows.map((orderCustomer) =>
+    mergeOrderRowWithLead(orderCustomer, leadBySuffix.get(orderCustomer.phoneSuffix), clientId)
+  );
+
+  const whatsappOnly = await loadWhatsAppOnlyLeadRows(clientId, suffixSet);
+
+  let merged = [...shopifyMerged, ...whatsappOnly];
+
+  merged = applyOrderBackedFilters(merged, {
+    search,
+    tag,
+    segmentScore,
+    lastSeen,
+    stage,
+    engagement,
+    convStatus,
+    optStatus,
+    source,
+  });
+  merged = sortOrderBackedRows(merged, sortBy);
+
+  const total = merged.length;
+  const totalPages = Math.max(1, Math.ceil(total / limitNum));
+  const safePage = Math.min(pageNum, totalPages);
+  const skip = (safePage - 1) * limitNum;
+  const pageSlice = merged.slice(skip, skip + limitNum);
+
+  const leads = await Promise.all(
+    pageSlice.map((row) => enrichLeadRow(clientId, row))
+  );
+
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const activeToday = merged.filter((r) => r.lastInboundAt && new Date(r.lastInboundAt) >= dayStart).length;
+  const withConversation = merged.filter(
+    (r) =>
+      hasWhatsAppInbound(r)
+  ).length;
+  const highEngagement = merged.filter((r) => (Number(r.linkClicks) || 0) > 5).length;
+  const shopifyCustomers = merged.filter((r) => hasShopifyOrderSignal(r)).length;
+  const whatsappContacts = merged.filter((r) => hasWhatsAppInbound(r)).length;
+  const bothChannels = merged.filter(
+    (r) => hasShopifyOrderSignal(r) && hasWhatsAppInbound(r)
+  ).length;
+
+  return {
+    leads,
+    currentPage: safePage,
+    totalPages,
+    totalLeads: total,
+    summary: {
+      activeToday,
+      activeInPeriod: activeToday,
+      withConversation,
+      highEngagement,
+      shopifyCustomers,
+      whatsappContacts,
+      bothChannels,
+    },
+    pagination: { page: safePage, limit: limitNum, total, totalPages },
+    audienceSource: 'unified',
+  };
+}
+
 /**
  * Single round-trip: filtered page + total + workspace summary counts.
  */
 async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
+  if (shouldUseOrderBackedAudience(opts)) {
+    return fetchOrderBackedAudienceBundle(clientId, opts);
+  }
+
   const {
     search = '',
     tag,
@@ -363,4 +812,7 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
 module.exports = {
   buildLeadsListQuery,
   fetchLeadsAnalyticsBundle,
+  fetchOrderBackedAudienceBundle,
+  shouldUseOrderBackedAudience,
+  resolveAudienceLeadById,
 };

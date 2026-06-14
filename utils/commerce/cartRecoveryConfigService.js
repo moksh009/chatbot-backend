@@ -109,6 +109,28 @@ function buildConfigPayload(client = {}) {
 }
 
 async function saveCartRecoveryConfig(clientId, patch = {}) {
+  const allowedKeys = [
+    'promotionDelayMinutes',
+    'step1DelayMinutes',
+    'step2DelayMinutes',
+    'step3DelayMinutes',
+    'smartSendEnabled',
+    'smartSendStartHour',
+    'smartSendEndHour',
+    'timezone',
+    'attributionWindowHours',
+    'discountEnabled',
+    'discountStep2Pct',
+    'discountStep3Pct',
+    'abTestEnabled',
+  ];
+  const safePatch = {};
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) {
+      safePatch[key] = patch[key];
+    }
+  }
+
   const client = await Client.findOne({ clientId })
     .select('cartRecoveryConfig wizardFeatures commerceAutomations')
     .lean();
@@ -117,36 +139,43 @@ async function saveCartRecoveryConfig(clientId, patch = {}) {
   const current = getCartRecoveryConfig(client);
   const next = {
     ...current,
-    ...patch,
+    ...safePatch,
   };
 
-  if (patch.step1DelayMinutes != null) {
+  if (safePatch.step1DelayMinutes != null) {
     next.step1DelayMinutes = clampDelayMinutes(
-      patch.step1DelayMinutes,
+      safePatch.step1DelayMinutes,
       CART_FOLLOWUP_MIN_MINUTES.followup_1,
       CART_FOLLOWUP_DEFAULT_MINUTES.followup_1
     );
   }
-  if (patch.step2DelayMinutes != null) {
+  if (safePatch.step2DelayMinutes != null) {
     next.step2DelayMinutes = clampDelayMinutes(
-      patch.step2DelayMinutes,
+      safePatch.step2DelayMinutes,
       CART_FOLLOWUP_MIN_MINUTES.followup_2,
       CART_FOLLOWUP_DEFAULT_MINUTES.followup_2
     );
   }
-  if (patch.step3DelayMinutes != null) {
+  if (safePatch.step3DelayMinutes != null) {
     next.step3DelayMinutes = clampDelayMinutes(
-      patch.step3DelayMinutes,
+      safePatch.step3DelayMinutes,
       CART_FOLLOWUP_MIN_MINUTES.followup_3,
       CART_FOLLOWUP_DEFAULT_MINUTES.followup_3
     );
   }
-  if (patch.promotionDelayMinutes != null) {
+  if (safePatch.promotionDelayMinutes != null) {
     next.promotionDelayMinutes = clampDelayMinutes(
-      patch.promotionDelayMinutes,
+      safePatch.promotionDelayMinutes,
       5,
       CART_RECOVERY_DEFAULTS.promotionDelayMinutes
     );
+  }
+
+  if (safePatch.smartSendStartHour != null) {
+    next.smartSendStartHour = Math.min(23, Math.max(0, Number(safePatch.smartSendStartHour) || 0));
+  }
+  if (safePatch.smartSendEndHour != null) {
+    next.smartSendEndHour = Math.min(23, Math.max(0, Number(safePatch.smartSendEndHour) || 0));
   }
 
   const setFields = {
@@ -159,6 +188,9 @@ async function saveCartRecoveryConfig(clientId, patch = {}) {
     'cartRecoveryConfig.smartSendEndHour': next.smartSendEndHour,
     'cartRecoveryConfig.timezone': next.timezone,
     'cartRecoveryConfig.attributionWindowHours': next.attributionWindowHours,
+    'cartRecoveryConfig.discountEnabled': next.discountEnabled === true,
+    'cartRecoveryConfig.discountStep2Pct': Math.min(50, Math.max(0, Number(next.discountStep2Pct) || 0)),
+    'cartRecoveryConfig.discountStep3Pct': Math.min(50, Math.max(0, Number(next.discountStep3Pct) || 0)),
     'cartRecoveryConfig.abTestEnabled': next.abTestEnabled === true,
     'wizardFeatures.cartNudgeMinutes1': next.step1DelayMinutes,
     'wizardFeatures.cartNudgeHours2': Math.round(next.step2DelayMinutes / 60),

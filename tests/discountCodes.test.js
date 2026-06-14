@@ -20,6 +20,7 @@ describe('discountCodes', () => {
       deriveDiscountStatus({ endsAt: new Date(Date.now() - 1000).toISOString() }),
       'expired'
     );
+    assert.equal(deriveDiscountStatus({ expiryMode: 'never', endsAt: null }), 'active');
     assert.equal(
       deriveDiscountStatus({ usageLimit: 1, usageCount: 1 }),
       'used_up'

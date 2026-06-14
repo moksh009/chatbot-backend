@@ -2,36 +2,45 @@
 
 const cron = require('node-cron');
 const Client = require('../models/Client');
-const AdLead = require('../models/AdLead');
 const Notification = require('../models/Notification');
 const { emitAdminNotification } = require('../utils/admin/emitAdminNotification');
 const { sendEmail } = require('../utils/core/emailService');
+const { calculateRecoveryMetrics } = require('../services/cartRecoveryMetricsService');
 const log = require('../utils/core/logger')('CartRecoveryAlert');
 
 const RECOVERY_RATE_THRESHOLD = 5;
 const LOOKBACK_DAYS = 7;
+const MIN_COHORT_VOLUME = 10;
 
 async function computeSevenDayRecoveryRate(clientId) {
   const to = new Date();
-  const from = new Date(to.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const from = new Date(to.getTime() - (LOOKBACK_DAYS - 1) * 24 * 60 * 60 * 1000);
+  from.setHours(0, 0, 0, 0);
 
-  const [step1Sent, recovered] = await Promise.all([
-    AdLead.countDocuments({
-      clientId,
-      recoveryStep: { $gte: 1 },
-      cartAbandonedAt: { $gte: from, $lte: to },
-    }),
-    AdLead.countDocuments({
-      clientId,
-      cartStatus: 'recovered',
-      recoveredAt: { $gte: from, $lte: to },
-    }),
-  ]);
+  const metrics = await calculateRecoveryMetrics(clientId, {
+    mode: 'cohort',
+    from,
+    to,
+    includeFunnel: true,
+    includeRows: false,
+  });
 
-  if (step1Sent < 10) return { rate: null, step1Sent, recovered, skip: 'insufficient_volume' };
+  const totalAbandoned = metrics.totalAbandoned;
+  const recovered = metrics.recoveredCarts;
+  const step1Sent = metrics.funnel?.msg1Sent || 0;
 
-  const rate = Math.round((recovered / step1Sent) * 1000) / 10;
-  return { rate, step1Sent, recovered, skip: null };
+  if (totalAbandoned < MIN_COHORT_VOLUME) {
+    return { rate: null, step1Sent, recovered, totalAbandoned, skip: 'insufficient_volume' };
+  }
+
+  return {
+    rate: metrics.recoveryRate,
+    step1Sent,
+    recovered,
+    totalAbandoned,
+    messageEfficiencyRate: metrics.funnel?.messageEfficiencyRate ?? 0,
+    skip: null,
+  };
 }
 
 async function alertLowRecoveryRate(client) {
@@ -39,7 +48,7 @@ async function alertLowRecoveryRate(client) {
   if (stats.skip || stats.rate == null || stats.rate >= RECOVERY_RATE_THRESHOLD) return;
 
   const title = 'Cart recovery rate dropped';
-  const message = `${client.businessName || client.clientId}: recovery rate is ${stats.rate}% (${stats.recovered}/${stats.step1Sent} over ${LOOKBACK_DAYS}d). Review templates and timing in Order messages.`;
+  const message = `${client.businessName || client.clientId}: recovery rate is ${stats.rate}% (${stats.recovered}/${stats.totalAbandoned} abandoned carts recovered over ${LOOKBACK_DAYS}d). Review templates and timing in Order messages.`;
 
   const recent = await Notification.findOne({
     clientId: client.clientId,

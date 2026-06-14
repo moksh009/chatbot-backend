@@ -772,17 +772,17 @@ async function handleCheckout(client, data) {
     const email = data.email || data.customer?.email;
     const phoneE164 = phoneRaw ? normalizeIndianPhone(phoneRaw) : null;
 
-    if (!phoneE164 && !email) {
+    const checkoutToken = data.checkout_token || data.token || '';
+    const cartToken = data.cart_token || '';
+
+    if (!phoneE164 && !email && !checkoutToken) {
       log.warn(
-        `[Checkout] Dropped — no phone or email (client=${client.clientId}, token=${data.checkout_token || data.token || 'n/a'})`
+        `[Checkout] Dropped — no phone, email, or checkout token (client=${client.clientId})`
       );
       const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
       await trackEcommerceEvent(client.clientId, { checkoutDroppedNoContact: 1 }).catch(() => {});
       return;
     }
-
-    const checkoutToken = data.checkout_token || data.token || '';
-    const cartToken = data.cart_token || '';
     const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
     const recoverUrl =
       storeHost && checkoutToken ? `https://${storeHost}/cart/recover/${checkoutToken}` : '';
@@ -813,6 +813,8 @@ async function handleCheckout(client, data) {
       cartStatus: isPurchased ? 'purchased' : 'active',
       contactCapturedAt: isPurchased ? null : new Date(),
       completedAt: data.completed_at || null,
+      shippingAddress: data.shipping_address,
+      billingAddress: data.billing_address,
       logActivity: false,
     });
 
@@ -843,20 +845,27 @@ async function handleCheckout(client, data) {
 }
 
 async function handleOrder(client, data, storeKey = '') {
-    const phoneRaw =
-      data.phone ||
-      data.customer?.phone ||
-      data.billing_address?.phone ||
-      data.shipping_address?.phone;
-    if (!phoneRaw) return;
-    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
-    const cleanPhone = normalizePhoneWithCountry(phoneRaw, client);
-    if (!cleanPhone) return;
+    const { resolveShopifyOrderContact } = require('../utils/commerce/resolveShopifyOrderContact');
+    const { indianPhoneLookupVariants } = require('../utils/core/normalizeIndianPhone');
+    const contact = resolveShopifyOrderContact(client, data);
+
+    if (!contact.canProcess) {
+      log.warn(
+        `[ShopifyWebhook] Order skipped — no phone, email, or checkout_token (${data.id || data.name})`
+      );
+      return;
+    }
+
+    if (!contact.cleanPhone) {
+      log.info(
+        `[ShopifyWebhook] Order ${data.id || data.name} — matching via ${contact.matchVia}`
+      );
+    }
 
     const { handleOrderAtomic } = require('../utils/shopify/handleOrderAtomic');
     let atomic;
     try {
-      atomic = await handleOrderAtomic(client, data, cleanPhone);
+      atomic = await handleOrderAtomic(client, data, contact.cleanPhone || '');
     } catch (atomicErr) {
       log.error(`[ShopifyWebhook] handleOrderAtomic failed: ${atomicErr.message}`);
       throw atomicErr;
@@ -867,48 +876,66 @@ async function handleOrder(client, data, storeKey = '') {
     }
     const lead = atomic.lead;
 
+    const cleanPhone =
+      contact.cleanPhone ||
+      (lead?.phoneNumber
+        ? String(lead.phoneNumber).replace(/\D/g, '').slice(-10)
+        : '');
+
     try {
       const { recordOrderPositiveOutcome } = require('../services/training/trainingOutcomeTracker');
-      await recordOrderPositiveOutcome(client.clientId, cleanPhone);
+      if (cleanPhone) await recordOrderPositiveOutcome(client.clientId, cleanPhone);
     } catch (_) {}
 
-    // Deep Pixel Hook: Register Backend Order Completion natively to fix Attribution Grid
-    await AdLead.updateOne(
-        { phoneNumber: cleanPhone, clientId: client.clientId },
-        { $push: { 
-            commerceEvents: {
-                event: 'checkout_completed',
-                amount: parseFloat(data.total_price) || 0,
-                currency: data.currency || 'INR',
-                timestamp: new Date()
-            }
-        }}
-    ).catch(e => log.error('Failed to log checkout_completed event:', e.message));
+    const phoneVariants = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
+    const leadFilter = phoneVariants.length
+      ? { clientId: client.clientId, phoneNumber: { $in: phoneVariants } }
+      : lead?._id
+        ? { _id: lead._id, clientId: client.clientId }
+        : null;
 
-    // Track Journey Event
-    const { trackEvent } = require('../utils/commerce/journeyTracker');
-    await trackEvent(client.clientId, cleanPhone, 'order_placed', {
+    if (leadFilter) {
+      await AdLead.updateOne(
+        leadFilter,
+        {
+          $push: {
+            commerceEvents: {
+              event: 'checkout_completed',
+              amount: parseFloat(data.total_price) || 0,
+              currency: data.currency || 'INR',
+              timestamp: new Date(),
+            },
+          },
+        }
+      ).catch((e) => log.error('Failed to log checkout_completed event:', e.message));
+    }
+
+    if (cleanPhone) {
+      const { trackEvent } = require('../utils/commerce/journeyTracker');
+      await trackEvent(client.clientId, cleanPhone, 'order_placed', {
         orderId: data.name || `#${data.id}`,
         total: data.total_price,
         isCOD: (data.gateway === 'Cash on Delivery (COD)' || (data.payment_gateway_names || []).join('').toLowerCase().includes('cod'))
-    });
+      });
+    }
 
-    // 2b. Attribute WhatsApp checkout short links (Commerce)
-    try {
-      const CheckoutLink = require("../models/CheckoutLink");
-      await CheckoutLink.findOneAndUpdate(
-        { clientId: client.clientId, phone: cleanPhone, converted: false },
-        {
-          $set: {
-            converted: true,
-            convertedAt: new Date(),
-            shopifyOrderId: String(data.id || "")
-          }
-        },
-        { sort: { createdAt: -1 } }
-      );
-    } catch (clErr) {
-      log.warn(`[CheckoutLink] attribution skipped: ${clErr.message}`);
+    if (cleanPhone) {
+      try {
+        const CheckoutLink = require("../models/CheckoutLink");
+        await CheckoutLink.findOneAndUpdate(
+          { clientId: client.clientId, phone: cleanPhone, converted: false },
+          {
+            $set: {
+              converted: true,
+              convertedAt: new Date(),
+              shopifyOrderId: String(data.id || "")
+            }
+          },
+          { sort: { createdAt: -1 } }
+        );
+      } catch (clErr) {
+        log.warn(`[CheckoutLink] attribution skipped: ${clErr.message}`);
+      }
     }
 
     // 3. Upsert internal Order record (same mapper as sync / orders/updated — COD + logistics status)
@@ -919,7 +946,7 @@ async function handleOrder(client, data, storeKey = '') {
       storeKey: resolvedStoreKey,
       shopDomain: resolvedStoreKey,
     });
-    $set.customerPhone = cleanPhone;
+    $set.customerPhone = cleanPhone || $set.customerPhone;
     const filter = shopifyOrderFilter(client.clientId, data);
     const newOrder = await Order.findOneAndUpdate(
         filter,

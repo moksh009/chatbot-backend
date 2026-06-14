@@ -1574,7 +1574,9 @@ const sendOrderStatusWhatsAppManual = async (req, res) => {
 const getOrderMessagesOverview = async (req, res) => {
     try {
         const { buildOrderMessagesOverview } = require('../../utils/commerce/orderMessagesOverview');
-        const data = await buildOrderMessagesOverview(req.clientConfig);
+        const daysRaw = req.query.days ?? req.query.statsDays ?? '7';
+        const days = daysRaw === 'all' || daysRaw === '0' ? 0 : Math.max(parseInt(daysRaw, 10) || 7, 0);
+        const data = await buildOrderMessagesOverview(req.clientConfig, { days });
         res.json({ success: true, ...data });
     } catch (error) {
         console.error('[OrderMessagesOverview] Error:', error);
