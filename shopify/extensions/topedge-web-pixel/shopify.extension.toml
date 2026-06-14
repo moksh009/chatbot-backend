@@ -1,0 +1,21 @@
+api_version = "2026-04"
+
+[[extensions]]
+uid = "topedge-web-pixel-uid"
+type = "web_pixel_extension"
+name = "TopEdge Deep Pixel"
+handle = "topedge-web-pixel"
+runtime_context = "strict"
+
+[extensions.settings]
+type = "object"
+
+[extensions.settings.fields.clientId]
+name = "TopEdge client ID"
+description = "Set automatically by TopEdge when you install tracking"
+type = "single_line_text_field"
+
+[extensions.settings.fields.apiBaseUrl]
+name = "TopEdge API URL"
+description = "Set automatically by TopEdge when you install tracking"
+type = "single_line_text_field"

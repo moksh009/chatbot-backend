@@ -97,7 +97,13 @@ Thumbs.db
 
 # Temporary files
 tmp/
-temp/ 
+temp/
+
+# Shopify CLI (see shopify/.gitignore; keep lockfile optional)
+shopify/node_modules/
+shopify/.shopify/
+shopify/extensions/*/node_modules/
+shopify/extensions/*/dist/
 
 # Sensitive files
 private.pem

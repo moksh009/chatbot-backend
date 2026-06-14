@@ -3,7 +3,7 @@
 /**
  * SINGLE SOURCE OF TRUTH for Shopify OAuth scopes.
  * Any change here MUST be reflected in:
- *   1. shopify.app.toml (root + backend)
+ *   1. shopify.app.toml (monorepo root — canonical for Shopify CLI)
  *   2. Shopify Partner Dashboard (via `shopify app deploy`)
  *   3. Frontend mirror: src/utils/shopifyScopes.js
  */

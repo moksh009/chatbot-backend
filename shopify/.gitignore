@@ -1,0 +1,5 @@
+node_modules/
+.shopify/
+extensions/*/node_modules/
+extensions/*/dist/
+package-lock.json

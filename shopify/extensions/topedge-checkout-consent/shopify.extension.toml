@@ -1,0 +1,15 @@
+api_version = "2026-04"
+
+[[extensions]]
+uid = "topedge-checkout-consent-uid"
+type = "ui_extension"
+name = "TopEdge WhatsApp opt-in"
+handle = "topedge-checkout-consent"
+
+[[extensions.targeting]]
+module = "./src/Checkout.jsx"
+target = "purchase.checkout.contact.render-after"
+
+[extensions.capabilities]
+api_access = true
+network_access = true

@@ -1,0 +1,23 @@
+api_version = "2026-04"
+
+[[extensions]]
+uid = "topedge-checkout-capture-uid"
+type = "ui_extension"
+name = "TopEdge live cart capture"
+handle = "topedge-checkout-capture"
+
+# Target 1: Shipping / delivery address step — captures phone from shipping form
+[[extensions.targeting]]
+module = "./src/Checkout.jsx"
+target = "purchase.checkout.delivery-address.render-after"
+
+# Target 2: Contact info step — captures phone/email from contact form
+# Uses the named export `contactCapture` from Checkout.jsx
+[[extensions.targeting]]
+module = "./src/Checkout.jsx"
+target = "purchase.checkout.contact.render-after"
+export = "contactCapture"
+
+[extensions.capabilities]
+api_access = true
+network_access = true

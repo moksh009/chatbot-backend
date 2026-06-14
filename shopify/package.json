@@ -1,0 +1,20 @@
+{
+  "name": "topedge-shopify-workspace",
+  "private": true,
+  "workspaces": [
+    "extensions/topedge-web-pixel",
+    "extensions/topedge-checkout-consent",
+    "extensions/topedge-checkout-capture"
+  ],
+  "scripts": {
+    "shopify:login": "npx shopify auth login",
+    "shopify:deploy": "npx shopify app deploy --allow-updates",
+    "shopify:info": "npx shopify app info",
+    "shopify:dev": "npx shopify app dev",
+    "shopify:sync-extensions": "rsync -a --delete shopify-extensions/ extensions/ --exclude node_modules"
+  },
+  "devDependencies": {
+    "@shopify/cli": "^3.94.3",
+    "@shopify/app": "^3.58.2"
+  }
+}

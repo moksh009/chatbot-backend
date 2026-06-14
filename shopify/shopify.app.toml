@@ -1,4 +1,5 @@
-# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+# TopEdge Ai — run Shopify CLI from chatbot-backend-main/shopify/
+# Deploy: npm run shopify:login && npm run shopify:deploy
 
 name = "TopEdge Ai"
 client_id = "3bcca3618398260cf607bdc3b554059b"
@@ -13,7 +14,6 @@ api_version = "2026-04"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts,read_inventory,write_inventory,read_locations,write_draft_orders,read_pixels,write_pixels,read_customer_events"
 optional_scopes = [ ]
 use_legacy_install_flow = false
@@ -22,3 +22,6 @@ use_legacy_install_flow = false
 redirect_urls = [
   "https://api.topedgeai.com/api/shopify/callback"
 ]
+
+[build]
+automatically_update_urls_on_dev = false

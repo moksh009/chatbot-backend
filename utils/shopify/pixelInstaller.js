@@ -5,7 +5,6 @@ const { executeGraphQL } = require('./shopifyGraphQL');
 const { generateWebPixelScript } = require('../commerce/pixelEventProcessor');
 const log = require('../core/logger')('PixelInstaller');
 const { hasPixelScopes: tokenHasPixelScopes } = require('./shopifyScopeUtils');
-const PIXEL_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
 
 const WEB_PIXEL_CREATE = `
   mutation WebPixelCreate($webPixel: WebPixelInput!) {
@@ -21,6 +20,15 @@ const WEB_PIXEL_UPDATE = `
     webPixelUpdate(id: $id, webPixel: $webPixel) {
       userErrors { field message code }
       webPixel { id settings }
+    }
+  }
+`;
+
+const WEB_PIXEL_DELETE = `
+  mutation WebPixelDelete($id: ID!) {
+    webPixelDelete(id: $id) {
+      deletedWebPixelId
+      userErrors { field message code }
     }
   }
 `;
@@ -81,7 +89,7 @@ function resolveApiBaseUrl(options = {}) {
     options.apiBaseUrl ||
     process.env.BACKEND_URL ||
     process.env.SERVER_URL ||
-    ''
+    'https://api.topedgeai.com'
   ).replace(/\/+$/, '');
 }
 
@@ -89,18 +97,6 @@ function resolveApiBaseUrl(options = {}) {
  * Shopify API registration status (not live event traffic).
  */
 async function getWebPixelInstallStatus(clientId) {
-  if (PIXEL_BYPASS_CLIENTS.has(String(clientId || '').trim())) {
-    return {
-      installed: true,
-      reason: 'bypass_for_review',
-      apiConnected: true,
-      hasPixelScopes: true,
-      webPixelId: null,
-      storedWebPixelId: null,
-      message: 'Bypass mode active for this workspace while Shopify app review is pending.',
-    };
-  }
-
   const client = await Client.findOne({ clientId })
     .select(
       'clientId shopDomain shopifyAccessToken shopifyConnectionStatus shopifyWebPixelId shopifyScopes'
@@ -153,20 +149,9 @@ async function getWebPixelInstallStatus(clientId) {
 }
 
 /**
- * Idempotent: create or update the app's web pixel with TopEdge settings.
+ * Idempotent: create or update the app's web pixel with per-tenant TopEdge settings.
  */
 async function installWebPixel(clientId, options = {}) {
-  if (PIXEL_BYPASS_CLIENTS.has(String(clientId || '').trim())) {
-    return {
-      success: true,
-      action: 'bypass_connected',
-      webPixelId: null,
-      settings: {},
-      manualSnippet: generateWebPixelScript(clientId, resolveApiBaseUrl(options)),
-      pollHint: 'Bypass mode active for this workspace only.',
-    };
-  }
-
   const apiBaseUrl = resolveApiBaseUrl(options);
   if (!apiBaseUrl) {
     throw new Error('BACKEND_URL or SERVER_URL is required for pixel install');
@@ -245,6 +230,7 @@ async function installWebPixel(clientId, options = {}) {
         shopifyWebPixelId: pixel.id,
         shopifyWebPixelInstalledAt: new Date(),
         shopifyWebPixelSettings: settingsObj,
+        shopifyTrackingDisabled: false,
       },
     }
   );
@@ -261,8 +247,47 @@ async function installWebPixel(clientId, options = {}) {
   };
 }
 
+/**
+ * Remove the TopEdge web pixel from a merchant shop (best-effort on disconnect).
+ */
+async function uninstallWebPixel(clientId) {
+  const client = await Client.findOne({ clientId }).select('shopifyWebPixelId shopifyAccessToken shopDomain').lean();
+  if (!client?.shopifyAccessToken || !client.shopDomain) {
+    return { success: true, removed: false, reason: 'shopify_not_connected' };
+  }
+
+  let pixelId = client.shopifyWebPixelId;
+  if (!pixelId) {
+    try {
+      const status = await getWebPixelInstallStatus(clientId);
+      pixelId = status.webPixelId || null;
+    } catch {
+      pixelId = null;
+    }
+  }
+
+  if (!pixelId) {
+    return { success: true, removed: false, message: 'No web pixel registered on Shopify' };
+  }
+
+  try {
+    const data = await executeGraphQL(clientId, WEB_PIXEL_DELETE, { id: pixelId });
+    throwOnUserErrors(data?.webPixelDelete, 'webPixelDelete');
+    log.info(`[PixelInstaller] deleted web pixel ${pixelId} for ${clientId}`);
+    return {
+      success: true,
+      removed: true,
+      deletedWebPixelId: data?.webPixelDelete?.deletedWebPixelId || pixelId,
+    };
+  } catch (err) {
+    log.warn(`[PixelInstaller] web pixel delete failed for ${clientId}: ${err.message}`);
+    return { success: false, removed: false, message: err.message };
+  }
+}
+
 module.exports = {
   installWebPixel,
+  uninstallWebPixel,
   getWebPixelInstallStatus,
   buildSettings,
   parseSettings,

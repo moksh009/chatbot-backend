@@ -38,11 +38,13 @@ router.get('/config', publicCors, async (req, res) => {
     const client = await Client.findOne({
       $or: [
         { shopDomain: shop },
-        { shopDomain: `https://${shop}` },
-        { shopDomain: new RegExp(shop.replace('.myshopify.com', ''), 'i') },
+        { shopDomain: shop.replace(/^https?:\/\//, '') },
+        { 'commerce.shopify.domain': shop },
+        { shopDomain: new RegExp(`^${shop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i') },
       ],
+      shopifyAccessToken: { $exists: true, $ne: '' },
     })
-      .select('clientId shopDomain shopifyConnected storeConnected')
+      .select('clientId shopDomain shopifyConnectionStatus shopifyAccessToken')
       .lean();
 
     if (!client?.clientId) {
