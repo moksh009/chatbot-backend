@@ -23,10 +23,6 @@ const intentRuleSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
-  languageConfig: {
-    type: [String],
-    default: ['en', 'hi']
-  },
   actions: [{
     actionType: {
       type: String,

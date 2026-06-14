@@ -51,7 +51,7 @@ async function detectIntentConflicts(clientId, newIntentId, newPhrases) {
  */
 exports.upsertIntent = async (req, res) => {
   try {
-    const { intentId, intentName, trainingPhrases, actions, languageConfig, antiIntentPhrases } = req.body;
+    const { intentId, intentName, trainingPhrases, actions, antiIntentPhrases } = req.body;
     const clientId = resolveClientId(req);
 
     if (!clientId) {
@@ -82,14 +82,13 @@ exports.upsertIntent = async (req, res) => {
       trainingPhrases: cleanPhrases,
       antiIntentPhrases: cleanAntiPhrases,
       actions,
-      languageConfig: languageConfig || ['en', 'hi'],
       isActive: true
     };
 
     if (intentId) {
       rule = await IntentRule.findOneAndUpdate(
         { _id: intentId, clientId },
-        { $set: ruleData },
+        { $set: ruleData, $unset: { languageConfig: '' } },
         { new: true, runValidators: true }
       );
       if (!rule) {
@@ -407,8 +406,7 @@ Generate exactly:
 2. "antiIntentPhrases": 8 phrases where a customer uses SIMILAR vocabulary but DOES NOT HAVE this intent (e.g., asking about something unrelated, or expressing the opposite).
 
 Linguistic Requirements:
-- Language: English & Hinglish/Hindi (Mix 50/50).
-- Style: WhatsApp conversational (short, informal).
+- Style: WhatsApp conversational (short, informal). Mix English and Hinglish naturally for Indian D2C shoppers.
 
 Return ONLY valid JSON and NOTHING ELSE. No markdown fences.
 Expected Structure:

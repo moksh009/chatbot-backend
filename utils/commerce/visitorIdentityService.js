@@ -3,6 +3,7 @@
 const VisitorIdentity = require("../../models/VisitorIdentity");
 const AdLead = require("../../models/AdLead");
 const { normalizePhoneWithCountry } = require("../core/helpers");
+const { normalizeIndianPhone, indianPhoneLookupVariants } = require("../core/normalizeIndianPhone");
 
 /**
  * Stitch anonymous visitor ↔ Shopify client_id ↔ checkout token ↔ AdLead.
@@ -17,13 +18,14 @@ async function stitchVisitorIdentity(clientId, client, payload = {}) {
     leadId,
   } = payload;
 
-  const phone = rawPhone ? normalizePhoneWithCountry(rawPhone, client) : "";
+  const phoneE164 = rawPhone ? normalizeIndianPhone(rawPhone) : "";
+  const phoneLookup = phoneE164 ? indianPhoneLookupVariants(phoneE164) : [];
   const token = checkoutToken ? String(checkoutToken).trim() : "";
   const vid = visitorId ? String(visitorId).trim() : "";
   const scid = shopifyClientId ? String(shopifyClientId).trim() : "";
   const em = email ? String(email).trim().toLowerCase() : "";
 
-  if (!vid && !scid && !token && !phone && !em) {
+  if (!vid && !scid && !token && !phoneE164 && !em) {
     return { visitor: null, lead: null };
   }
 
@@ -61,17 +63,20 @@ async function stitchVisitorIdentity(clientId, client, payload = {}) {
     visitor.checkoutTokens = [...(visitor.checkoutTokens || []), token].slice(-20);
   }
   if (em) visitor.email = em;
-  if (phone) visitor.phone = phone;
+  if (phoneE164) visitor.phone = phoneE164.replace(/^\+/, '');
   if (leadId) visitor.leadId = leadId;
   visitor.lastSeen = new Date();
   await visitor.save();
 
   let lead = null;
-  if (phone) {
-    lead = await AdLead.findOne({ clientId, phoneNumber: phone });
-  } else if (em) {
+  if (token) {
+    lead = await AdLead.findOne({ clientId, checkoutToken: token });
+  }
+  if (!lead && phoneLookup.length) {
+    lead = await AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } });
+  } else if (!lead && em) {
     lead = await AdLead.findOne({ clientId, email: em });
-  } else if (visitor.leadId) {
+  } else if (!lead && visitor.leadId) {
     lead = await AdLead.findById(visitor.leadId);
   }
 
@@ -80,7 +85,7 @@ async function stitchVisitorIdentity(clientId, client, payload = {}) {
     await visitor.save();
   }
 
-  if (phone && lead && token) {
+  if (phoneE164 && lead && token) {
     await AdLead.updateOne(
       { _id: lead._id },
       {
@@ -102,14 +107,14 @@ async function stitchCheckoutTokenToLead(clientId, checkoutToken, phone, email, 
   const token = String(checkoutToken || "").trim();
   if (!token) return null;
 
-  const phoneNorm = phone ? normalizePhoneWithCountry(phone, client) : "";
+  const phoneNorm = phone ? normalizeIndianPhone(phone) : "";
   const visitor = await VisitorIdentity.findOne({
     clientId,
     checkoutTokens: token,
   }).sort({ lastSeen: -1 });
 
   if (visitor && phoneNorm) {
-    visitor.phone = phoneNorm;
+    visitor.phone = phoneNorm.replace(/^\+/, '');
     if (email) visitor.email = String(email).toLowerCase();
     visitor.lastSeen = new Date();
     await visitor.save();

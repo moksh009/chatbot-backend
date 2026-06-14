@@ -819,6 +819,7 @@ async function handleCheckout(client, data) {
     });
 
     if (!result.success) return;
+    if (result.skipped) return;
 
     log.info(
       `[CheckoutWebhook] contact captured client=${client.clientId} token=${checkoutToken || 'n/a'} phone=${phoneE164 ? 'yes' : 'no'} email=${email ? 'yes' : 'no'} status=${isPurchased ? 'purchased' : 'active'}`

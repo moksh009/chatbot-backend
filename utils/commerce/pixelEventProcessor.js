@@ -3,9 +3,10 @@
 const AdLead = require("../../models/AdLead");
 const PixelEvent = require("../../models/PixelEvent");
 const { normalizePhoneWithCountry } = require("../core/helpers");
-const { normalizeIndianPhone, indianPhoneLookupVariants } = require("../core/normalizeIndianPhone");
+const { normalizeIndianPhone, indianPhoneLookupVariants, isValidIndianMobileInput } = require("../core/normalizeIndianPhone");
 const { stitchVisitorIdentity } = require("./visitorIdentityService");
 const { withPixelCaptureLock } = require("./pixelCaptureLock");
+const { upsertAbandonedCartLead, resolveLeadQueryForUpsert } = require("./upsertAbandonedCartLead");
 const { attachAnonymousJourneyToLead } = require("./attachAnonymousJourney");
 const log = require("../core/logger")("PixelProcessor");
 const { touchActiveVisitor } = require("./pixelActiveVisitors");
@@ -31,19 +32,20 @@ function mapCartItems(data = {}) {
 const { buildLeadRecoveryBaseUrl } = require("./buildRecoveryUrl");
 
 async function resolveCommerceLeadFilter(clientId, { phone, email, checkoutToken }) {
+  const phoneE164 = phone ? normalizeIndianPhone(phone) : null;
+  const phoneLookup = phoneE164 ? indianPhoneLookupVariants(phoneE164) : [];
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
   const token = checkoutToken ? String(checkoutToken).trim() : "";
-  if (token) {
-    const byToken = await AdLead.findOne({ clientId, checkoutToken: token })
-      .select("_id phoneNumber")
-      .lean();
-    if (byToken) return { clientId, _id: byToken._id };
-  }
-  if (phone) {
-    const variants = indianPhoneLookupVariants(phone);
-    if (variants.length) return { clientId, phoneNumber: { $in: variants } };
-  }
-  if (email) return { clientId, email: String(email).toLowerCase() };
-  return null;
+
+  if (!phoneE164 && !normalizedEmail && !token) return null;
+
+  const { query } = await resolveLeadQueryForUpsert(clientId, {
+    phoneE164,
+    phoneLookup,
+    email: normalizedEmail,
+    checkoutToken: token,
+  });
+  return query;
 }
 
 async function upsertLeadFromCommerce(client, clientId, {
@@ -315,34 +317,45 @@ async function processPixelEvent(clientId, eventData) {
     eventName === "checkout_contact_identified" ||
     eventName === "checkout_contact_info_submitted"
   ) {
+    if (isLiveCapture && !email) {
+      const phoneCandidate = rawPhone || data.phone || meta.phone || null;
+      if (!isValidIndianMobileInput(phoneCandidate)) {
+        return { success: true, skipped: true, status: "invalid_phone" };
+      }
+    }
+
     return withPixelCaptureLock(clientId, dedupeKey, async () => {
       const cartItems = mapCartItems(data);
       const cartStatus = isLiveCapture ? "active" : "abandoned";
-      const extraSet = {
-        source:
-          data.source === "shopify_web_pixel" || data.source === "shopify_web_pixel_extension"
-            ? "Web Pixel"
-            : isLiveCapture
-              ? "DeepPixel (Live)"
-              : "DeepPixel",
-        checkoutInitiatedCount: !isLiveCapture,
-        ...utmFields,
-      };
-      if (isLiveCapture) {
-        extraSet.contactCapturedAt = new Date();
-      }
+      const captureSource =
+        data.source === "shopify_web_pixel" || data.source === "shopify_web_pixel_extension"
+          ? "Web Pixel"
+          : isLiveCapture
+            ? "DeepPixel (Live)"
+            : "DeepPixel";
 
-      const lead = await upsertLeadFromCommerce(client, clientId, {
-        phone,
+      const result = await upsertAbandonedCartLead(client, {
+        clientId,
+        phone: phone || rawPhone,
         email,
         checkoutToken,
         checkoutUrl,
         cartItems,
         cartTotal: data.cartTotal || data.total_price,
         cartStatus,
-        setAbandonTimestamps: true,
-        extraSet,
+        source: captureSource,
+        contactCapturedAt: isLiveCapture ? new Date() : undefined,
+        logActivity: false,
+        visitorId: visitorId || data.visitorId,
+        sessionId,
+        ...utmFields,
       });
+
+      if (result.skipped && result.reason === 'debounced') {
+        return { success: true, skipped: true, status: "debounced" };
+      }
+
+      const lead = result.lead;
 
       await recordPixelEvent(clientId, lead?._id, "checkout_contact_identified", {
         url,
@@ -352,17 +365,6 @@ async function processPixelEvent(clientId, eventData) {
         timestamp,
         userAgent,
         ip,
-      });
-
-      await finalizeCaptureLead({
-        clientId,
-        lead,
-        phone,
-        checkoutToken,
-        visitorId: visitorId || data.visitorId,
-        sessionId,
-        eventName: "checkout_contact_identified",
-        cartValue: data.cartTotal || data.total_price,
       });
 
       return { success: true, leadId: lead?._id, status: "checkout_contact_captured" };

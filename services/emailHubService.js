@@ -549,6 +549,62 @@ function buildAudienceLeadFilter(clientId, { search = '', filter = 'all' } = {})
   return leadFilter;
 }
 
+const PLACEHOLDER_AUDIENCE_NAMES = new Set(['', '—', '-', 'checkout customer', 'guest', 'a customer']);
+
+function isPlaceholderAudienceName(name) {
+  return PLACEHOLDER_AUDIENCE_NAMES.has(String(name || '').trim().toLowerCase());
+}
+
+function normalizeAudienceDisplayName(name) {
+  const trimmed = String(name || '').trim();
+  if (trimmed && !isPlaceholderAudienceName(trimmed)) return trimmed;
+  return '—';
+}
+
+function pickCanonicalAudienceRow(a, b) {
+  const aBad = isPlaceholderAudienceName(a.name);
+  const bBad = isPlaceholderAudienceName(b.name);
+  let winner;
+  if (aBad !== bBad) winner = aBad ? b : a;
+  else if ((b.sentCount || 0) !== (a.sentCount || 0)) {
+    winner = (b.sentCount || 0) > (a.sentCount || 0) ? b : a;
+  } else {
+    const ta = new Date(a.lastSentAt || 0).getTime();
+    const tb = new Date(b.lastSentAt || 0).getTime();
+    if (tb !== ta) winner = tb > ta ? b : a;
+    else if (a.unsubscribed !== b.unsubscribed) winner = a.unsubscribed ? b : a;
+    else if (a.emailBounced !== b.emailBounced) winner = a.emailBounced ? b : a;
+    else winner = a;
+  }
+  const loser = winner === a ? b : a;
+  const bestName = !isPlaceholderAudienceName(winner.name)
+    ? winner.name
+    : !isPlaceholderAudienceName(loser.name)
+      ? loser.name
+      : winner.name;
+  return { ...winner, name: normalizeAudienceDisplayName(bestName) };
+}
+
+function dedupeAudienceRowsByEmail(rows = []) {
+  const byEmail = new Map();
+  for (const row of rows) {
+    const key = String(row.email || '').trim().toLowerCase();
+    if (!key || key === '—') continue;
+    const existing = byEmail.get(key);
+    byEmail.set(key, existing ? pickCanonicalAudienceRow(existing, row) : { ...row, name: normalizeAudienceDisplayName(row.name) });
+  }
+  return [...byEmail.values()];
+}
+
+async function countDistinctAudienceEmails(clientId, extraFilter = {}) {
+  const emails = await AdLead.distinct('email', {
+    clientId,
+    email: validEmailQuery(),
+    ...extraFilter,
+  });
+  return emails.filter((e) => String(e || '').trim()).length;
+}
+
 async function mapLeadsToAudienceRows(clientId, leads) {
   const leadIds = leads.map((l) => l._id);
   const emails = [...new Set(leads.map((l) => String(l.email || '').trim().toLowerCase()).filter(Boolean))];
@@ -636,7 +692,7 @@ async function mapLeadsToAudienceRows(clientId, leads) {
     const stat = pickStat(byId, byEmail);
     return {
       leadId: String(lead._id),
-      name: lead.name || '—',
+      name: normalizeAudienceDisplayName(lead.name),
       email: lead.email || '—',
       sentCount: stat.sentCount || 0,
       lastSentAt: stat.lastSentAt || null,
@@ -663,30 +719,20 @@ async function getEmailHubAudience(clientId, { page = 1, limit = 40, search = ''
   const leadFilter = buildAudienceLeadFilter(clientId, { search, filter: statusFilter });
 
   const [totalWithEmail, bouncedEmails, unsubscribedEmails, validEmails] = await Promise.all([
-    AdLead.countDocuments({ clientId, email: validEmailQuery() }),
-    AdLead.countDocuments({ clientId, email: validEmailQuery(), emailBounced: true }),
-    AdLead.countDocuments({
-      clientId,
-      email: validEmailQuery(),
-      'channelConsent.email.status': 'opted_out',
+    countDistinctAudienceEmails(clientId),
+    countDistinctAudienceEmails(clientId, { emailBounced: true }),
+    countDistinctAudienceEmails(clientId, { 'channelConsent.email.status': 'opted_out' }),
+    countDistinctAudienceEmails(clientId, {
+      emailBounced: { $ne: true },
+      'channelConsent.email.status': { $ne: 'opted_out' },
     }),
-    AdLead.countDocuments(buildAudienceLeadFilter(clientId, { search: '', filter: 'valid' })),
   ]);
 
-  let rows;
-  let filteredTotal;
-
-  if (sentActivityFilter) {
-    const allLeads = await AdLead.find(leadFilter).sort({ updatedAt: -1 }).limit(5000).lean();
-    const enriched = await mapLeadsToAudienceRows(clientId, allLeads);
-    const filtered = applySentActivityFilter(enriched, filter);
-    filteredTotal = filtered.length;
-    rows = filtered.slice(skip, skip + take);
-  } else {
-    filteredTotal = await AdLead.countDocuments(leadFilter);
-    const leads = await AdLead.find(leadFilter).sort({ updatedAt: -1 }).skip(skip).limit(take).lean();
-    rows = await mapLeadsToAudienceRows(clientId, leads);
-  }
+  const allLeads = await AdLead.find(leadFilter).sort({ updatedAt: -1 }).limit(5000).lean();
+  const enriched = dedupeAudienceRowsByEmail(await mapLeadsToAudienceRows(clientId, allLeads));
+  const filtered = sentActivityFilter ? applySentActivityFilter(enriched, filter) : enriched;
+  const filteredTotal = filtered.length;
+  const rows = filtered.slice(skip, skip + take);
 
   return {
     rows,
@@ -954,23 +1000,28 @@ async function exportEmailHubAudienceCsv(clientId, { filter = 'valid', search = 
   const leadFilter = buildAudienceLeadFilter(clientId, { search, filter: exportFilter });
 
   const leads = await AdLead.find(leadFilter)
-    .select('name email phoneNumber')
+    .select('name email phoneNumber emailBounced channelConsent')
     .sort({ updatedAt: -1 })
     .limit(10000)
     .lean();
 
+  const rows = dedupeAudienceRowsByEmail(await mapLeadsToAudienceRows(clientId, leads));
+  const phoneByLeadId = new Map(leads.map((l) => [String(l._id), l.phoneNumber || '']));
+
   const lines = ['name,email,phone'];
-  for (const lead of leads) {
+  for (const row of rows) {
     lines.push(
-      [escapeCsvCell(lead.name || ''), escapeCsvCell(lead.email || ''), escapeCsvCell(lead.phoneNumber || '')].join(
-        ','
-      )
+      [
+        escapeCsvCell(row.name === '—' ? '' : row.name),
+        escapeCsvCell(row.email || ''),
+        escapeCsvCell(phoneByLeadId.get(row.leadId) || ''),
+      ].join(',')
     );
   }
 
   return {
     csv: `${lines.join('\n')}\n`,
-    count: leads.length,
+    count: rows.length,
     filter: exportFilter,
   };
 }

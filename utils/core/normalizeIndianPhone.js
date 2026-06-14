@@ -64,10 +64,19 @@ function indianPhonesMatch(a, b) {
   return sa.length >= 8 && sb.length >= 8 && sa === sb;
 }
 
+/** True when input is a complete valid Indian mobile (not partial typing) */
+function isValidIndianMobileInput(raw) {
+  if (raw == null || raw === '') return false;
+  const e164 = normalizeIndianPhone(raw);
+  if (!e164) return false;
+  return indianPhoneSuffix(e164).length === 10;
+}
+
 module.exports = {
   normalizeIndianPhone,
   indianPhoneDigits,
   indianPhoneLookupVariants,
   indianPhoneSuffix,
   indianPhonesMatch,
+  isValidIndianMobileInput,
 };

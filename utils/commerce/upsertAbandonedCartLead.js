@@ -5,12 +5,13 @@ const AdLead = require('../../models/AdLead');
 const { trackEcommerceEvent } = require('../core/analyticsHelper');
 const { logActivity } = require('../core/activityLogger');
 const { recalculateLeadScore } = require('../core/scoringHelper');
-const { normalizeIndianPhone, indianPhoneLookupVariants, indianPhoneDigits } = require('../core/normalizeIndianPhone');
+const { normalizeIndianPhone, indianPhoneLookupVariants, indianPhoneDigits, indianPhonesMatch } = require('../core/normalizeIndianPhone');
 const { contactPhoneKey, ensureCartRecoveryAttempt } = require('./cartRecoveryAttemptService');
 const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
 const { attachAnonymousJourneyToLead } = require('./attachAnonymousJourney');
 const { withPixelCaptureLock } = require('./pixelCaptureLock');
+const { shouldSkipDuplicateCheckoutCapture } = require('./checkoutCaptureDebounce');
 const { extractUtmFields } = require('./pixelUtmUtils');
 const { emitCartContactCaptured } = require('./pixelSocketEmit');
 const { buildLeadRecoveryBaseUrl } = require('./buildRecoveryUrl');
@@ -23,25 +24,34 @@ const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
 const LEAD_UPSERT_SELECT =
-  'cartStatus isOrderPlaced recoveryStep _id contactCapturedAt checkoutToken cartAbandonedAt createdAt phoneNumber email';
+  'cartStatus isOrderPlaced recoveryStep _id contactCapturedAt checkoutToken cartAbandonedAt createdAt phoneNumber email name';
+
+function isPlaceholderCustomerName(name) {
+  const n = String(name || '').trim();
+  return !n || n === 'Checkout Customer' || n === 'Guest' || n === 'A customer';
+}
+
+function isUnknownCheckoutPhone(phone) {
+  return String(phone || '').startsWith('unknown_checkout_') || String(phone || '').startsWith('unknown_email_');
+}
 
 /**
- * Resolve one canonical lead for upsert — phone, checkout token, or email stub (pixel vs webhook).
+ * Resolve one canonical lead for upsert — checkout token first, then phone, then email.
  */
 async function resolveLeadQueryForUpsert(clientId, { phoneE164, phoneLookup, email, checkoutToken }) {
-  if (phoneE164 && phoneLookup.length) {
-    const byPhone = await AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } })
-      .select(LEAD_UPSERT_SELECT)
-      .lean();
-    if (byPhone) return { query: { clientId, _id: byPhone._id }, existing: byPhone };
-  }
-
   const token = checkoutToken ? String(checkoutToken).trim() : '';
   if (token) {
     const byToken = await AdLead.findOne({ clientId, checkoutToken: token })
       .select(LEAD_UPSERT_SELECT)
       .lean();
     if (byToken) return { query: { clientId, _id: byToken._id }, existing: byToken };
+  }
+
+  if (phoneE164 && phoneLookup.length) {
+    const byPhone = await AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } })
+      .select(LEAD_UPSERT_SELECT)
+      .lean();
+    if (byPhone) return { query: { clientId, _id: byPhone._id }, existing: byPhone };
   }
 
   if (email) {
@@ -52,6 +62,9 @@ async function resolveLeadQueryForUpsert(clientId, { phoneE164, phoneLookup, ema
     if (byEmail) return { query: { clientId, _id: byEmail._id }, existing: byEmail };
   }
 
+  if (token) {
+    return { query: { clientId, checkoutToken: token }, existing: null };
+  }
   const insertQuery = phoneE164
     ? { clientId, phoneNumber: { $in: phoneLookup } }
     : { clientId, email: String(email).trim().toLowerCase() };
@@ -171,25 +184,47 @@ async function upsertAbandonedCartLead(client, data = {}) {
   const clientId = data.clientId || client?.clientId;
   if (!clientId) return { success: false, reason: 'missing_client' };
 
-  const phoneE164 = data.phone ? normalizeIndianPhone(data.phone) : null;
+  const checkoutToken = data.checkoutToken || data.checkout_token || data.cartId || '';
+  const phoneE164Preview = data.phone ? normalizeIndianPhone(data.phone) : null;
+  const emailPreview = data.email ? String(data.email).trim().toLowerCase() : null;
+  const lockKey = checkoutToken || phoneE164Preview || emailPreview || 'checkout';
+
+  return withPixelCaptureLock(clientId, lockKey, () =>
+    upsertAbandonedCartLeadCore(client, data, clientId)
+  );
+}
+
+async function upsertAbandonedCartLeadCore(client, data = {}, clientId) {
+  let phoneE164 = data.phone ? normalizeIndianPhone(data.phone) : null;
   const phoneLookup = phoneE164 ? indianPhoneLookupVariants(phoneE164) : [];
-  const phoneDigits = phoneE164 ? indianPhoneDigits(phoneE164) : '';
+  let phoneDigits = phoneE164 ? indianPhoneDigits(phoneE164) : '';
   const email = data.email ? String(data.email).trim().toLowerCase() : null;
 
-  if (!phoneE164 && !email) return { success: false, reason: 'missing_contact' };
+  const checkoutToken = data.checkoutToken || data.checkout_token || data.cartId || '';
+  if (!phoneE164 && !email && !checkoutToken) return { success: false, reason: 'missing_contact' };
 
   const rawItems = data.cartItems || data.line_items || [];
   const normalizedItems = normalizeIncomingCartItems(rawItems);
   const enrichedItems = await enrichLineItemsWithImages(normalizedItems, client);
 
-  const checkoutToken = data.checkoutToken || data.checkout_token || data.cartId || '';
   const cartToken = data.cartToken || data.cart_token || '';
   const cartTotal = data.cartTotal ?? data.cart_total ?? data.total_price ?? null;
   const checkoutUrl = data.checkoutUrl || data.checkout_url || data.abandonLink || data.abandoned_checkout_url || '';
-  const customerName = data.customerName || data.name || 'Checkout Customer';
+  const rawCustomerName = data.customerName || data.name || '';
   const source = data.source || 'shopify_native';
   const cartStatus = data.cartStatus || 'abandoned';
   const now = new Date();
+
+  const debounced = await shouldSkipDuplicateCheckoutCapture(clientId, {
+    checkoutToken,
+    phoneE164,
+    cartTotal,
+    itemCount: enrichedItems.length,
+    source,
+  });
+  if (debounced) {
+    return { success: true, skipped: true, reason: 'debounced' };
+  }
 
   const { query: leadQuery, existing } = await resolveLeadQueryForUpsert(clientId, {
     phoneE164,
@@ -254,9 +289,37 @@ async function upsertAbandonedCartLead(client, data = {}) {
     source,
   };
 
+  if (phoneE164 && existing?.phoneNumber) {
+    const sameToken =
+      checkoutToken &&
+      existing.checkoutToken &&
+      String(checkoutToken) === String(existing.checkoutToken);
+    const existingIsPlaceholder = isUnknownCheckoutPhone(existing.phoneNumber);
+
+    if (
+      !existingIsPlaceholder &&
+      !indianPhonesMatch(existing.phoneNumber, phoneE164) &&
+      !sameToken
+    ) {
+      log.warn(
+        `[UpsertCart] Phone mismatch without token match for ${clientId} — keeping ${existing.phoneNumber}`
+      );
+      phoneE164 = existing.phoneNumber;
+      phoneDigits = indianPhoneDigits(phoneE164);
+    }
+  }
+
   if (phoneE164) $set.phoneNumber = phoneE164;
   if (email) $set.email = email;
-  if (customerName) $set.name = customerName;
+
+  const resolvedCustomerName =
+    rawCustomerName && !isPlaceholderCustomerName(rawCustomerName)
+      ? rawCustomerName
+      : existing?.name && !isPlaceholderCustomerName(existing.name)
+        ? existing.name
+        : null;
+  if (resolvedCustomerName) $set.name = resolvedCustomerName;
+
   if (checkoutToken) $set.checkoutToken = String(checkoutToken);
   if (cartToken) $set.cartToken = String(cartToken);
   if (cartTotal != null && cartTotal !== '') $set.cartValue = Number(cartTotal) || 0;
@@ -273,12 +336,17 @@ async function upsertAbandonedCartLead(client, data = {}) {
 
   const shippingAddress = normalizeCheckoutAddress(data.shippingAddress || data.shipping_address);
   const billingAddress = normalizeCheckoutAddress(data.billingAddress || data.billing_address);
-  if (shippingAddress || billingAddress || email || customerName) {
+  const contactNameForMeta =
+    resolvedCustomerName ||
+    (shippingAddress?.name && !isPlaceholderCustomerName(shippingAddress.name)
+      ? shippingAddress.name
+      : null);
+  if (shippingAddress || billingAddress || email || contactNameForMeta) {
     $set['meta.checkoutContact'] = {
       shipping: shippingAddress,
       billing: billingAddress,
       email: email || null,
-      name: customerName || null,
+      name: contactNameForMeta || null,
       updatedAt: now,
     };
   }
@@ -332,6 +400,10 @@ async function upsertAbandonedCartLead(client, data = {}) {
   const $setOnInsert = {
     clientId,
     createdAt: now,
+    name:
+      resolvedCustomerName && !isPlaceholderCustomerName(resolvedCustomerName)
+        ? resolvedCustomerName
+        : 'Checkout Customer',
   };
   if (!phoneE164) {
     $setOnInsert.phoneNumber = `unknown_checkout_${checkoutToken || Date.now()}`;
@@ -350,19 +422,25 @@ async function upsertAbandonedCartLead(client, data = {}) {
       ? { $addToSet: { tags: ABANDONED_CART_TAG } }
       : {};
 
-  const lead = await AdLead.findOneAndUpdate(
-    leadQuery,
-    {
-      $set,
-      $inc: {
-        addToCartCount: enrichedItems.length || 1,
-        checkoutInitiatedCount: 1,
-      },
-      $setOnInsert,
-      ...tagOps,
-    },
-    { upsert: true, new: true }
-  );
+  const isNewCheckoutSession =
+    !existing ||
+    (checkoutToken &&
+      existing.checkoutToken &&
+      String(checkoutToken) !== String(existing.checkoutToken));
+
+  const updateDoc = {
+    $set,
+    $setOnInsert,
+    ...tagOps,
+  };
+  if (isNewCheckoutSession) {
+    updateDoc.$inc = {
+      addToCartCount: enrichedItems.length || 1,
+      checkoutInitiatedCount: 1,
+    };
+  }
+
+  const lead = await AdLead.findOneAndUpdate(leadQuery, updateDoc, { upsert: true, new: true });
 
   /** Mark recovered + halt scheduler immediately if checkout completed. */
   if (isPurchased) {
@@ -417,11 +495,15 @@ async function upsertAbandonedCartLead(client, data = {}) {
   }
 
   if (data.logActivity !== false) {
+    const activityName =
+      resolvedCustomerName && !isPlaceholderCustomerName(resolvedCustomerName)
+        ? resolvedCustomerName
+        : 'A customer';
     await logActivity(clientId, {
       type: 'LEAD',
       status: 'info',
       title: cartStatus === 'purchased' ? 'Cart Recovered' : 'Checkout Started',
-      message: `${customerName} — ${enrichedItems.length} item(s) from ${source}`,
+      message: `${activityName} — ${enrichedItems.length} item(s) from ${source}`,
       icon: 'ShoppingCart',
       url: phoneE164 ? `/leads/${phoneE164}` : '/leads',
       metadata: { phone: phoneE164 || email, source, amount: cartTotal },
@@ -438,7 +520,13 @@ async function upsertAbandonedCartLead(client, data = {}) {
     }).catch(() => {});
   }
 
-  if (lead?._id && !isPurchased && (phoneE164 || email)) {
+  const shouldNotifyContact =
+    !existing?.contactCapturedAt ||
+    (checkoutToken &&
+      existing?.checkoutToken &&
+      String(checkoutToken) !== String(existing.checkoutToken));
+
+  if (lead?._id && !isPurchased && (phoneE164 || email) && shouldNotifyContact) {
     emitCartContactCaptured(clientId, {
       leadId: String(lead._id),
       phone: phoneE164,

@@ -55,17 +55,9 @@ class NlpEngineService {
       // Fetch active intents for this client
       const rules = await IntentRule.find({ clientId, isActive: true });
 
-      // Determine all needed languages from rules
-      const allLangs = new Set(['en', 'hi']);
-      for (const rule of rules) {
-        (rule.languageConfig || []).forEach(l => {
-          if (l !== 'hinglish') allLangs.add(l);
-        });
-      }
-
-      // Initialize manager with required languages
+      // Initialize manager — en + hi covers WhatsApp India D2C without per-intent language UI
       const manager = new NlpManager({ 
-        languages: [...allLangs], 
+        languages: ['en', 'hi'], 
         forceNER: true,
         nlu: { log: false } 
       });
@@ -81,18 +73,14 @@ class NlpEngineService {
         return;
       }
 
-      // Add training phrases to the model — respect languageConfig
+      // Add training phrases to the model (both en + hi for mixed WhatsApp messages)
       for (const rule of rules) {
         if (!rule.trainingPhrases) continue;
-        const langs = rule.languageConfig?.length > 0 ? rule.languageConfig : ['en', 'hi'];
 
         for (const phrase of rule.trainingPhrases) {
-          if (langs.includes('en') || langs.includes('hinglish')) {
-            manager.addDocument('en', phrase, rule.intentName);
-          }
-          if (langs.includes('hi') || langs.includes('hinglish')) {
-            manager.addDocument('hi', phrase, rule.intentName);
-          }
+          if (!phrase?.trim()) continue;
+          manager.addDocument('en', phrase, rule.intentName);
+          manager.addDocument('hi', phrase, rule.intentName);
         }
 
         // BUG 4 FIX: Train anti-intent phrases against 'None' class

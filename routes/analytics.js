@@ -1391,46 +1391,63 @@ router.get('/abandoned-products', protect, async (req, res) => {
       }
     }
 
-    // Fallback: aggregate from abandoned cart leads when DailyStat is empty
+    // Fallback: aggregate from live cart leads (SSOT-aligned) when DailyStat is empty
     if (Object.keys(productMap).length === 0) {
       const rangeStart = startOfDayForDateStrIST(startDateStr);
       const AdLead = require('../models/AdLead');
+
+      const normalizeLeadItems = (lead) => {
+        const snap = lead.cartSnapshot || {};
+        const raw = Array.isArray(snap.items) ? snap.items : [];
+        if (raw.length) {
+          return raw.map((item, idx) => ({
+            title: item.title || item.name || item.product_title || `Item ${idx + 1}`,
+            quantity: Number(item.quantity || item.qty || 1) || 1,
+          }));
+        }
+        const titles = Array.isArray(snap.titles) ? snap.titles : [];
+        return titles.map((title) => ({ title, quantity: 1 }));
+      };
+
       const leads = await AdLead.find({
         clientId,
-        cartStatus: { $in: ['abandoned', 'active'] },
-        updatedAt: { $gte: rangeStart },
+        cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
+        isOrderPlaced: { $ne: true },
+        $or: [
+          { cartAbandonedAt: { $gte: rangeStart } },
+          { lastInteraction: { $gte: rangeStart } },
+          { updatedAt: { $gte: rangeStart } },
+        ],
       })
-        .select('cartItems lineItems cartSnapshot cartValue')
+        .select('cartItems lineItems cartSnapshot cartValue cartStatus cartAbandonedAt lastInteraction isOrderPlaced')
         .limit(500)
         .lean();
 
-      const addItem = (item) => {
-        const name =
-          item?.title ||
-          item?.name ||
-          item?.product_title ||
-          item?.productTitle ||
-          null;
-        if (!name) return;
-        const qty = Number(item?.quantity || item?.qty) || 1;
-        productMap[name] = (productMap[name] || 0) + qty;
-      };
-
       for (const lead of leads) {
-        const items = Array.isArray(lead.cartItems)
+        if (lead.cartStatus === 'recovered' || lead.cartStatus === 'purchased') continue;
+        const items = normalizeLeadItems(lead);
+        if (items.length) {
+          items.forEach((item) => {
+            if (!item.title) return;
+            productMap[item.title] = (productMap[item.title] || 0) + item.quantity;
+          });
+          continue;
+        }
+        const legacyItems = Array.isArray(lead.cartItems)
           ? lead.cartItems
           : Array.isArray(lead.lineItems)
             ? lead.lineItems
-            : Array.isArray(lead.cartSnapshot?.items)
-              ? lead.cartSnapshot.items
-              : [];
-        if (items.length) {
-          items.forEach(addItem);
-          continue;
-        }
-        const titles = Array.isArray(lead.cartSnapshot?.titles) ? lead.cartSnapshot.titles : [];
-        titles.forEach((title) => {
-          if (title) productMap[title] = (productMap[title] || 0) + 1;
+            : [];
+        legacyItems.forEach((item) => {
+          const name =
+            item?.title ||
+            item?.name ||
+            item?.product_title ||
+            item?.productTitle ||
+            null;
+          if (!name) return;
+          const qty = Number(item?.quantity || item?.qty) || 1;
+          productMap[name] = (productMap[name] || 0) + qty;
         });
       }
     }
