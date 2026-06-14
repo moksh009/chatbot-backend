@@ -11,6 +11,7 @@ const {
   generateWebPixelScript,
 } = require('../utils/commerce/pixelEventProcessor');
 const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
+const { resetShopifyBreaker } = require('../utils/core/circuitBreaker');
 const {
   installWebPixel,
   getWebPixelInstallStatus,
@@ -430,6 +431,7 @@ router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res
 router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
+  resetShopifyBreaker();
   const backendUrl = resolveBackendUrl(req);
   const scriptTag = buildScriptTag(clientId, backendUrl);
   const checkoutPixelSnippet = generateWebPixelScript(clientId, backendUrl);
@@ -512,33 +514,27 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
       };
     }
 
-    let consentSync = { success: false };
-    try {
-      consentSync = await syncCheckoutConsentConfig(clientId, backendUrl);
-    } catch (syncErr) {
-      consentSync = { success: false, message: syncErr.message };
-    }
-
-    const checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
-
-    const success = Boolean(themeInject?.success || webPixel?.success || consentSync?.success);
+    const success = Boolean(themeInject?.success || webPixel?.success);
     if (!success) {
       return res.status(400).json({
         success: false,
         themeInjected: themeInject?.success === true,
         webPixel,
-        consentSync,
-        checkoutStatus,
         message:
           themeInject?.message ||
           webPixel?.message ||
-          'Install failed. Paste the theme script manually or reconnect Shopify with write_themes + read_pixels + write_pixels + read_customer_events.',
+          'Install failed. Reconnect Shopify from Settings (write_themes + write_pixels), then retry.',
       });
     }
 
-    const checkboxMessage = checkoutStatus.extensionDeployed
-      ? 'Next: open Checkout Editor and add the “TopEdge WhatsApp opt-in” app block on the Contact step, then publish.'
-      : 'Tracking registered. Deploy TopEdge app extensions (shopify app deploy) so the checkout checkbox can appear.';
+    let message = 'Tracking registered.';
+    if (themeInject?.success && webPixel?.success) {
+      message = 'Storefront script and checkout pixel registered.';
+    } else if (themeInject?.success) {
+      message = 'Storefront script installed.';
+    } else if (webPixel?.success) {
+      message = 'Checkout pixel registered.';
+    }
 
     res.json({
       success: true,
@@ -546,17 +542,12 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
       themeInjected: themeInject?.success === true,
       webPixelRegistered: webPixel?.success === true,
       webPixelId: webPixel?.webPixelId || null,
-      consentConfigSynced: consentSync?.success === true,
-      checkoutStatus,
-      checkoutEditorUrl: checkoutStatus.checkoutCustomizeUrl || checkoutStatus.checkoutEditorUrl,
       scriptTag: buildScriptTag(clientId, backendUrl),
       checkoutPixelSnippet: webPixel?.success ? null : checkoutPixelSnippet,
       checkoutPixelSteps: webPixel?.success ? null : CHECKOUT_PIXEL_STEPS,
       backendUrl,
-      message: themeInject?.success
-        ? `Storefront script added. ${checkboxMessage}`
-        : webPixel?.pollHint || checkboxMessage,
-      pollHint: checkoutStatus.statusHint,
+      message,
+      pollHint: 'Visit your storefront — status turns Live when page views arrive.',
       manualSnippet: webPixel?.manualSnippet || checkoutPixelSnippet,
     });
   } catch (err) {
@@ -688,12 +679,16 @@ async function buildPixelStatusPayload(clientId, req) {
 
   let themeScriptVerified = false;
   let themeVerifyError = null;
-  try {
-    const verification = await verifyThemeHasPixelScript(clientId);
-    themeScriptVerified = verification.found === true;
-    if (!themeScriptVerified && verification.error) themeVerifyError = verification.error;
-  } catch (verifyErr) {
-    themeVerifyError = verifyErr.message;
+  if (themeMarkedInstalled) {
+    themeScriptVerified = true;
+  } else {
+    try {
+      const verification = await verifyThemeHasPixelScript(clientId);
+      themeScriptVerified = verification.found === true;
+      if (!themeScriptVerified && verification.error) themeVerifyError = verification.error;
+    } catch (verifyErr) {
+      themeVerifyError = verifyErr.message;
+    }
   }
 
   let webPixelApi = null;
@@ -718,7 +713,7 @@ async function buildPixelStatusPayload(clientId, req) {
   const webPixelScopeMissing =
     webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false;
   const requiresCheckoutPixel = bypassShopifyChecks || (!webPixelOnShopify && !webPixelRegistered);
-  const themeActuallyReady = themeScriptVerified || eventsLive;
+  const themeActuallyReady = themeScriptVerified || eventsLive || themeMarkedInstalled;
   const isInstalled =
     !webPixelScopeMissing &&
     (themeActuallyReady || webPixelOnShopify || webPixelRegistered);
@@ -729,15 +724,6 @@ async function buildPixelStatusPayload(clientId, req) {
       : 'not_connected';
 
   const health = await buildTrackingHealth(clientId, 30).catch(() => null);
-
-  let checkoutStatus = null;
-  if (!bypassShopifyChecks) {
-    try {
-      checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
-    } catch {
-      checkoutStatus = null;
-    }
-  }
 
   const sessionsMap = new Map();
   for (const ev of anonymousCartEvents) {
@@ -784,11 +770,9 @@ async function buildPixelStatusPayload(clientId, req) {
     storefrontHint = 'Receiving storefront signals.';
   } else if (isInstalled) {
     storefrontHint =
-      'Tracking is connected — visit your storefront to confirm live signals (page views appear within seconds).';
+      'Tracking connected — visit your storefront to confirm live signals.';
   } else {
-    storefrontHint =
-      checkoutStatus?.statusHint ||
-      'Install tracking, then add the checkout custom pixel in Shopify Customer events.';
+    storefrontHint = 'Click one-click install to register storefront + checkout tracking.';
   }
 
   return {
@@ -832,7 +816,6 @@ async function buildPixelStatusPayload(clientId, req) {
     scriptTag,
     shopDomain: clientDoc?.shopDomain || null,
     trackingHealth: health,
-    checkoutStatus,
     statusHint: storefrontHint,
   };
 }

@@ -85,6 +85,12 @@ function resolveApiBaseUrl(options = {}) {
   ).replace(/\/+$/, '');
 }
 
+/** Expected before first webPixelCreate — Shopify returns GraphQL errors, not null data. */
+function isWebPixelNotFoundError(err) {
+  const msg = String(err?.message || '');
+  return /no web pixel was found/i.test(msg) || /resource_not_found/i.test(msg);
+}
+
 /**
  * Shopify API registration status (not live event traffic).
  */
@@ -137,6 +143,15 @@ async function getWebPixelInstallStatus(clientId) {
     };
   } catch (e) {
     const msg = String(e.message || '');
+    if (isWebPixelNotFoundError(e)) {
+      return {
+        installed: false,
+        reason: 'not_registered',
+        apiConnected: true,
+        hasPixelScopes,
+        storedWebPixelId: client.shopifyWebPixelId || null,
+      };
+    }
     if (/access denied|read_pixels|write_pixels|read_customer_events|ACCESS_DENIED/i.test(msg)) {
       return {
         installed: false,
