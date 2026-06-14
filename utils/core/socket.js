@@ -16,9 +16,16 @@ let io = null;
  * All connections require JWT via handshake.auth.token (see socketAuth.js).
  */
 const init = (server) => {
+  const dashOrigins = [
+    process.env.FRONTEND_URL,
+    'https://dash.topedgeai.com',
+    'https://www.dash.topedgeai.com',
+    'http://localhost:5173',
+  ].filter(Boolean);
+
   const ioOptions = {
     cors: {
-      origin: process.env.FRONTEND_URL || '*',
+      origin: dashOrigins.length ? dashOrigins : '*',
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
       credentials: true
     },

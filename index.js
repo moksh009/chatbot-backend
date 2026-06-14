@@ -542,6 +542,18 @@ const RUN_CRONS =
   process.env.CRON_WORKER === 'true' ||
   (process.env.CRON_WORKER !== 'false' && process.env.RUN_CRONS !== 'false');
 
+if (process.env.NODE_ENV === 'production' && !RUN_API) {
+  const role = String(process.env.CHATBOT_PROCESS_ROLE || '').toLowerCase();
+  if (role !== 'worker') {
+    log.error(
+      '[Boot] FATAL: RUN_API=false in production — dashboard CORS/API will fail. ' +
+        'Set RUN_API=true on the api.topedgeai.com process (see scripts/start-api-dev.sh). ' +
+        'Use CHATBOT_PROCESS_ROLE=worker only on a dedicated worker PM2 app.'
+    );
+    process.exit(1);
+  }
+}
+
 if (!RUN_CRONS) {
   log.info('[Boot] RUN_CRONS=false — cron jobs not started');
   // Single-process deploys (e.g. Contabo): still deliver scheduled Email Hub messages.
