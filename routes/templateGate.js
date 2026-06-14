@@ -7,6 +7,7 @@ const axios = require('axios');
 const { decrypt } = require('../utils/core/encryption');
 const { recordTemplateSubmission } = require('../services/templateLifecycleBridge');
 const { getSlotByMetaName } = require('../constants/templateCatalog/catalog');
+const { ORDER_MESSAGE_WA_BLUEPRINTS } = require('../constants/orderMessageWaBlueprints');
 
 /**
  * Generalized Template Gate — Replaces per-module template-checking logic.
@@ -70,73 +71,7 @@ const TEMPLATE_BLUEPRINTS = {
   /** Delivery tracking prebuilts — recommended on the Order messages
    *  shipment-status rules. Body positions match the default variable
    *  mappings in utils/commerce/commerceAutomationService ECO_TEMPLATE_BODY_MAPPINGS. */
-  order_in_transit: {
-    category: 'UTILITY',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text:
-          'Hi {{1}}! 📦 Your order {{2}} is on the way.\n\n' +
-          'Track your package live here:\n{{3}}',
-        example: { body_text: [['Priya', '#1042', 'https://track.example.com/AWB12345']] },
-      },
-    ],
-  },
-  order_out_for_delivery: {
-    category: 'UTILITY',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text:
-          'Hi {{1}}! 🚚 Your order {{2}} is out for delivery and should reach you today.\n\n' +
-          'Please keep your phone reachable for the delivery agent.',
-        example: { body_text: [['Priya', '#1042']] },
-      },
-    ],
-  },
-  order_delivered_update: {
-    category: 'UTILITY',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text:
-          'Hi {{1}}! ✅ Your order {{2}} has been delivered.\n\n' +
-          'We hope you love it — reply here if anything is not right and we will sort it out.',
-        example: { body_text: [['Priya', '#1042']] },
-      },
-    ],
-  },
-  delivery_attempt_failed: {
-    category: 'UTILITY',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text:
-          'Hi {{1}}, the courier tried to deliver your order {{2}} today but could not complete the delivery.\n\n' +
-          'Please reply with a good time to deliver, or share an alternate phone number / address so we can re-attempt it.',
-        example: { body_text: [['Priya', '#1042']] },
-      },
-    ],
-  },
-  /** RTO Protection — NDR rescue (must match `rtoProtectionService` body variable order). */
-  rto_ndr_rescue: {
-    category: 'UTILITY',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text:
-          'Hi {{1}}, we could not complete delivery for order *{{2}}*.\n\n' +
-          'Please reply in this chat with a *10-digit mobile number* or your *full address and PIN code* so we can try again.\n\n' +
-          'Reference: {{3}}',
-        example: { body_text: [['Priya', '#1042', '5678901234']] },
-      },
-    ],
-  },
+  ...ORDER_MESSAGE_WA_BLUEPRINTS,
 };
 
 /**

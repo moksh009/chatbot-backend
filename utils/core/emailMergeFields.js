@@ -25,7 +25,9 @@ const KNOWN = new Set([
   'store_name',
   'cart_items_html',
   'cart_url',
-  'cart_total'
+  'cart_total',
+  'unsubscribe_link',
+  'unsubscribe_url',
 ]);
 
 function normalizeKey(raw) {
@@ -94,6 +96,9 @@ function valueForNormKey(nk, lead, client) {
       return lead?.abandonedCheckoutUrl || lead?.checkoutUrl || '#';
     case 'cart_total':
       return cartTotalDisplay(lead) || '—';
+    case 'unsubscribe_link':
+    case 'unsubscribe_url':
+      return '{{unsubscribe_link}}';
     default:
       return null;
   }
@@ -146,5 +151,6 @@ function mergeEmailForLead(subject, html, lead, client) {
 module.exports = {
   extractTokens,
   mergeEmailForLead,
+  buildCartItemsHtml,
   KNOWN_EMAIL_TOKEN_KEYS: [...KNOWN]
 };

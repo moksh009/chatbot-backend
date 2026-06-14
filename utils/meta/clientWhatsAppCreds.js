@@ -33,6 +33,11 @@ function maybeDecryptSecret(value) {
 const WHATSAPP_CREDENTIAL_SELECT =
   "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp whatsappConnectionType whatsappConnectionMethod config complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
 
+/** Mongoose .select() for outbound email / envelope dispatch (Gmail OAuth + SMTP). */
+const EMAIL_CREDENTIAL_SELECT =
+  "clientId emailMethod gmailAddress emailUser gmailRefreshToken gmailAccessToken " +
+  "emailAppPassword emailHost emailPort emailSecure name translationConfig";
+
 /**
  * Bearer token for Graph API: premium → root whatsappToken → nested whatsapp/config.
  */
@@ -161,6 +166,7 @@ function getMetaCatalogAccessTokens(client) {
 
 module.exports = {
   WHATSAPP_CREDENTIAL_SELECT,
+  EMAIL_CREDENTIAL_SELECT,
   maybeDecryptSecret,
   getEffectiveWhatsAppAccessToken,
   getEffectiveWhatsAppPhoneNumberId,

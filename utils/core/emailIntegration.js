@@ -57,6 +57,11 @@ async function sendEmailMessage(client, toEmail, subject, text, html = '') {
  */
 async function handleIncomingEmail(req, res) {
   try {
+    const { handleResendBounceWebhook } = require('./emailBounceHandler');
+    if (await handleResendBounceWebhook(req.body || {})) {
+      return res.status(200).json({ success: true, handled: 'email.bounced' });
+    }
+
     const { from, to, subject, text, html, id } = req.body;
 
     const Client = require('../../models/Client');

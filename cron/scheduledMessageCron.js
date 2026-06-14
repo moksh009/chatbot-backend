@@ -197,32 +197,61 @@ async function runScheduledMessageTick() {
           }
         } else if (msg.channel === 'email') {
           const emailService = require('../utils/core/emailService');
-          const { subject, body, toEmail } = msg.content;
-          if (toEmail || lead?.email) {
-            const emailOut = await cronEnvelopeSend({
-              client,
-              clientId: client.clientId,
-              channel: 'email',
-              intent: resolveScheduledIntent(msg),
-              email: toEmail || lead?.email,
-              contactId: lead?._id,
-              idempotencyKey: idempotencyScheduled({ scheduledMessageId: String(msg._id) }),
-              payload: {
+          const { subject, body, toEmail, format, source: contentSource } = msg.content || {};
+          const recipient = toEmail || lead?.email || msg.phone;
+          if (recipient) {
+            const isHubSend = contentSource === 'routes/email-hub:send';
+            if (isHubSend) {
+              const { dispatchTrackedEmail } = require('../utils/core/dispatchTrackedEmail');
+              const leadRecord = lead?.email
+                ? lead
+                : await AdLead.findOne({ clientId: client.clientId, email: recipient }).lean();
+              const out = await dispatchTrackedEmail({
+                client,
+                clientId: client.clientId,
+                to: recipient,
                 subject,
-                html: `<div>${String(body || '').replace(/\n/g, '<br/>')}</div>`,
-              },
-              context: { source: 'cron/scheduledMessageCron', scheduledMessageId: String(msg._id) },
-            });
-            if (!emailOut.useLegacy) {
-              sentSuccess = emailOut.action === 'sent' || emailOut.action === 'duplicate';
+                html: format === 'plain' ? undefined : body,
+                text: body,
+                format: format || 'html',
+                intent: resolveScheduledIntent(msg),
+                contactId: leadRecord?._id || lead?._id || null,
+                context: {
+                  source: 'cron/scheduledMessageCron',
+                  scheduledMessageId: String(msg._id),
+                },
+                idempotencyKey: idempotencyScheduled({ scheduledMessageId: String(msg._id) }),
+                templateName: subject,
+              });
+              sentSuccess = out.success;
+            } else {
+              const emailOut = await cronEnvelopeSend({
+                client,
+                clientId: client.clientId,
+                channel: 'email',
+                intent: resolveScheduledIntent(msg),
+                email: recipient,
+                contactId: lead?._id,
+                idempotencyKey: idempotencyScheduled({ scheduledMessageId: String(msg._id) }),
+                payload: {
+                  subject,
+                  html: `<div>${String(body || '').replace(/\n/g, '<br/>')}</div>`,
+                },
+                context: { source: 'cron/scheduledMessageCron', scheduledMessageId: String(msg._id) },
+              });
+              if (!emailOut.useLegacy) {
+                sentSuccess = emailOut.action === 'sent' || emailOut.action === 'duplicate';
+              }
+              if (!sentSuccess) {
+                const out = await emailService.sendWorkspaceEmailDirect(client, {
+                  to: recipient,
+                  subject,
+                  html: `<div>${String(body || '').replace(/\n/g, '<br/>')}</div>`,
+                  format: 'html',
+                });
+                sentSuccess = out.success;
+              }
             }
-          }
-          if (!sentSuccess) {
-            sentSuccess = await emailService.sendEmail(client, {
-              to: toEmail || lead?.email || msg.phone,
-              subject,
-              html: `<div>${body.replace(/\n/g, '<br/>')}</div>`,
-            });
           }
         }
       } catch (sendErr) {

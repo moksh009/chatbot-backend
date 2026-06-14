@@ -108,6 +108,92 @@ const SEQUENCE_TEMPLATES = [
         content: "⏰ Your appointment is in 1 hour, {{name}}!\n\nService: *{{service_name}}*\nTime: *{{appointment_time}}*\n\nSee you soon! 😊"
       }
     ]
+  },
+  {
+    id:          "post_purchase_email_3step",
+    name:        "Post-Purchase Email Follow-up",
+    description: "Thank you → Review request → Loyalty offer — pure email for Indian D2C.",
+    category:    "Retention",
+    channel:     "email",
+    icon:        "mail",
+    steps: [
+      {
+        order: 1, delayValue: 1, delayUnit: "h",
+        label: "Order thank you",
+        type: "email",
+        subject: "Thank you for your order, {{first_name}}! 🎉",
+        content: "<p>Hi {{first_name}},</p><p>Your order from {{store_name}} is confirmed. We are preparing it with care.</p><p>Order total: {{order_total}}</p><p>Track updates in your inbox. For COD orders, please keep ₹ ready at delivery.</p><p>— Team {{store_name}}</p>"
+      },
+      {
+        order: 2, delayValue: 3, delayUnit: "d",
+        label: "Review request",
+        type: "email",
+        subject: "How was your experience, {{first_name}}?",
+        content: "<p>Hi {{first_name}},</p><p>We would love to hear how your recent order from {{store_name}} went.</p><p>Your feedback helps other shoppers across India choose with confidence.</p><p>Reply to this email or leave a review on our store.</p>"
+      },
+      {
+        order: 3, delayValue: 7, delayUnit: "d",
+        label: "Loyalty offer",
+        type: "email",
+        subject: "A special offer just for you, {{first_name}} 🎁",
+        content: "<p>Hi {{first_name}},</p><p>As a valued customer, here is <strong>10% off</strong> your next order at {{store_name}}.</p><p>Use code <strong>COMEBACK10</strong> at checkout.</p><p>Shop now: {{store_url}}</p>"
+      }
+    ]
+  },
+  {
+    id:          "cart_recovery_email_sequence",
+    name:        "Cart Recovery Email Sequence",
+    description: "3-touch email recovery for abandoned carts — 30 min, 2 hours, 24 hours (IST-friendly).",
+    category:    "E-commerce",
+    channel:     "email",
+    icon:        "shopping-cart",
+    steps: [
+      {
+        order: 1, delayValue: 30, delayUnit: "m",
+        label: "Cart reminder",
+        type: "email",
+        subject: "You left something behind, {{first_name}}!",
+        content: "<p>Hi {{first_name}},</p><p>Your cart at {{store_name}} is still waiting:</p>{{cart_items_html}}<p>Total: {{cart_total}}</p><p><a href=\"{{cart_url}}\">Complete your order</a></p>"
+      },
+      {
+        order: 2, delayValue: 2, delayUnit: "h",
+        label: "5% off nudge",
+        type: "email",
+        subject: "Still thinking about it? Here is 5% off",
+        content: "<p>Hi {{first_name}},</p><p>We saved your cart — take <strong>5% off</strong> with code <strong>CART5</strong>.</p>{{cart_items_html}}<p><a href=\"{{cart_url}}\">Checkout now</a></p>"
+      },
+      {
+        order: 3, delayValue: 24, delayUnit: "h",
+        label: "Last chance",
+        type: "email",
+        subject: "Last chance — your cart expires today",
+        content: "<p>Hi {{first_name}},</p><p>This is your final reminder before your saved items at {{store_name}} expire.</p>{{cart_items_html}}<p><a href=\"{{cart_url}}\">Complete order before midnight</a></p>"
+      }
+    ]
+  },
+  {
+    id:          "hybrid_wa_email",
+    name:        "WhatsApp + Email Hybrid (3 days)",
+    description: "WhatsApp on Day 1, Email on Day 3 — maximum reach for Indian D2C.",
+    category:    "Sales",
+    channel:     "both",
+    icon:        "layers",
+    steps: [
+      {
+        order: 1, delayValue: 0, delayUnit: "m",
+        label: "WhatsApp intro",
+        type: "whatsapp",
+        messageType: "text",
+        content: "Hi {{name}}! 👋 Thanks for connecting with {{store_name}}. We will follow up on WhatsApp and email so you never miss an update."
+      },
+      {
+        order: 2, delayValue: 3, delayUnit: "d",
+        label: "Email follow-up",
+        type: "email",
+        subject: "A quick note from {{store_name}}, {{first_name}}",
+        content: "<p>Hi {{first_name}},</p><p>We reached out on WhatsApp — here is the same update by email in case you missed it.</p><p>Browse our latest picks: {{store_url}}</p><p>— {{store_name}}</p>"
+      }
+    ]
   }
 ];
 

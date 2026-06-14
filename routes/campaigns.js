@@ -47,6 +47,7 @@ const {
   evaluateAudiencePolicySummary,
 } = require('../utils/commerce/marketingConsent');
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
+const { isWorkspaceEmailReady } = require('../utils/core/emailService');
 
 /** Hot-leads smart-send audience (leadScore ≥ 60, marketing-opt-in safe). */
 async function resolveHotLeadsAudience(clientId, limit, campaign) {
@@ -1090,6 +1091,16 @@ router.post('/preflight', protect, async (req, res) => {
       eligibleCount = audienceCount;
     }
 
+    if (isEmail) {
+      const emailClient = await Client.findOne({ clientId }).lean();
+      if (!isWorkspaceEmailReady(emailClient)) {
+        blockers.push({
+          code: 'gmail_not_connected',
+          message: 'Connect Gmail in Settings → Connections before launching email campaigns.',
+        });
+      }
+    }
+
     if (!isEmail && templateName) {
       const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
       const synced = client?.syncedMetaTemplates || [];
@@ -1113,8 +1124,15 @@ router.post('/preflight', protect, async (req, res) => {
       }
     }
 
-    const hardBlock = blockers.some((b) => b.severity !== 'warning' && b.code !== 'partial_opt_in' && b.code !== 'opt_in_unverified');
-    const blocked = blockers.some((b) => b.code === 'no_opt_in' || b.code === 'template_missing' || b.code === 'template_not_approved');
+    const hardBlock = blockers.some(
+      (b) =>
+        b.severity !== 'warning' &&
+        b.code !== 'partial_opt_in' &&
+        b.code !== 'opt_in_unverified'
+    );
+    const blocked = blockers.some((b) =>
+      ['no_opt_in', 'template_missing', 'template_not_approved', 'gmail_not_connected'].includes(b.code)
+    );
 
     const {
       estimateMetaBreakdown,
@@ -1227,6 +1245,20 @@ router.post('/start', protect, async (req, res) => {
         campaign.emailHtml ||
         '<p>Hello,</p>';
       campaign.templateName = req.body.templateName || campaign.templateName || 'email_campaign';
+
+      const emailClient = await Client.findOne({ clientId: tenantId }).lean();
+      if (!isWorkspaceEmailReady(emailClient)) {
+        return res.status(400).json({
+          message: 'Connect Gmail in Settings → Connections before sending email campaigns.',
+          code: 'gmail_not_connected',
+        });
+      }
+      if (!String(campaign.emailSubject || '').trim() || !String(campaign.emailHtml || '').trim()) {
+        return res.status(400).json({
+          message: 'Email subject and message body are required.',
+          code: 'email_content_missing',
+        });
+      }
     }
     
     const hasInlineAudience = Array.isArray(campaign.audience) && campaign.audience.length > 0;

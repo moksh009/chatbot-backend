@@ -9,6 +9,8 @@ const { incrementUsage } = require('../core/planLimits');
 const { generateIdempotencyKey, resolveWindowBucket } = require('./idempotency');
 const { consumeTokenBucket } = require('./rateLimits');
 const { sendWhatsApp, sendEmailMessage, sendInstagram } = require('./transports');
+const { dispatchTrackedEmail } = require('../core/dispatchTrackedEmail');
+const { checkEmailDailyLimit, incrementEmailCount } = require('../core/emailRateLimiter');
 const { validateInput } = require('./checks/validateInput');
 const { resolveContact } = require('./checks/resolveContact');
 const { checkIdempotency } = require('./checks/checkIdempotency');
@@ -20,8 +22,10 @@ const { checkTemplateApproval } = require('./checks/checkTemplateApproval');
 const { checkPlanLimit } = require('./checks/checkPlanLimit');
 const {
   WHATSAPP_CREDENTIAL_SELECT,
+  EMAIL_CREDENTIAL_SELECT,
   isWhatsAppOutboundReady,
 } = require('../meta/clientWhatsAppCreds');
+const { isWorkspaceEmailReady } = require('../core/emailService');
 
 function buildResult(status, extra = {}) {
   return { status, ...extra };
@@ -49,9 +53,14 @@ async function sendEnvelope(input = {}) {
   const valid = validateInput(input);
   if (!valid.pass) return buildResult('blocked', valid);
 
-  const client = await Client.findOne({ clientId: input.clientId })
-    .select(WHATSAPP_CREDENTIAL_SELECT)
-    .lean();
+  const credSelect =
+    input.channel === 'email'
+      ? EMAIL_CREDENTIAL_SELECT
+      : input.channel === 'whatsapp'
+        ? WHATSAPP_CREDENTIAL_SELECT
+        : `${WHATSAPP_CREDENTIAL_SELECT} ${EMAIL_CREDENTIAL_SELECT}`;
+
+  const client = await Client.findOne({ clientId: input.clientId }).select(credSelect).lean();
   if (!client) return buildResult('blocked', { blockedBy: 'invalid_contact', reason: 'client_not_found' });
 
   if (input.channel === 'whatsapp' && !isWhatsAppOutboundReady(client)) {
@@ -60,6 +69,14 @@ async function sendEnvelope(input = {}) {
       reason: 'whatsapp_not_configured',
       message:
         'WhatsApp credentials are missing or incomplete. Reconnect in Settings → Connections (Meta embedded signup or manual credentials).',
+    });
+  }
+
+  if (input.channel === 'email' && !isWorkspaceEmailReady(client)) {
+    return buildResult('blocked', {
+      blockedBy: 'email_credentials',
+      reason: 'email_not_configured',
+      message: 'Gmail or SMTP is not connected. Connect email in Settings → Connections.',
     });
   }
 
@@ -190,14 +207,55 @@ async function sendEnvelope(input = {}) {
     return buildResult('queued', { reason: 'dry_run', consentSnapshot: consent.consentSnapshot || null });
   }
 
+  if (input.channel === 'email') {
+    const dailyLimit = await checkEmailDailyLimit(input.clientId, 1);
+    if (!dailyLimit.allowed) {
+      await persistEnvelope({
+        clientId: input.clientId,
+        contactId: contact._id,
+        channel: input.channel,
+        intent: input.intent,
+        status: 'blocked',
+        blockedBy: 'rate_limit',
+        reason: 'daily_limit_reached',
+        templateName: input?.payload?.templateName || '',
+        idempotencyKey: idemKey,
+        context: buildPersistContext(input, contact),
+        consentSnapshot: consent.consentSnapshot || null,
+      });
+      return buildResult('blocked', {
+        blockedBy: 'rate_limit',
+        reason: 'daily_limit_reached',
+        remaining: dailyLimit.remaining,
+        limit: dailyLimit.limit,
+        consentSnapshot: consent.consentSnapshot || null,
+      });
+    }
+  }
+
   try {
     let dispatchResult = null;
+    let preCreatedEnvelopeId = null;
+
     if (input.channel === 'email') {
-      dispatchResult = await sendEmailMessage({
+      const tracked = await dispatchTrackedEmail({
         client,
+        clientId: input.clientId,
         to: contact.email,
-        payload: input.payload,
+        subject: input.payload?.subject || 'Store update',
+        html: input.payload?.html || input.payload?.text || '',
+        text: input.payload?.text,
+        format: input.payload?.format,
+        intent: input.intent,
+        contactId: contact._id,
+        context: buildPersistContext(input, contact),
+        idempotencyKey: idemKey,
+        templateName: input?.payload?.templateName || input.payload?.subject || '',
+        consentSnapshot: consent.consentSnapshot || null,
+        skipRateLimit: true,
       });
+      dispatchResult = { messageId: tracked.messageId || null };
+      preCreatedEnvelopeId = tracked.envelopeId;
     } else if (input.channel === 'instagram') {
       dispatchResult = await sendInstagram({
         client,
@@ -212,20 +270,25 @@ async function sendEnvelope(input = {}) {
     }
 
     await incrementUsage(input.clientId, 'messages', 1).catch(() => {});
-    await persistEnvelope({
-      clientId: input.clientId,
-      contactId: contact._id,
-      channel: input.channel,
-      intent: input.intent,
-      status: 'sent',
-      reason: '',
-      templateName: input?.payload?.templateName || '',
-      idempotencyKey: idemKey,
-      context: buildPersistContext(input, contact),
-      consentSnapshot: consent.consentSnapshot || null,
-      messageId: dispatchResult?.messageId || '',
-      sentAt: new Date(),
-    });
+
+    if (input.channel !== 'email') {
+      await persistEnvelope({
+        clientId: input.clientId,
+        contactId: contact._id,
+        channel: input.channel,
+        intent: input.intent,
+        status: 'sent',
+        reason: '',
+        templateName: input?.payload?.templateName || '',
+        idempotencyKey: idemKey,
+        context: buildPersistContext(input, contact),
+        consentSnapshot: consent.consentSnapshot || null,
+        messageId: dispatchResult?.messageId || '',
+        sentAt: new Date(),
+      });
+    } else if (preCreatedEnvelopeId) {
+      await incrementEmailCount(input.clientId, 1).catch(() => {});
+    }
     emitToClient(input.clientId, 'send_envelope:result', {
       contactId: String(contact._id),
       channel: input.channel,
@@ -249,19 +312,21 @@ async function sendEnvelope(input = {}) {
         consentSnapshot: consent.consentSnapshot || null,
       });
     }
-    await persistEnvelope({
-      clientId: input.clientId,
-      contactId: contact._id,
-      channel: input.channel,
-      intent: input.intent,
-      status: 'failed',
-      reason: err.message,
-      templateName: input?.payload?.templateName || '',
-      idempotencyKey: idemKey,
-      context: buildPersistContext(input, contact),
-      consentSnapshot: consent.consentSnapshot || null,
-      failedAt: new Date(),
-    });
+    if (input.channel !== 'email') {
+      await persistEnvelope({
+        clientId: input.clientId,
+        contactId: contact._id,
+        channel: input.channel,
+        intent: input.intent,
+        status: 'failed',
+        reason: err.message,
+        templateName: input?.payload?.templateName || '',
+        idempotencyKey: idemKey,
+        context: buildPersistContext(input, contact),
+        consentSnapshot: consent.consentSnapshot || null,
+        failedAt: new Date(),
+      });
+    }
     return buildResult('failed', { reason: err.message, consentSnapshot: consent.consentSnapshot || null });
   }
 }

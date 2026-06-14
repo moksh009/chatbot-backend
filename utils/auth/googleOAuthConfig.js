@@ -58,20 +58,34 @@ function getGoogleAuthRedirectUri() {
   return `${base}${LOGIN_CALLBACK_PATH}`;
 }
 
+/** Gmail / calendar OAuth callback used by Settings + Email Hub connect. */
+function getGmailOAuthRedirectUri() {
+  const explicit = String(process.env.GMAIL_OAUTH_REDIRECT_URI || '').trim();
+  if (explicit) return explicit.replace(/\s+/g, '');
+  const base = resolvePublicBackendOrigin();
+  return `${base}${CALENDAR_CALLBACK_PATH}`;
+}
+
 /** URIs to register in Google Cloud (login + calendar + common legacy hosts). */
 function getGoogleOAuthRedirectUriChecklist() {
   const primary = getGoogleAuthRedirectUri();
+  const gmail = getGmailOAuthRedirectUri();
   const origin = resolvePublicBackendOrigin();
-  const set = new Set([primary, `${origin}${CALENDAR_CALLBACK_PATH}`]);
+  const set = new Set([primary, gmail, `${origin}${CALENDAR_CALLBACK_PATH}`]);
 
-  const legacyHosts = ['https://api.topedgeai.com'];
+  const legacyHosts = [
+    'https://api.topedgeai.com',
+    'https://chatbot-backend-lg5y.onrender.com',
+  ];
   for (const host of legacyHosts) {
     set.add(`${host}${LOGIN_CALLBACK_PATH}`);
     set.add(`${host}${CALENDAR_CALLBACK_PATH}`);
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    set.add(`http://localhost:${process.env.PORT || 5001}${LOGIN_CALLBACK_PATH}`);
+    const port = process.env.PORT || 5001;
+    set.add(`http://localhost:${port}${LOGIN_CALLBACK_PATH}`);
+    set.add(`http://localhost:${port}${CALENDAR_CALLBACK_PATH}`);
   }
 
   return [...set].sort();
@@ -80,10 +94,12 @@ function getGoogleOAuthRedirectUriChecklist() {
 function getGoogleOAuthPublicConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID || '';
   const redirectUri = getGoogleAuthRedirectUri();
+  const gmailRedirectUri = getGmailOAuthRedirectUri();
   const configured = Boolean(clientId && process.env.GOOGLE_CLIENT_SECRET);
   return {
     configured,
     redirectUri,
+    gmailRedirectUri,
     clientIdSuffix: clientId ? clientId.slice(-20) : null,
     backendOrigin: resolvePublicBackendOrigin(),
     registerTheseRedirectUris: getGoogleOAuthRedirectUriChecklist(),
@@ -99,6 +115,7 @@ module.exports = {
   normalizePublicOrigin,
   resolvePublicBackendOrigin,
   getGoogleAuthRedirectUri,
+  getGmailOAuthRedirectUri,
   getGoogleOAuthRedirectUriChecklist,
   getGoogleOAuthPublicConfig,
 };

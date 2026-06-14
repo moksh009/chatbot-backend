@@ -8,6 +8,7 @@ const CONTACT_PROJECTION = {
   email: 1,
   channelConsent: 1,
   optStatus: 1,
+  emailBounced: 1,
   tags: 1,
   suppressionFlag: 1,
   lastInboundAt: 1,

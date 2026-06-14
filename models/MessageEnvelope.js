@@ -41,6 +41,16 @@ const messageEnvelopeSchema = new mongoose.Schema(
     sentAt: { type: Date, default: null },
     deliveredAt: { type: Date, default: null },
     failedAt: { type: Date, default: null },
+    tracking: {
+      openCount: { type: Number, default: 0 },
+      clickCount: { type: Number, default: 0 },
+      firstOpenAt: { type: Date, default: null },
+      lastOpenAt: { type: Date, default: null },
+      bounced: { type: Boolean, default: false },
+      bouncedAt: { type: Date, default: null },
+      unsubscribed: { type: Boolean, default: false },
+      unsubscribedAt: { type: Date, default: null },
+    },
   },
   { minimize: false }
 );

@@ -254,7 +254,17 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 // ✅ Phase 2: The Global Bootstrap Endpoint
 // Collapses 5 separate network constraints into a single parallel payload
 const BOOTSTRAP_CLIENT_SELECT =
-  'clientId businessName businessLogo name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt suspendedAt shopDomain phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappVerifiedName whatsappCoexistence whatsappQualityRating whatsappWebhookSubscribed shopifyAccessToken shopifyConnectionStatus shopifyInstallLink shopifyStores instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted wizardFeatures plan tier platformVars';
+  'clientId businessName businessLogo name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt suspendedAt shopDomain phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappVerifiedName whatsappCoexistence whatsappQualityRating whatsappWebhookSubscribed shopifyAccessToken shopifyConnectionStatus shopifyInstallLink shopifyStores instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod gmailRefreshToken gmailAccessToken onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted wizardFeatures plan tier platformVars';
+
+function sanitizeClientForBootstrap(client) {
+  if (!client) return {};
+  const out = { ...client };
+  out.hasGmailRefreshToken = !!out.gmailRefreshToken;
+  out.hasGmailAccessToken = !!out.gmailAccessToken;
+  delete out.gmailRefreshToken;
+  delete out.gmailAccessToken;
+  return out;
+}
 
 router.get('/bootstrap', protect, async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');
@@ -322,7 +332,7 @@ router.get('/bootstrap', protect, async (req, res) => {
         onboardingSkippedAt: client?.onboardingSkippedAt ?? null
       },
       workspaceAccess: access,
-      client: client || {},
+      client: sanitizeClientForBootstrap(client),
       // Inbox + today stats moved to /api/dashboard/summary (bootstrap was 15–25s with counts)
       inbox: { unreadCount: 0, recentConversations: [] },
       stats: { msg: 0, leads: 0, rev: 0, active: 0 }

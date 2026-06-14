@@ -3,6 +3,7 @@ const NlpEngineService = require('../services/NlpEngineService');
 const { summarize, verifyMetricsSecret } = require('../middleware/requestMetrics');
 const { allStatuses } = require('../utils/core/circuitBreaker');
 const { alertDegraded } = require('../utils/core/alerting');
+const { getApiCapabilities } = require('../constants/apiCapabilities');
 
 /**
  * HealthController
@@ -73,6 +74,8 @@ exports.checkHealth = async (req, res) => {
       if (healthStatus.status === 'healthy') healthStatus.status = 'degraded';
     }
     if (warnings.length) healthStatus.warnings = warnings;
+
+    healthStatus.capabilities = getApiCapabilities();
 
     const statusCode = healthStatus.status === 'healthy' ? 200 : 503;
 

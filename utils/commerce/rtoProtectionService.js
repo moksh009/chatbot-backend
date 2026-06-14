@@ -17,6 +17,7 @@ function rtoCfg(client) {
   return {
     requireCodConfirmation: !!rp.requireCodConfirmation,
     enableNdrRescue: !!rp.enableNdrRescue,
+    enableNdrAutoPush: rp.enableNdrAutoPush !== false,
     codConfirmationHours: Math.max(6, Math.min(72, Number(rp.codConfirmationHours) || 24)),
     estimatedRtoCostPerOrder: Math.max(200, Math.min(5000, Number(rp.estimatedRtoCostPerOrder) || 800)),
     ndrTemplateName: String(rp.ndrTemplateName || 'rto_ndr_rescue').trim() || 'rto_ndr_rescue',
@@ -250,6 +251,19 @@ async function handleCodConfirmationButton({ client, phone, buttonId }) {
 /** Courier statuses that trigger interactive NDR rescue (must have SAC template or RTO override). */
 const NDR_SHIPMENT_TRIGGERS = new Set(['failure', 'attempted_delivery']);
 
+/**
+ * When RTO NDR rescue succeeds (or already sent), skip duplicate SAC shipment rules.
+ * If rescue fails, fall through so Order messages rules can still fire.
+ */
+function shouldSkipSacForNdr(client, shipmentStatus, ndrResult) {
+  const status = String(shipmentStatus || '').toLowerCase();
+  if (!NDR_SHIPMENT_TRIGGERS.has(status)) return false;
+  if (!rtoCfg(client).enableNdrRescue) return false;
+  if (ndrResult?.ok) return true;
+  if (ndrResult?.skipped && ndrResult.reason === 'ndr_already_sent_or_inflight') return true;
+  return false;
+}
+
 async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
   const cfg = rtoCfg(client);
   if (!cfg.enableNdrRescue) return { skipped: true, reason: 'disabled' };
@@ -413,6 +427,9 @@ async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
     });
 
     await trackEcommerceEvent(client.clientId, { rtoNdrRescuesSent: 1 }).catch(() => {});
+    await sendNdrActionPrompt(client, clean, claimed).catch((e) =>
+      console.warn('[RTOProtection] NDR action prompt failed:', e.message)
+    );
     return { ok: true };
   } catch (e) {
     console.error('[RTOProtection] NDR rescue send failed:', e.message);
@@ -424,21 +441,112 @@ async function maybeSendNdrRescueFromFulfillment(client, fulfillment, io) {
   }
 }
 
-async function handleNdrRescueButton({ client, phone, buttonId }) {
-  if (!buttonId.startsWith('rto_ndr_alt_') && !buttonId.startsWith('rto_ndr_addr_')) return false;
-  const oid = buttonId.replace(/^rto_ndr_(alt|addr)_/, '');
+async function sendNdrActionPrompt(client, phone, orderDoc) {
+  const oid = String(orderDoc._id);
+  const orderLabel = orderDoc.orderNumber || orderDoc.orderId || oid;
+  const body =
+    `Delivery for order *${orderLabel}* needs your help.\n\n` +
+    `Tap an option below — we will update the courier automatically when connected.`;
+
+  const buttons = [
+    { id: `rto_ndr_retry_${oid}`, title: 'Retry delivery' },
+    { id: `rto_ndr_phone_${oid}`, title: 'New phone' },
+    { id: `rto_ndr_addr_${oid}`, title: 'New address' },
+  ];
+
+  try {
+    await sendInteractive(client, phone, body, buttons, {
+      orderId: orderDoc.shopifyOrderId || orderDoc.orderId || oid,
+      stage: 'ndr_action',
+      source: 'rtoProtectionService:ndr_action_prompt',
+    });
+  } catch (envelopeErr) {
+    const WhatsApp = require('../meta/whatsapp');
+    await WhatsApp.sendInteractive(
+      client,
+      phone,
+      {
+        type: 'button',
+        action: {
+          buttons: buttons.map((b) => ({
+            type: 'reply',
+            reply: { id: b.id, title: String(b.title).substring(0, 20) },
+          })),
+        },
+      },
+      body
+    );
+  }
+}
+
+async function handleNdrRescueButton({ client, phone, buttonId, convo }) {
+  const normalizedId = buttonId.startsWith('rto_ndr_alt_')
+    ? buttonId.replace(/^rto_ndr_alt_/, 'rto_ndr_addr_')
+    : buttonId;
+
+  const prefixes = [
+    { prefix: 'rto_ndr_retry_', intent: 'reattempt', prompt: null },
+    { prefix: 'rto_ndr_phone_', intent: 'phone', prompt: 'Send your *10-digit mobile number* in one message.' },
+    { prefix: 'rto_ndr_addr_', intent: 'address', prompt: 'Send your *full address with pincode* in one message.' },
+  ];
+
+  let matched = null;
+  let oid = '';
+  for (const row of prefixes) {
+    if (normalizedId.startsWith(row.prefix)) {
+      matched = row;
+      oid = normalizedId.slice(row.prefix.length);
+      break;
+    }
+  }
+  if (!matched || !oid) return false;
+
   const order = await Order.findOne({ _id: oid, clientId: client.clientId });
   const WhatsApp = require('../meta/whatsapp');
   if (!order) {
     await WhatsApp.sendText(client, phone, 'We could not find that delivery. Please reply with your *order number*.');
     return true;
   }
+
+  const Conversation = require('../../models/Conversation');
+  const {
+    setNdrFlow,
+    pushReattemptWithOrderDefaults,
+  } = require('./ndrCaptureService');
+
+  if (matched.intent === 'reattempt') {
+    const result = await pushReattemptWithOrderDefaults({ client, order, customerPhone: phone });
+    const ack = result.ok
+      ? `✅ Reattempt requested with the courier for order *${order.orderNumber || order.orderId}*.`
+      : `We logged your reattempt request for order *${order.orderNumber || order.orderId}*. Our team will follow up with the courier.`;
+    await WhatsApp.sendText(client, phone, ack);
+    if (convo?._id) {
+      await Conversation.findByIdAndUpdate(convo._id, { $unset: { 'metadata.ndrFlow': 1 } });
+    }
+    return true;
+  }
+
+  const convoDoc =
+    convo ||
+    (await Conversation.findOne({ clientId: client.clientId, phone }).select('_id metadata').lean());
+  if (convoDoc?._id) {
+    await setNdrFlow(convoDoc._id, {
+      orderMongoId: String(order._id),
+      intent: matched.intent,
+    });
+  }
+
   await WhatsApp.sendText(
     client,
     phone,
-    `Thanks! Order ref: *${order.orderNumber || order.orderId}*. Send your *10-digit phone* or *full address + pincode* in one message so our team can update the courier.`
+    `Order *${order.orderNumber || order.orderId}*: ${matched.prompt}`
   );
   return true;
+}
+
+async function handleNdrCustomerText(args) {
+  const { handleNdrCustomerText: handleText } = require('./ndrCaptureService');
+  return handleText(args);
 }
 
 async function aggregateRtoProtectionStats(clientId, clientLean) {
@@ -510,6 +618,7 @@ async function aggregateRtoProtectionStats(clientId, clientLean) {
     toggles: {
       requireCodConfirmation: cfg.requireCodConfirmation,
       enableNdrRescue: cfg.enableNdrRescue,
+      enableNdrAutoPush: cfg.enableNdrAutoPush,
       codConfirmationHours: cfg.codConfirmationHours,
       estimatedRtoCostPerOrder: cfg.estimatedRtoCostPerOrder,
       ndrTemplateName: cfg.ndrTemplateName,
@@ -636,12 +745,15 @@ async function processCodConfirmationTimeouts(io) {
 module.exports = {
   rtoCfg,
   NDR_SHIPMENT_TRIGGERS,
+  shouldSkipSacForNdr,
   maybeSendCodConfirmationAfterOrderCreate,
   handleCodConfirmationButton,
   handleFlowCodButton,
   processCodConfirmationTimeouts,
   maybeSendNdrRescueFromFulfillment,
   handleNdrRescueButton,
+  handleNdrCustomerText,
+  sendNdrActionPrompt,
   aggregateRtoProtectionStats,
   cancelOrderInShopify,
 };

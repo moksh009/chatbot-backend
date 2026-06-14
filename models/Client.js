@@ -174,11 +174,34 @@ const WizardFeaturesSchema = new mongoose.Schema({
 const RtoProtectionSchema = new mongoose.Schema({
   requireCodConfirmation: { type: Boolean, default: false },
   enableNdrRescue: { type: Boolean, default: false },
+  /** Auto-push customer NDR replies to Shiprocket when API credentials are configured. */
+  enableNdrAutoPush: { type: Boolean, default: true },
   codConfirmationHours: { type: Number, default: 24 },
   estimatedRtoCostPerOrder: { type: Number, default: 800 },
   /** Meta utility template (approved) — required outside 24h session; default name merchants can create. */
   ndrTemplateName: { type: String, default: 'rto_ndr_rescue' },
   ndrTemplateLanguage: { type: String, default: 'en' },
+}, { _id: false });
+
+/** Courier tracking eligibility — Shopify sync vs direct partner webhook. */
+const LogisticsHealthSchema = new mongoose.Schema({
+  shopifyPathActive: { type: Boolean, default: true },
+  observedShopifyStatuses: { type: [String], default: [] },
+  directWebhookActive: { type: Boolean, default: false },
+  directWebhookLastSeenAt: { type: Date, default: null },
+  lastHealthCheckAt: { type: Date, default: null },
+}, { _id: false });
+
+const LogisticsIntegrationSchema = new mongoose.Schema({
+  planDeclared: { type: Boolean, default: false },
+  planDeclaredAt: { type: Date, default: null },
+  webhookSecret: { type: String, default: '' },
+  connectedAt: { type: Date, default: null },
+  /** Shiprocket API user (Settings → API) — for NDR reattempt push-back. */
+  shiprocketApiEmail: { type: String, default: '' },
+  shiprocketApiPasswordEnc: { type: String, default: '' },
+  shiprocketTokenEnc: { type: String, default: '' },
+  shiprocketTokenExpiresAt: { type: Date, default: null },
 }, { _id: false });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -444,6 +467,18 @@ const ClientSchema = new mongoose.Schema({
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
   rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
+  logisticsPartner: {
+    type: String,
+    enum: ['shiprocket', 'nimbuspost', 'ithink', 'shyplite', 'other', 'unknown'],
+    default: 'unknown',
+  },
+  logisticsMode: {
+    type: String,
+    enum: ['shopify_only', 'direct', 'hybrid'],
+    default: 'shopify_only',
+  },
+  logisticsIntegration: { type: LogisticsIntegrationSchema, default: () => ({}) },
+  logisticsHealth: { type: LogisticsHealthSchema, default: () => ({}) },
   policies:       { type: PoliciesSchema,       default: () => ({}) },
 
   // --- TIER 3: ONBOARDING WIZARD CENTRALIZED VARS ---

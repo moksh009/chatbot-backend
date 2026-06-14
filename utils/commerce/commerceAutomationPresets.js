@@ -110,6 +110,14 @@ const PAYMENT_STATUS_RULES = [
 ];
 
 const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
+const { defaultEmailConfigForRule } = require('../../constants/prebuiltOrderEmailTemplates');
+
+function dualChannelDefaults(ruleId) {
+  return {
+    channels: ['whatsapp'],
+    emailConfig: defaultEmailConfigForRule(ruleId),
+  };
+}
 
 /** Minimum delay after cart abandoned (minutes). User may increase, not decrease. */
 const CART_FOLLOWUP_MIN_MINUTES = {
@@ -126,8 +134,9 @@ const CART_FOLLOWUP_DEFAULT_MINUTES = {
 };
 
 function fulfillmentStatusRule({ status, label, tooltip }) {
+  const ruleId = `sys_fulfillment_${status}`;
   return {
-    id: `sys_fulfillment_${status}`,
+    id: ruleId,
     name: label,
     triggerType: 'order_status',
     triggerStatusType: 'fulfillment',
@@ -159,12 +168,14 @@ function fulfillmentStatusRule({ status, label, tooltip }) {
       tooltip,
       locked: true,
     },
+    ...dualChannelDefaults(ruleId),
   };
 }
 
 function shipmentStatusRule({ status, label, tooltip }) {
+  const ruleId = `sys_shipment_${status}`;
   return {
-    id: `sys_shipment_${status}`,
+    id: ruleId,
     name: label,
     triggerType: 'order_status',
     triggerStatusType: 'shipment',
@@ -196,12 +207,14 @@ function shipmentStatusRule({ status, label, tooltip }) {
       tooltip,
       locked: true,
     },
+    ...dualChannelDefaults(ruleId),
   };
 }
 
 function paymentStatusRule({ status, label, tooltip }) {
+  const ruleId = `sys_financial_${status}`;
   return {
-    id: `sys_financial_${status}`,
+    id: ruleId,
     name: label,
     triggerType: 'order_status',
     triggerStatusType: 'financial',
@@ -233,6 +246,7 @@ function paymentStatusRule({ status, label, tooltip }) {
       tooltip,
       locked: true,
     },
+    ...dualChannelDefaults(ruleId),
   };
 }
 
@@ -244,6 +258,7 @@ function isLegacyOrderRuleId(id) {
 }
 
 function abandonedCartRule(slot, stepNum) {
+  const ruleId = `sys_cart_${slot}`;
   const labels = {
     followup_1: 'Followup 1',
     followup_2: 'Followup 2',
@@ -251,7 +266,7 @@ function abandonedCartRule(slot, stepNum) {
   };
   const delay = CART_FOLLOWUP_DEFAULT_MINUTES[slot];
   return {
-    id: `sys_cart_${slot}`,
+    id: ruleId,
     name: labels[slot] || `Followup ${stepNum}`,
     triggerType: 'abandoned_cart',
     event: 'abandoned',
@@ -279,6 +294,7 @@ function abandonedCartRule(slot, stepNum) {
       minDelayMinutes: CART_FOLLOWUP_MIN_MINUTES[slot],
       locked: true,
     },
+    ...dualChannelDefaults(ruleId),
   };
 }
 
@@ -321,6 +337,8 @@ function mergeSystemAutomations(existing = []) {
       triggerStatusType: preset.triggerStatusType,
       event: preset.event,
       variableMappings,
+      channels: Array.isArray(cur.channels) ? cur.channels : preset.channels,
+      emailConfig: cur.emailConfig != null ? cur.emailConfig : preset.emailConfig,
       isDeletable: false,
       meta: { ...preset.meta, ...(cur.meta || {}) },
     });

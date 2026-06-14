@@ -17,45 +17,156 @@ function isWorkspaceEmailReady(client) {
     return hasUser && hasPass;
 }
 
+const GMAIL_RECONNECT_MESSAGE =
+    'Gmail session expired. Disconnect Gmail in Email Hub, then connect again to restore sending.';
+
+async function bustGmailConnectionCaches(clientId) {
+    if (!clientId) return;
+    try {
+        const { invalidateClientCache } = require('./clientCache');
+        invalidateClientCache(clientId);
+    } catch (_) { /* noop */ }
+    try {
+        const { clearClientCache } = require('../../middleware/apiCache');
+        await clearClientCache(clientId);
+    } catch (_) { /* noop */ }
+    try {
+        const User = require('../../models/User');
+        const users = await User.find({ clientId }).select('_id').limit(20).lean();
+        const { invalidateBootstrapCache } = require('./bootstrapCache');
+        for (const u of users) {
+            if (u?._id) invalidateBootstrapCache(String(u._id));
+        }
+    } catch (_) { /* noop */ }
+    try {
+        const { getAppRedis, isRedisReady } = require('./redisFactory');
+        const redis = getAppRedis();
+        if (redis && isRedisReady(redis)) {
+            await redis.del(`workspace:connection:${clientId}`);
+        }
+    } catch (_) { /* noop */ }
+}
+
+/** Clear revoked Gmail OAuth credentials so UI shows disconnected instead of false "connected". */
+async function markGmailAuthRevoked(clientId, reason = 'invalid_grant') {
+    if (!clientId) return;
+    try {
+        const Client = require('../../models/Client');
+        await Client.updateOne(
+            { clientId },
+            {
+                $set: {
+                    googleConnected: false,
+                    gmailAccessToken: '',
+                    gmailRefreshToken: '',
+                    gmailAddress: '',
+                    emailUser: '',
+                    emailMethod: '',
+                },
+            }
+        );
+        await bustGmailConnectionCaches(clientId);
+        console.warn(`[EmailService] Gmail auth revoked for ${clientId}: ${reason}`);
+    } catch (e) {
+        console.warn('[EmailService] markGmailAuthRevoked failed:', e.message);
+    }
+}
+
 /**
  * Refresh Gmail access token; persists new access token on the Client when possible.
+ * @returns {{ accessToken: string|null, error?: string, revoked?: boolean }}
  */
 async function refreshClientGmailAccessToken(client) {
     const rt = String(client.gmailRefreshToken || '').trim();
-    if (!rt) return null;
-    const clientId = String(process.env.GCAL_CLIENT_ID || '').trim();
+    if (!rt) {
+        return { accessToken: null, error: 'missing_refresh_token' };
+    }
+    const oauthClientId = String(process.env.GCAL_CLIENT_ID || '').trim();
     const clientSecret = String(process.env.GCAL_CLIENT_SECRET || '').trim();
-    if (!clientId || !clientSecret) {
+    if (!oauthClientId || !clientSecret) {
         console.warn('[EmailService] Gmail refresh skipped — GCAL_CLIENT_ID / GCAL_CLIENT_SECRET not set');
-        return null;
+        return { accessToken: null, error: 'oauth_not_configured' };
     }
     try {
         const { data } = await axios.post(
             'https://oauth2.googleapis.com/token',
             new URLSearchParams({
-                client_id: clientId,
+                client_id: oauthClientId,
                 client_secret: clientSecret,
                 refresh_token: rt,
-                grant_type: 'refresh_token'
+                grant_type: 'refresh_token',
             }).toString(),
             { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 25000 }
         );
         const newAt = data && data.access_token ? String(data.access_token) : '';
-        if (!newAt) return null;
+        if (!newAt) return { accessToken: null, error: 'empty_access_token' };
         if (client.clientId) {
             try {
                 const Client = require('../../models/Client');
                 await Client.updateOne({ clientId: client.clientId }, { $set: { gmailAccessToken: newAt } });
+                client.gmailAccessToken = newAt;
             } catch (e) {
                 console.warn('[EmailService] Could not persist refreshed gmailAccessToken:', e.message);
             }
         }
-        return newAt;
+        return { accessToken: newAt };
     } catch (e) {
         const d = e.response && e.response.data;
+        const errCode = d?.error || '';
         console.warn('[EmailService] Gmail token refresh failed:', d || e.message);
-        return null;
+        if (errCode === 'invalid_grant' && client.clientId) {
+            await markGmailAuthRevoked(client.clientId, errCode);
+            return { accessToken: null, error: GMAIL_RECONNECT_MESSAGE, revoked: true };
+        }
+        return {
+            accessToken: null,
+            error: d?.error_description || d?.error || e.message || 'token_refresh_failed',
+        };
     }
+}
+
+/**
+ * Resolve a usable Gmail access token — always refresh when a refresh token exists.
+ */
+async function resolveGmailAccessToken(client) {
+    const rt = String(client.gmailRefreshToken || '').trim();
+    if (rt) {
+        const refreshed = await refreshClientGmailAccessToken(client);
+        if (refreshed.accessToken) return refreshed;
+        if (refreshed.revoked) return refreshed;
+        if (refreshed.error === 'oauth_not_configured') {
+            return {
+                accessToken: null,
+                error: 'Gmail OAuth is not configured on this server. Set GCAL_CLIENT_ID and GCAL_CLIENT_SECRET.',
+            };
+        }
+    }
+
+    const access = String(client.gmailAccessToken || '').trim();
+    if (access) return { accessToken: access };
+
+    if (!rt) {
+        return {
+            accessToken: null,
+            error: GMAIL_RECONNECT_MESSAGE,
+            revoked: true,
+        };
+    }
+
+    return {
+        accessToken: null,
+        error: GMAIL_RECONNECT_MESSAGE,
+    };
+}
+
+function isGmailAuthError(status, message = '') {
+    const msg = String(message || '').toLowerCase();
+    return (
+        status === 401 ||
+        status === 403 ||
+        msg.includes('invalid authentication credentials') ||
+        msg.includes('invalid_grant')
+    );
 }
 
 function escapeMimeHeader(value) {
@@ -87,6 +198,42 @@ function buildHtmlMimeMessage({ fromAddr, fromName, to, subject, html }) {
     ].join('\r\n');
 }
 
+function buildPlainMimeMessage({ fromAddr, fromName, to, subject, text }) {
+    const safeSubject = escapeMimeHeader(subject || '(no subject)');
+    const fromLine = fromName ? `"${String(fromName).replace(/"/g, "'")}" <${fromAddr}>` : fromAddr;
+    const body = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
+    const folded = bodyB64.replace(/.{1,76}/g, (m) => `${m}\r\n`).trimEnd();
+
+    return [
+        `From: ${fromLine}`,
+        `To: ${String(to).trim()}`,
+        `Subject: ${safeSubject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        folded,
+        ''
+    ].join('\r\n');
+}
+
+function htmlToPlainText(html) {
+    return String(html || '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<\/div>/gi, '\n')
+        .replace(/<li[^>]*>/gi, '• ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 function toGmailRawBase64(rfc822) {
     return Buffer.from(rfc822, 'utf8')
         .toString('base64')
@@ -95,33 +242,40 @@ function toGmailRawBase64(rfc822) {
         .replace(/=+$/, '');
 }
 
+function extractGmailApiError(err) {
+    const data = err?.response?.data;
+    if (data?.error?.message) return String(data.error.message);
+    if (typeof data?.error === 'string') return data.error;
+    return err?.message || 'Gmail API send failed';
+}
+
 /**
  * Send using Gmail API (gmail.send). Does not fall back to SMTP on failure.
+ * @returns {{ success: boolean, error?: string }}
  */
-async function sendViaGmailApi(client, { to, subject, html }) {
+async function sendViaGmailApiDetailed(client, { to, subject, html, text, format = 'html' }) {
     const fromAddr = String(client.gmailAddress || client.emailUser || '').trim();
     if (!fromAddr) {
-        console.warn('[EmailService] Gmail API send skipped — no from address on client');
-        return false;
+        return { success: false, error: 'No Gmail sender address on this workspace. Reconnect Gmail in Settings.' };
     }
 
-    let access = String(client.gmailAccessToken || '').trim();
+    const resolved = await resolveGmailAccessToken(client);
+    let access = resolved.accessToken || '';
     if (!access) {
-        access = (await refreshClientGmailAccessToken(client)) || '';
-    }
-    if (!access) {
-        console.warn('[EmailService] Gmail API send skipped — no access token (connect Gmail or re-authorize with offline access).');
-        return false;
+        return {
+            success: false,
+            error: resolved.error || GMAIL_RECONNECT_MESSAGE,
+            revoked: resolved.revoked === true,
+        };
     }
 
     const storeName = String(client.name || 'Store').replace(/"/g, "'").slice(0, 120);
-    const rfc822 = buildHtmlMimeMessage({
-        fromAddr,
-        fromName: storeName,
-        to,
-        subject,
-        html
-    });
+    const usePlain = format === 'plain' || format === 'text';
+    const plainBody = text != null ? String(text) : htmlToPlainText(html);
+    const rfc822 = usePlain
+        ? buildPlainMimeMessage({ fromAddr, fromName: storeName, to, subject, text: plainBody })
+        : buildHtmlMimeMessage({ fromAddr, fromName: storeName, to, subject, html: html || plainBody });
+
     const raw = toGmailRawBase64(rfc822);
 
     const postSend = async (token) =>
@@ -140,25 +294,143 @@ async function sendViaGmailApi(client, { to, subject, html }) {
     try {
         await postSend(access);
         console.log(`[EmailService] ✅ Email sent via Gmail API to ${to} | Subject: ${subject}`);
-        return true;
+        return { success: true };
     } catch (err) {
         const status = err.response && err.response.status;
-        if (status === 401 && String(client.gmailRefreshToken || '').trim()) {
+        const firstMsg = extractGmailApiError(err);
+        if (isGmailAuthError(status, firstMsg) && String(client.gmailRefreshToken || '').trim()) {
             const fresh = await refreshClientGmailAccessToken(client);
-            if (fresh) {
+            if (fresh.accessToken) {
                 try {
-                    await postSend(fresh);
+                    await postSend(fresh.accessToken);
                     console.log(`[EmailService] ✅ Email sent via Gmail API (after refresh) to ${to}`);
-                    return true;
+                    return { success: true };
                 } catch (err2) {
-                    console.warn('[EmailService] Gmail API send failed after refresh:', err2.response?.data || err2.message);
+                    const msg = extractGmailApiError(err2);
+                    console.warn('[EmailService] Gmail API send failed after refresh:', msg);
+                    if (isGmailAuthError(err2?.response?.status, msg) && client.clientId) {
+                        await markGmailAuthRevoked(client.clientId, msg);
+                        return { success: false, error: GMAIL_RECONNECT_MESSAGE, revoked: true };
+                    }
+                    const { isHardBounceError, markEmailBounced } = require('./emailBounceHandler');
+                    if (isHardBounceError(msg, err2?.response?.status)) {
+                      await markEmailBounced({
+                        clientId: client.clientId,
+                        email: to,
+                        hardBounce: true,
+                        source: 'gmail_api',
+                        bounceReason: msg,
+                      }).catch(() => {});
+                    }
+                    return { success: false, error: msg };
                 }
             }
-        } else {
-            console.warn('[EmailService] Gmail API send failed:', err.response?.data || err.message);
+            if (fresh.revoked) {
+                return { success: false, error: fresh.error || GMAIL_RECONNECT_MESSAGE, revoked: true };
+            }
         }
-        return false;
+        if (isGmailAuthError(status, firstMsg) && client.clientId) {
+            await markGmailAuthRevoked(client.clientId, firstMsg);
+            return { success: false, error: GMAIL_RECONNECT_MESSAGE, revoked: true };
+        }
+        const msg = firstMsg;
+        console.warn('[EmailService] Gmail API send failed:', msg);
+        const { isHardBounceError, markEmailBounced } = require('./emailBounceHandler');
+        if (isHardBounceError(msg, err?.response?.status)) {
+          await markEmailBounced({
+            clientId: client.clientId,
+            email: to,
+            hardBounce: true,
+            source: 'gmail_api',
+            bounceReason: msg,
+          }).catch(() => {});
+        }
+        return { success: false, error: msg };
     }
+}
+
+/** @returns {boolean} */
+async function sendViaGmailApi(client, opts) {
+    const out = await sendViaGmailApiDetailed(client, opts);
+    return out.success;
+}
+
+/**
+ * Merchant-initiated one-off email — bypasses sendEnvelope (consent, rate limits, idempotency).
+ * Used by Email Hub manual send and scheduled hub emails.
+ */
+async function sendWorkspaceEmailDirect(client, { to, subject, html, text, format = 'html' }) {
+    if (!to) {
+        return { success: false, error: 'Recipient email is required.' };
+    }
+    if (!isWorkspaceEmailReady(client)) {
+        return { success: false, error: 'Connect Gmail before sending email from this workspace.' };
+    }
+
+    const useGmailApi =
+        client.emailMethod === 'gmail_oauth' &&
+        !!(String(client.gmailRefreshToken || '').trim() || String(client.gmailAccessToken || '').trim()) &&
+        !!(String(client.gmailAddress || client.emailUser || '').trim());
+
+    if (useGmailApi) {
+        return sendViaGmailApiDetailed(client, { to, subject, html, text, format });
+    }
+
+    const fromAddr = client.emailUser || process.env.EMAIL_USER;
+    const storeName = String(client.name || 'Store').replace(/"/g, "'").slice(0, 120);
+    const from = fromAddr ? `"${storeName}" <${fromAddr}>` : null;
+    const usePlain = format === 'plain' || format === 'text';
+    const plainBody = text != null ? String(text) : htmlToPlainText(html);
+    const mail = usePlain
+        ? { ...(from ? { from } : {}), to, subject, text: plainBody }
+        : { ...(from ? { from } : {}), to, subject, html: html || `<div>${plainBody.replace(/\n/g, '<br/>')}</div>` };
+
+    const hasClientSmtp = !!(client.emailUser && (client.emailAppPassword || process.env.EMAIL_APP_PASSWORD));
+    if (!hasClientSmtp || !fromAddr) {
+        return { success: false, error: 'No Gmail or SMTP credentials configured for this workspace.' };
+    }
+
+    const logicalSmtpHost = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+    const smtpTarget = await resolveSmtpIpv4Target(logicalSmtpHost);
+    const tryOrder = [
+        { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
+        { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' },
+    ];
+
+    let lastErr;
+    for (const cfg of tryOrder) {
+        const transporter = createTransporterForClient(client, cfg, smtpTarget);
+        if (!transporter) break;
+        try {
+            await transporter.sendMail(mail);
+            try {
+                transporter.close();
+            } catch (_) { /* noop */ }
+            return { success: true };
+        } catch (err) {
+            lastErr = err;
+            try {
+                transporter.close();
+            } catch (_) { /* noop */ }
+        }
+    }
+
+    await markSmtpBounceIfHard(client, to, lastErr);
+    return { success: false, error: lastErr?.message || 'SMTP send failed.' };
+}
+
+async function markSmtpBounceIfHard(client, to, err) {
+  const { isHardBounceError, markEmailBounced } = require('./emailBounceHandler');
+  const msg = err?.message || String(err || '');
+  const code = err?.responseCode || err?.code;
+  if (!isHardBounceError(msg, code)) return;
+  await markEmailBounced({
+    clientId: client?.clientId,
+    email: to,
+    hardBounce: true,
+    source: 'smtp',
+    bounceReason: msg,
+  }).catch(() => {});
 }
 
 /** Prefer A records over AAAA on hosts where IPv6 egress is broken (common on PaaS). */
@@ -1052,6 +1324,13 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
 module.exports = {
     sendEmail,
     sendSystemEmail,
+    sendWorkspaceEmailDirect,
+    sendViaGmailApiDetailed,
+    refreshClientGmailAccessToken,
+    resolveGmailAccessToken,
+    markGmailAuthRevoked,
+    GMAIL_RECONNECT_MESSAGE,
+    htmlToPlainText,
     isWorkspaceEmailReady,
     escapeHtml,
     buildAdminEscalationEmailHtml,

@@ -113,12 +113,32 @@ async function probeRazorpay(client) {
   }
 }
 
+async function probeGmail(client) {
+  const { resolveGmailAccessToken } = require('../core/emailService');
+  if (client.emailMethod !== 'gmail_oauth') {
+    const hasSmtp = !!(client.emailUser && (client.emailAppPassword || process.env.EMAIL_APP_PASSWORD));
+    return hasSmtp ? { tokenStatus: 'valid', ok: true } : { tokenStatus: 'missing', ok: false };
+  }
+  const hasRefresh = !!String(client.gmailRefreshToken || '').trim();
+  const hasAccess = !!String(client.gmailAccessToken || '').trim();
+  if (!hasRefresh && !hasAccess) return { tokenStatus: 'missing', ok: false };
+  try {
+    const resolved = await resolveGmailAccessToken(client);
+    if (resolved.accessToken) return { tokenStatus: 'valid', ok: true };
+    if (resolved.revoked) return { tokenStatus: 'revoked', ok: false };
+    return { tokenStatus: 'expired', ok: false };
+  } catch {
+    return { tokenStatus: 'unknown', ok: false };
+  }
+}
+
 async function probeClientChannels(client) {
   const clientId = client.clientId;
   const channels = {
     whatsapp: await probeWhatsApp(client),
     shopify: await probeShopify(client),
     razorpay: await probeRazorpay(client),
+    gmail: await probeGmail(client),
   };
   for (const [ch, result] of Object.entries(channels)) {
     const prev = await readProbeCache(clientId, ch);

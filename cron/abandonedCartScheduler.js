@@ -157,7 +157,15 @@ async function shouldSkipLead(lead) {
  *  never retried on failure. */
 async function sendRichNudge(client, lead, text, options = {}) {
     try {
-        const { includeImage, buttons = [], templateName, stepNum = 1 } = options;
+        const { includeImage, buttons = [], templateName, stepNum = 1, cartRule = null } = options;
+        const {
+            buildCartEmailContext,
+            resolveOrderEmailTemplate,
+            normalizeRuleChannels,
+        } = require('../utils/core/orderEmailMergeFields');
+        const channels = normalizeRuleChannels(cartRule || { channels: ['whatsapp'] });
+        const wantsWhatsApp = channels.includes('whatsapp');
+        const wantsEmail = channels.includes('email');
         const phone = lead.phoneNumber;
         const checkoutToken = lead.checkoutToken || lead.cartSnapshot?.checkoutToken || String(lead._id);
         const contactId = String(lead._id);
@@ -185,38 +193,62 @@ async function sendRichNudge(client, lead, text, options = {}) {
           );
 
         let successfullySent = false;
+        let waSent = false;
+        let emailSent = false;
         let lastSkipReason = 'no_channel';
         let lastSkipDetail = null;
         let templateOut = null;
         let outboundMessageId = null;
 
-        // Email-only checkout (B9): no real phone but has email
-        if (!hasRealPhone(phone) && lead.email) {
-            const emailOut = await cronEnvelopeSend({
-                client,
+        // Email channel (runs alongside WhatsApp when both are configured)
+        const emailEligible =
+          wantsEmail &&
+          lead.email &&
+          !lead.emailBounced &&
+          lead.emailUnsubscribed !== true &&
+          lead.optStatus !== 'email_opted_out';
+
+        if (emailEligible) {
+            const emailTemplate = await resolveOrderEmailTemplate({
+                rule:
+                  cartRule ||
+                  {
+                    id: `sys_cart_followup_${stepNum}`,
+                    emailConfig: { templateId: `cart_recovery_email_${stepNum}`, sendWhen: 'always' },
+                  },
                 clientId: client.clientId,
-                channel: 'email',
-                intent: 'marketing',
-                email: lead.email,
-                contactId,
-                idempotencyKey,
-                payload: {
-                    subject: 'Complete your order',
-                    html: text,
-                },
-                context: { source: 'cron/abandonedCartScheduler', step: stepNum },
+                context: buildCartEmailContext(lead, client, stepNum, checkoutUrl),
             });
-            if (!emailOut.useLegacy && emailOut.action === 'sent') {
-                await recordNudge(lead, `[Email: abandoned cart recovery]`, 'email');
-                successfullySent = true;
-            } else {
-                lastSkipReason = emailOut.action || 'failed';
-                lastSkipDetail = emailOut.reason || emailOut.errorCode || null;
+            if (emailTemplate.ok) {
+                const emailOut = await cronEnvelopeSend({
+                    client,
+                    clientId: client.clientId,
+                    channel: 'email',
+                    intent: 'marketing',
+                    email: lead.email,
+                    contactId,
+                    idempotencyKey: `${idempotencyKey}:email`,
+                    payload: {
+                        subject: emailTemplate.subject,
+                        html: emailTemplate.html,
+                    },
+                    context: { source: 'cron/abandonedCartScheduler', step: stepNum, channel: 'email' },
+                });
+                if (!emailOut.useLegacy && (emailOut.action === 'sent' || emailOut.action === 'duplicate')) {
+                    await recordNudge(lead, `[Email: ${emailTemplate.subject}]`, 'email');
+                    emailSent = true;
+                    successfullySent = true;
+                } else if (!waSent) {
+                    lastSkipReason = emailOut.action || 'failed';
+                    lastSkipDetail = emailOut.reason || emailOut.errorCode || null;
+                }
+            } else if (!waSent && wantsEmail) {
+                lastSkipReason = emailTemplate.reason || 'missing_email_template';
             }
         }
 
-        // 2. If Meta Template is configured, use envelope or sendForAutomation
-        if (!successfullySent && templateName) {
+        // WhatsApp template path
+        if (wantsWhatsApp && !waSent && templateName) {
             log.info(`[Nudge] Sending template ${templateName} to ${phone || lead.email}`);
             let trackedRecoveryUrl = checkoutUrl;
             if (checkoutUrl && hasRealPhone(phone)) {
@@ -268,17 +300,18 @@ async function sendRichNudge(client, lead, text, options = {}) {
                 const outcome = handleCronEnvelopeOutcome(templateOut);
                 if (outcome === 'sent' || outcome === 'duplicate') {
                     await recordNudge(lead, `[Template: ${templateName}]`, 'template');
-                    successfullySent = outcome === 'sent';
+                    waSent = outcome === 'sent';
+                    successfullySent = true;
                     outboundMessageId = templateOut.messageId || null;
-                } else {
+                } else if (!emailSent) {
                     lastSkipReason = templateOut.action || outcome || 'failed';
                     lastSkipDetail = templateOut.reason || templateOut.errorCode || null;
                 }
-            } else {
+            } else if (!emailSent) {
                 lastSkipReason = 'envelope_unavailable';
             }
         }
-        if (!successfullySent && hasRealPhone(phone)) {
+        if (wantsWhatsApp && !waSent && !emailSent && hasRealPhone(phone)) {
             const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
                 type: 'reply',
                 reply: { id: `cart_btn_${i}_${lead._id}`, title: b.substring(0, 20) }
@@ -312,14 +345,15 @@ async function sendRichNudge(client, lead, text, options = {}) {
             });
             if (!freeOut.useLegacy && (freeOut.action === 'sent' || freeOut.action === 'duplicate')) {
                 await recordNudge(lead, text, activeButtons.length ? 'interactive' : 'text');
-                successfullySent = freeOut.action === 'sent';
-            } else {
+                waSent = freeOut.action === 'sent';
+                successfullySent = true;
+            } else if (!emailSent) {
                 lastSkipReason = freeOut.action || 'failed';
                 lastSkipDetail = freeOut.reason || freeOut.errorCode || null;
             }
         }
 
-        if (successfullySent && hasRealPhone(phone)) {
+        if (successfullySent && waSent && hasRealPhone(phone)) {
             try {
                 const { recordWhatsappTemplateSent } = require('../utils/commerce/cartRecoveryAttemptService');
                 await recordWhatsappTemplateSent({
@@ -339,11 +373,13 @@ async function sendRichNudge(client, lead, text, options = {}) {
         if (successfullySent) {
             return {
               sent: true,
-              channel: hasRealPhone(phone) ? 'whatsapp' : 'email',
+              channel: waSent && emailSent ? 'both' : waSent ? 'whatsapp' : 'email',
+              waSent,
+              emailSent,
               messageId: outboundMessageId || templateOut?.messageId,
             };
         }
-        if (!successfullySent && hasRealPhone(phone)) {
+        if (!successfullySent && hasRealPhone(phone) && wantsWhatsApp) {
             try {
                 const { recordCartRecoverySendFailure } = require('../utils/commerce/cartRecoveryAttemptService');
                 await recordCartRecoverySendFailure({
@@ -403,8 +439,13 @@ async function runAbandonedCartTick() {
                 );
                 const cartRuleActive = (slot) => {
                     const r = cartRules.find((x) => x.meta?.systemSlot === slot);
-                    return r?.isActive === true && !!r?.templateName;
+                    if (r?.isActive !== true) return false;
+                    const channels = Array.isArray(r.channels) ? r.channels : ['whatsapp'];
+                    if (channels.includes('whatsapp') && r.templateName) return true;
+                    if (channels.includes('email')) return true;
+                    return false;
                 };
+                const cartRuleForSlot = (slot) => cartRules.find((x) => x.meta?.systemSlot === slot) || null;
                 const tplForSlot = (slot, fallback) => {
                     const r = cartRules.find((x) => x.meta?.systemSlot === slot);
                     return (r?.isActive && r.templateName) ? r.templateName : fallback;
@@ -517,6 +558,7 @@ async function runAbandonedCartTick() {
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 1,
                         templateName: tplForSlot('followup_1', 'cart_recovery_1'),
+                        cartRule: cartRuleForSlot('followup_1'),
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
@@ -565,6 +607,7 @@ async function runAbandonedCartTick() {
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 2,
                         templateName: tplForSlot('followup_2', 'cart_recovery_2'),
+                        cartRule: cartRuleForSlot('followup_2'),
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
@@ -635,6 +678,7 @@ async function runAbandonedCartTick() {
                     const outcome3 = await sendRichNudge(client, lead, msg, {
                         stepNum: 3,
                         templateName: templateName,
+                        cartRule: cartRuleForSlot('followup_3'),
                         includeImage: niche.abandonedIncludeImage3 || !!templateName,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });

@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { cronEnvelopeSend } = require('./cronEnvelopeSend');
+const { sendWorkspaceEmailDirect } = require('../core/emailService');
 
 function emailIdempotencyKey(clientId, to, subject) {
   const hash = crypto
@@ -11,27 +11,27 @@ function emailIdempotencyKey(clientId, to, subject) {
 }
 
 /**
- * Customer-facing email via sendEnvelope.
- * @returns {boolean|null} true/false if envelope ran; null → missing contact (caller may use transport)
+ * Direct customer email transport (no nested sendEnvelope — outer callers own envelope gates).
+ * @returns {boolean|null} true on success; false on failure; null → missing recipient
  */
 async function tryCustomerEmailEnvelope(
   client,
-  { to, subject, html, intent = 'marketing', contactId = null, source = 'emailService' }
+  { to, subject, html, text, intent = 'marketing', contactId = null, source = 'emailService' }
 ) {
-  const out = await cronEnvelopeSend({
-    client,
-    clientId: client.clientId,
-    channel: 'email',
-    intent,
-    email: to,
-    contactId,
-    idempotencyKey: emailIdempotencyKey(client.clientId, to, subject),
-    payload: { subject, html },
-    context: { source },
+  if (!to) return null;
+
+  const sendOut = await sendWorkspaceEmailDirect(client, {
+    to,
+    subject,
+    html,
+    text,
   });
 
-  if (out.useLegacy) return null;
-  return out.action === 'sent' || out.action === 'duplicate';
+  if (!sendOut?.success) {
+    console.warn(`[customerEmailSend] Direct send failed (${source}): ${sendOut?.error || 'unknown'}`);
+    return false;
+  }
+  return true;
 }
 
 module.exports = { tryCustomerEmailEnvelope, emailIdempotencyKey };

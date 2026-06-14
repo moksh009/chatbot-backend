@@ -104,4 +104,32 @@ router.post('/:clientId/connection-status/invalidate', protect, verifyTenantScop
   return res.json({ success: true });
 });
 
+router.get('/:clientId/logistics/profile', protect, verifyTenantScope(), async (req, res) => {
+  try {
+    const { getLogisticsProfile } = require('../services/logisticsEligibilityService');
+    const profile = await getLogisticsProfile(req.params.clientId);
+    return res.json({ success: true, profile });
+  } catch (err) {
+    return res.status(err.message === 'Client not found' ? 404 : 500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+router.patch('/:clientId/logistics/settings', protect, verifyTenantScope(), async (req, res) => {
+  try {
+    const { updateLogisticsSettings } = require('../services/logisticsEligibilityService');
+    const profile = await updateLogisticsSettings(req.params.clientId, req.body || {});
+    const { invalidateClientCache } = require('../utils/core/clientCache');
+    await invalidateClientCache(req.params.clientId);
+    return res.json({ success: true, profile });
+  } catch (err) {
+    return res.status(err.message === 'Client not found' ? 404 : 500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
 module.exports = router;

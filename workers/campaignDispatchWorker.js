@@ -6,6 +6,9 @@ const Client = require('../models/Client');
 const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
 const { intentFromTemplateCategory } = require('../utils/messaging/envelopeHelpers');
 const { buildMappedBodyComponent } = require('../utils/meta/templateParams');
+const { mergeEmailForLead } = require('../utils/core/emailMergeFields');
+const { htmlToPlainText } = require('../utils/core/emailService');
+const AdLead = require('../models/AdLead');
 const { transitionCampaignMessage } = require('../utils/messaging/transitions/campaignMessageTransition');
 const { acquire, release } = require('../utils/messaging/concurrency/tenantConcurrencyGate');
 const { startHeartbeat, stopHeartbeat } = require('../utils/messaging/concurrency/heartbeat');
@@ -96,29 +99,65 @@ async function processCampaignDispatchJob(job) {
       if (v?.templateName) templateName = v.templateName;
     }
 
-    const isEmail = String(channel || '').toLowerCase() === 'email';
+    const isEmail = String(channel || campaign.channel || '').toLowerCase() === 'email';
     const intent = isEmail ? 'marketing' : intentFromTemplateCategory(campaign.templateCategory);
     const emailAddr =
       cm.metadata?.email || String(cm.phone || '').replace(/^email:/i, '');
-    const payload = isEmail
-      ? {
-          subject: campaign.emailSubject || 'Update from your store',
-          html: campaign.emailHtml || '<p>Hello,</p>',
+    let payload;
+    let envelopeContext = {
+      source: 'workers/campaignDispatchWorker',
+      campaignId: String(campaignId),
+    };
+
+    if (isEmail) {
+      let leadForMerge = {
+        name: cm.metadata?.name || '',
+        email: emailAddr,
+        phoneNumber: String(cm.phone || '').startsWith('email:') ? '' : cm.phone,
+      };
+      if (cm.metadata?.leadId) {
+        const leadDoc = await AdLead.findById(cm.metadata.leadId)
+          .select('name email phoneNumber cartSnapshot')
+          .lean();
+        if (leadDoc) {
+          leadForMerge = { ...leadDoc, email: emailAddr || leadDoc.email };
         }
-      : {
-          templateName,
-          templateLanguage: campaign.languageCode || 'en',
-          components: await buildComponents(campaign, client, cm),
-        };
+      }
+      const merged = mergeEmailForLead(
+        campaign.emailSubject || 'Update from your store',
+        campaign.emailHtml || '<p>Hello,</p>',
+        leadForMerge,
+        client
+      );
+      payload = {
+        subject: merged.subject,
+        html: merged.html,
+        text: htmlToPlainText(merged.html),
+      };
+      envelopeContext = {
+        ...envelopeContext,
+        subject: merged.subject,
+        recipientEmail: emailAddr,
+        templateId: campaign.templateName || undefined,
+        templateName: campaign.templateName || merged.subject,
+      };
+    } else {
+      payload = {
+        templateName,
+        templateLanguage: campaign.languageCode || 'en',
+        components: await buildComponents(campaign, client, cm),
+      };
+    }
+
     const result = await sendEnvelope({
       clientId,
-      channel,
+      channel: isEmail ? 'email' : channel,
       intent,
       contact: isEmail ? { email: emailAddr } : { phone: cm.phone },
       contactId: cm.metadata?.leadId,
       payload,
       idempotency: { key: `campaign-msg:${campaignMessageId}` },
-      context: { source: 'workers/campaignDispatchWorker', campaignId: String(campaignId) },
+      context: envelopeContext,
     });
 
     const fresh = await CampaignMessage.findById(campaignMessageId);

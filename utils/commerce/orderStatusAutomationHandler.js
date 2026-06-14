@@ -31,9 +31,16 @@
  * already responded 200 by the time this runs.
  */
 
+const {
+  buildOrderEmailContext,
+  resolveOrderEmailTemplate,
+  ruleHasEmailConfig,
+  normalizeRuleChannels,
+} = require('../core/orderEmailMergeFields');
 const log = require('../core/logger')('OrderStatusAutomation');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
+const Order = require('../../models/Order');
 const OrderStatusSent = require('../../models/OrderStatusSent');
 
 const FULFILLMENT_VALUES = new Set([
@@ -100,9 +107,14 @@ function buildStatusKey(type, status) {
 
 function ruleMatchesStatus(rule, type, status) {
   if (!rule || rule.isActive !== true) return false;
-  if (!rule.templateName) return false;
   if (String(rule.triggerStatusType || '') !== type) return false;
   if (String(rule.triggerStatus || '').toLowerCase() !== status) return false;
+  const channels = normalizeRuleChannels(rule);
+  const hasWa = channels.includes('whatsapp');
+  const hasEmail = channels.includes('email');
+  if (hasWa && !rule.templateName) return false;
+  if (hasEmail && !ruleHasEmailConfig(rule)) return false;
+  if (!hasWa && !hasEmail) return false;
   return true;
 }
 
@@ -136,12 +148,22 @@ async function isPhoneOptedOut(clientId, phone) {
   }
 }
 
-async function alreadySentForOrder({ clientId, orderId, statusKey }) {
+function extractCustomerEmail(payload = {}) {
+  const cust = payload.customer || {};
+  return String(cust.email || payload.email || payload.contact_email || '').trim().toLowerCase();
+}
+
+async function alreadySentForOrder({ clientId, orderId, statusKey, channel = 'whatsapp' }) {
   if (!clientId || !orderId || !statusKey) return false;
+  const channelFilter =
+    channel === 'whatsapp'
+      ? [{ channel: 'whatsapp' }, { channel: { $exists: false } }, { channel: '' }]
+      : [{ channel: 'email' }];
   const existing = await OrderStatusSent.findOne({
     clientId,
     orderId: String(orderId),
     statusKey,
+    $or: channelFilter,
   })
     .select('_id')
     .lean();
@@ -173,18 +195,19 @@ async function recordRuleSendOutcome(clientId, ruleId, outcome = {}) {
   }
 }
 
-async function recordSent({ clientId, orderId, statusKey, ruleId, phone }) {
+async function recordSent({ clientId, orderId, statusKey, ruleId, phone, email, channel = 'whatsapp' }) {
   try {
     await OrderStatusSent.create({
       clientId,
       orderId: String(orderId),
       statusKey,
+      channel,
       ruleId: String(ruleId || ''),
       phone: phone || '',
+      email: email || '',
       sentAt: new Date(),
     });
   } catch (err) {
-    /** Duplicate key races are fine — another worker beat us. */
     if (err?.code !== 11000) {
       log.warn(`recordSent failed: ${err.message}`);
     }
@@ -269,26 +292,21 @@ async function logRuleDispatchActivity({ client, payload, rule, status, result, 
   }
 }
 
-async function dispatchRule({ client, rule, statusKey, type, status, payload, phoneNorm, source }) {
+async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payload, phoneNorm, source }) {
   const orderId = String(payload.id || payload.order_id || '');
-  if (!orderId) return { skipped: true, reason: 'missing_order_id' };
 
-  if (await alreadySentForOrder({ clientId: client.clientId, orderId, statusKey })) {
-    return { skipped: true, reason: 'already_sent' };
+  if (await alreadySentForOrder({ clientId: client.clientId, orderId, statusKey, channel: 'whatsapp' })) {
+    return { sent: false, skipped: true, channel: 'whatsapp', reason: 'already_sent' };
   }
-
-  if (!ruleProductMatch(rule, payload)) {
-    return { skipped: true, reason: 'product_scope_no_match' };
-  }
-
-  if (!phoneNorm) return { skipped: true, reason: 'missing_phone' };
-
+  if (!phoneNorm) return { sent: false, skipped: true, channel: 'whatsapp', reason: 'missing_phone' };
   if (await isPhoneOptedOut(client.clientId, phoneNorm)) {
-    return { skipped: true, reason: 'opted_out' };
+    return { sent: false, skipped: true, channel: 'whatsapp', reason: 'opted_out' };
+  }
+  if (!rule.templateName) {
+    return { sent: false, skipped: true, channel: 'whatsapp', reason: 'missing_template' };
   }
 
   const { sendForAutomation } = require('../../services/templateSender');
-
   const result = await sendForAutomation({
     clientId: client.clientId,
     phone: phoneNorm,
@@ -318,24 +336,13 @@ async function dispatchRule({ client, rule, statusKey, type, status, payload, ph
       statusKey,
       ruleId: rule.id,
       phone: phoneNorm,
+      channel: 'whatsapp',
     });
-    await recordRuleSendOutcome(client.clientId, rule.id, { sent: true });
-    await logRuleDispatchActivity({
-      client,
-      payload,
-      rule,
-      status,
-      result,
-      source,
-    });
-    return { sent: true, ruleId: rule.id };
+    await logRuleDispatchActivity({ client, payload, rule, status, result, source });
+    return { sent: true, channel: 'whatsapp', ruleId: rule.id };
   }
 
   const failReason = result?.whatsapp?.reason || result?.failureCode || 'send_failed';
-  await recordRuleSendOutcome(client.clientId, rule.id, {
-    sent: false,
-    reason: failReason,
-  });
   await logRuleDispatchActivity({
     client,
     payload,
@@ -344,11 +351,162 @@ async function dispatchRule({ client, rule, statusKey, type, status, payload, ph
     result: { whatsapp: { sent: false }, reason: failReason },
     source,
   });
+  return { sent: false, channel: 'whatsapp', ruleId: rule.id, reason: failReason };
+}
+
+async function sendEmailForRule({ client, rule, statusKey, payload, emailRaw, lead, source }) {
+  const orderId = String(payload.id || payload.order_id || '');
+
+  if (await alreadySentForOrder({ clientId: client.clientId, orderId, statusKey, channel: 'email' })) {
+    return { sent: false, skipped: true, channel: 'email', reason: 'already_sent' };
+  }
+  if (!emailRaw) return { sent: false, skipped: true, channel: 'email', reason: 'missing_email' };
+
+  const context = buildOrderEmailContext(payload, lead, client);
+  const template = await resolveOrderEmailTemplate({
+    rule,
+    clientId: client.clientId,
+    context,
+  });
+  if (!template.ok) {
+    return { sent: false, channel: 'email', reason: template.reason || 'missing_email_template' };
+  }
+
+  const { sendEnvelope } = require('../messaging/sendEnvelope');
+  const result = await sendEnvelope({
+    clientId: client.clientId,
+    channel: 'email',
+    intent: 'utility',
+    contactId: lead?._id,
+    contact: lead?._id ? undefined : { email: emailRaw },
+    payload: { subject: template.subject, html: template.html },
+    idempotency: { key: `order-auto:${rule.id}:${orderId}:${statusKey}:email` },
+    context: {
+      source: 'orderStatusAutomationHandler',
+      ruleId: rule.id,
+      orderId,
+      statusKey,
+      subject: template.subject,
+      recipientEmail: emailRaw,
+    },
+  }).catch((err) => {
+    log.warn(`order email sendEnvelope threw: ${err.message}`);
+    return { status: 'failed', reason: err.message };
+  });
+
+  if (result?.status === 'sent' || result?.status === 'duplicate') {
+    await recordSent({
+      clientId: client.clientId,
+      orderId,
+      statusKey,
+      ruleId: rule.id,
+      email: emailRaw,
+      channel: 'email',
+    });
+    return { sent: true, channel: 'email', ruleId: rule.id, messageId: result.messageId };
+  }
+
+  return {
+    sent: false,
+    channel: 'email',
+    ruleId: rule.id,
+    reason: result?.reason || result?.blockedBy || 'send_failed',
+  };
+}
+
+async function dispatchRule({ client, rule, statusKey, type, status, payload, phoneNorm, source }) {
+  const orderId = String(payload.id || payload.order_id || '');
+  if (!orderId) return { skipped: true, reason: 'missing_order_id' };
+
+  if (!ruleProductMatch(rule, payload)) {
+    return { skipped: true, reason: 'product_scope_no_match' };
+  }
+
+  const channels = normalizeRuleChannels(rule);
+  const sendWa = channels.includes('whatsapp');
+  const sendEmail = channels.includes('email');
+  const sendWhen = rule.emailConfig?.sendWhen || 'always';
+  const emailRaw = extractCustomerEmail(payload);
+
+  let lead = null;
+  if (emailRaw) {
+    lead = await AdLead.findOne({ clientId: client.clientId, email: emailRaw })
+      .select('_id name email phoneNumber emailBounced emailUnsubscribed')
+      .lean();
+  }
+
+  let waOutcome = null;
+  if (sendWa) {
+    waOutcome = await sendWhatsAppForRule({
+      client,
+      rule,
+      statusKey,
+      type,
+      status,
+      payload,
+      phoneNorm,
+      source,
+    });
+  }
+
+  const waFailedOrSkipped =
+    !waOutcome ||
+    waOutcome.skipped ||
+    waOutcome.sent === false;
+
+  const shouldSendEmail =
+    sendEmail &&
+    (sendWhen === 'always' ||
+      sendWhen === 'both_simultaneously' ||
+      (sendWhen === 'no_phone' && !phoneNorm) ||
+      (sendWhen === 'wa_failed' && (!sendWa || waFailedOrSkipped)));
+
+  let emailOutcome = null;
+  if (shouldSendEmail) {
+    emailOutcome = await sendEmailForRule({
+      client,
+      rule,
+      statusKey,
+      payload,
+      emailRaw,
+      lead,
+      source,
+    });
+  }
+
+  const anySent = !!waOutcome?.sent || !!emailOutcome?.sent;
+  await recordRuleSendOutcome(client.clientId, rule.id, {
+    sent: anySent,
+    reason: anySent
+      ? null
+      : emailOutcome?.reason || waOutcome?.reason || 'no_channel_sent',
+  });
+
+  if (anySent) {
+    return {
+      sent: true,
+      ruleId: rule.id,
+      whatsapp: waOutcome,
+      email: emailOutcome,
+    };
+  }
+
+  if (waOutcome?.skipped && emailOutcome?.skipped) {
+    return {
+      skipped: true,
+      ruleId: rule.id,
+      reason: emailOutcome.reason || waOutcome.reason,
+      whatsapp: waOutcome,
+      email: emailOutcome,
+    };
+  }
 
   return {
     sent: false,
     ruleId: rule.id,
-    reason: failReason,
+    reason: emailOutcome?.reason || waOutcome?.reason || 'no_channel_sent',
+    whatsapp: waOutcome,
+    email: emailOutcome,
   };
 }
 
@@ -509,6 +667,7 @@ module.exports = {
   processShipmentStatusAutomations,
   readStatusesFromPayload,
   buildStatusKey,
+  ruleMatchesStatus,
   FULFILLMENT_VALUES,
   FINANCIAL_VALUES,
   SHIPMENT_VALUES,

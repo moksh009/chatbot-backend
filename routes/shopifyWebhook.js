@@ -153,34 +153,80 @@ async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic, 
 
 async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) {
     const orderId = fulfillment?.order_id;
-    if (!orderId) return;
+    if (!orderId) return { ndrResult: null, shipmentStatus: '' };
     const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
-    const { maybeSendNdrRescueFromFulfillment, NDR_SHIPMENT_TRIGGERS } = require('../utils/commerce/rtoProtectionService');
+    const { maybeSendNdrRescueFromFulfillment, NDR_SHIPMENT_TRIGGERS, rtoCfg } = require('../utils/commerce/rtoProtectionService');
+    const { SHIPMENT_VALUES } = require('../utils/commerce/orderStatusAutomationHandler');
+    const { recordObservedShopifyStatus } = require('../services/logisticsEligibilityService');
     const oidStr = String(orderId);
     const prev = await Order.findOne({ clientId: client.clientId, shopifyOrderId: oidStr }).lean();
     if (!prev) {
         log.warn(`[Webhook] fulfillment for missing local order shopify:${oidStr}`);
-        return;
+        return { ndrResult: null, shipmentStatus: '' };
     }
     const prevStatus = prev.status || 'pending';
     const shipmentStatus = String(
         fulfillment.shipment_status || fulfillment.status || ''
     ).toLowerCase();
 
+    if (shipmentStatus) {
+        await recordObservedShopifyStatus(client.clientId, shipmentStatus).catch(() => {});
+    }
+
     if (NDR_SHIPMENT_TRIGGERS.has(shipmentStatus)) {
-        await maybeSendNdrRescueFromFulfillment(client, fulfillment, io).catch((e) =>
-            log.warn(`[RTOProtection] NDR path failed: ${e.message}`)
-        );
+        let ndrResult = null;
+        if (rtoCfg(client).enableNdrRescue) {
+            ndrResult = await maybeSendNdrRescueFromFulfillment(client, fulfillment, io).catch((e) => {
+                log.warn(`[RTOProtection] NDR path failed: ${e.message}`);
+                return { ok: false, error: e.message };
+            });
+        }
         const urls = fulfillment.tracking_urls;
         const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
         const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
         const doc = await Order.findOneAndUpdate(
             { clientId: client.clientId, shopifyOrderId: oidStr },
-            { $set: { trackingUrl, trackingNumber, fulfillmentStatus: shipmentStatus || prev.fulfillmentStatus } },
+            {
+                $set: {
+                    trackingUrl,
+                    trackingNumber,
+                    fulfillmentStatus: shipmentStatus || prev.fulfillmentStatus,
+                    lastShipmentStatus: shipmentStatus,
+                    lastShipmentStatusAt: new Date(),
+                },
+            },
             { new: true }
         );
         if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
-        return;
+        return { ndrResult, shipmentStatus };
+    }
+
+    /** Granular courier statuses — SAC `sys_shipment_*` rules handle WhatsApp.
+     *  Skip legacy coarse shipped/delivered dispatch to avoid duplicate messages. */
+    if (SHIPMENT_VALUES.has(shipmentStatus)) {
+        const urls = fulfillment.tracking_urls;
+        const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
+        const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
+        const isDelivered =
+            shipmentStatus === 'delivered' ||
+            shipmentStatus === 'delivery';
+        const platformStatus = isDelivered ? 'delivered' : prev.status || 'shipped';
+        const doc = await Order.findOneAndUpdate(
+            { clientId: client.clientId, shopifyOrderId: oidStr },
+            {
+                $set: {
+                    status: isDelivered ? 'delivered' : (prev.status === 'delivered' ? 'delivered' : platformStatus),
+                    fulfillmentStatus: shipmentStatus,
+                    trackingUrl,
+                    trackingNumber,
+                    lastShipmentStatus: shipmentStatus,
+                    lastShipmentStatusAt: new Date(),
+                },
+            },
+            { new: true }
+        );
+        if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
+        return { ndrResult: null, shipmentStatus };
     }
 
     const urls = fulfillment.tracking_urls;
@@ -205,14 +251,14 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
         { new: true }
     );
     if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
-    if (!doc) return;
+    if (!doc) return { ndrResult: null, shipmentStatus };
 
     const prevNorm = String(prevStatus || '').toLowerCase();
     const prevShipped = prevNorm === 'shipped' || prevNorm === 'delivered';
     const prevTrackSig = `${prev.trackingUrl || ''}|${prev.trackingNumber || ''}`;
     const newTrackSig = `${doc.trackingUrl || ''}|${doc.trackingNumber || ''}`;
     if (prevShipped && prevNorm === platformStatus && newTrackSig === prevTrackSig) {
-        return;
+        return { ndrResult: null, shipmentStatus };
     }
     const trackingOnlyRefresh =
         prevShipped && newTrackSig !== prevTrackSig && !!(doc.trackingUrl || doc.trackingNumber);
@@ -228,6 +274,7 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
         source: `shopify_webhook:${topic}`,
         options: { trackingOnlyRefresh },
     });
+    return { ndrResult: null, shipmentStatus };
 }
 
 // POST /api/shopify/webhook
@@ -357,7 +404,7 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 break;
             case 'fulfillments/create':
             case 'fulfillments/update': {
-                await handleFulfillmentWebhookForAdmin(client, data, topic, io);
+                const fulfillmentMeta = await handleFulfillmentWebhookForAdmin(client, data, topic, io);
                 /** WS-2: fulfillment webhooks must also drive the new
                  *  `sys_fulfillment_*` rules. The fulfillment payload lacks
                  *  customer + financial_status, so refetch the full order
@@ -378,17 +425,14 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                             }).catch((e) =>
                                 log.error(`OrderStatus automation ${topic} failed: ${e.message}`)
                             );
-                            /** Delivery tracking rules — skip when RTO NDR already handled
-                             *  failure / attempted_delivery (same webhook event). */
                             const shipmentStatus = String(
-                                data.shipment_status || data.status || ''
+                                fulfillmentMeta?.shipmentStatus ||
+                                data.shipment_status ||
+                                data.status ||
+                                ''
                             ).toLowerCase();
-                            const { rtoCfg, NDR_SHIPMENT_TRIGGERS } = require('../utils/commerce/rtoProtectionService');
-                            const ndrHandled =
-                                rtoCfg(client).enableNdrRescue &&
-                                NDR_SHIPMENT_TRIGGERS.has(shipmentStatus) &&
-                                (shipmentStatus === 'failure' || shipmentStatus === 'attempted_delivery');
-                            if (!ndrHandled) {
+                            const { shouldSkipSacForNdr } = require('../utils/commerce/rtoProtectionService');
+                            if (!shouldSkipSacForNdr(client, shipmentStatus, fulfillmentMeta?.ndrResult)) {
                                 await processShipmentStatusAutomations({
                                     client,
                                     fulfillment: data,

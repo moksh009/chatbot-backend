@@ -205,6 +205,7 @@ router.post('/:clientId', protect, async (req, res) => {
     const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
     const onlyEmailSteps = hasEmailSteps && (steps || []).every((s) => String(s.type || '').toLowerCase() === 'email');
+    const hasWaSteps = (steps || []).some((s) => String(s.type || '').toLowerCase() !== 'email');
 
     for (const leadInput of leads) {
       let { leadId, phone, email } = leadInput;
@@ -227,6 +228,19 @@ router.post('/:clientId', protect, async (req, res) => {
 
       if (onlyEmailSteps && !String(email || '').trim()) {
         errors.push({ leadId, message: 'Contact has no email address' });
+        continue;
+      }
+
+      const normalizedPhone = String(phone || '').replace(/\D/g, '');
+      const normalizedEmail = String(email || '').trim();
+
+      if (!hasEmailSteps && hasWaSteps && normalizedPhone.length < 10) {
+        errors.push({ leadId, message: 'Contact has no valid phone number' });
+        continue;
+      }
+
+      if (hasEmailSteps && hasWaSteps && !normalizedEmail && normalizedPhone.length < 10) {
+        errors.push({ leadId, message: 'Contact needs email or phone for this hybrid sequence' });
         continue;
       }
 
@@ -442,17 +456,54 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Sequence template not found' });
     }
 
-    const leads = await AdLead.find({
-      clientId,
-      importBatchId: resolvedBatchId,
-      phoneNumber: { $exists: true, $ne: '' }
-    }).select('_id name phoneNumber email').lean();
+    const templateHasEmail = (template.steps || []).some(
+      (s) => String(s.type || '').toLowerCase() === 'email'
+    );
+    const templateHasWa = (template.steps || []).some(
+      (s) => String(s.type || '').toLowerCase() !== 'email'
+    );
+    const templateOnlyEmail = templateHasEmail && !templateHasWa;
 
-    if (!leads.length) {
-      return res.status(400).json({ success: false, message: 'No leads found in this imported list' });
+    const client = await Client.findOne({ clientId })
+      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected')
+      .lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
+    if (templateHasEmail) {
+      const { isWorkspaceEmailReady } = require('../utils/core/emailService');
+      if (!isWorkspaceEmailReady(client)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Connect Gmail in Settings before enrolling email sequence playbooks.',
+        });
+      }
+    }
+
+    const leadQuery = { clientId, importBatchId: resolvedBatchId };
+    if (templateOnlyEmail) {
+      leadQuery.email = { $exists: true, $ne: '', $regex: /@/i };
+    } else if (templateHasWa && !templateHasEmail) {
+      leadQuery.phoneNumber = { $exists: true, $ne: '' };
+    } else {
+      leadQuery.$or = [
+        { phoneNumber: { $exists: true, $ne: '' } },
+        { email: { $exists: true, $ne: '', $regex: /@/i } },
+      ];
+    }
+
+    const leads = await AdLead.find(leadQuery).select('_id name phoneNumber email').lean();
+
+    if (!leads.length) {
+      return res.status(400).json({
+        success: false,
+        message: templateOnlyEmail
+          ? 'No leads with email addresses found in this imported list'
+          : 'No eligible leads found in this imported list',
+      });
+    }
+
     const templateFailures = await validateSequenceSteps(template?.steps || [], client.syncedMetaTemplates || [], clientId);
     if (templateFailures.length) {
       console.warn('[Sequences][ImportedPlaybookTemplatePreflightFailed]', {
@@ -466,9 +517,6 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
         message: 'Selected playbook includes WhatsApp templates that are not approved/eligible.',
         details: templateFailures
       });
-    }
-    if (!client) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
     }
     const limitCheck = await checkLimit(client._id, 'sequences');
     if (!limitCheck.allowed) {
@@ -485,6 +533,22 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
 
     for (const lead of leads) {
       const lid = String(lead._id);
+      const normalizedPhone = String(lead.phoneNumber || '').replace(/\D/g, '');
+      const normalizedEmail = String(lead.email || '').trim();
+
+      if (templateOnlyEmail && !normalizedEmail) {
+        errors.push({ leadId: lead._id, message: 'Contact has no email address' });
+        continue;
+      }
+      if (templateHasWa && !templateHasEmail && normalizedPhone.length < 10) {
+        errors.push({ leadId: lead._id, message: 'Contact has no valid phone number' });
+        continue;
+      }
+      if (templateHasEmail && templateHasWa && !normalizedEmail && normalizedPhone.length < 10) {
+        errors.push({ leadId: lead._id, message: 'Contact needs email or phone for this hybrid sequence' });
+        continue;
+      }
+
       let activeCount = countMap.get(lid) || 0;
 
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {

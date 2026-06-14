@@ -922,6 +922,17 @@ router.post('/push-local', protect, async (req, res) => {
         }
 
         if (!local) {
+            const { blueprintToWorkspaceTemplate } = require('../constants/orderMessageWaBlueprints');
+            const { ensureMetaTemplateDraftFromBlueprint } = require('../utils/meta/orderMessageBlueprintService');
+            const bpLocal = blueprintToWorkspaceTemplate(templateName);
+            if (bpLocal) {
+                await ensureMetaTemplateDraftFromBlueprint(clientId, templateName);
+                local = bpLocal;
+                source = 'order_message_blueprint';
+            }
+        }
+
+        if (!local) {
             return res.status(404).json({ success: false, message: 'Template not found in workspace. Sync from Meta or generate from the wizard first.' });
         }
 

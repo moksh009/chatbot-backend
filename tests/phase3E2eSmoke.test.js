@@ -15,6 +15,14 @@ function testVariantDeterministic() {
   assert.strictEqual(a.variantId, b.variantId);
 }
 
+function testEmailConsentBlockSkipped() {
+  const o = classifyEnvelopeOutcome(
+    { status: 'blocked', blockedBy: 'consent', reason: 'email_opted_out' },
+    1
+  );
+  assert.strictEqual(o.action, 'skipped');
+}
+
 function testConsentBlockCancelled() {
   const o = classifyEnvelopeOutcome({ status: 'blocked', blockedBy: 'consent', reason: 'opted_out' }, 1);
   assert.strictEqual(o.action, 'cancelled');
@@ -29,6 +37,7 @@ let failed = 0;
 for (const [name, fn] of [
   ['variantDeterministic', testVariantDeterministic],
   ['consentBlockCancelled', testConsentBlockCancelled],
+  ['emailConsentBlockSkipped', testEmailConsentBlockSkipped],
   ['rateLimitRetry', testRateLimitRetry],
 ]) {
   try {

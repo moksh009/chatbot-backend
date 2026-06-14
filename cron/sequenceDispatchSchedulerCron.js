@@ -29,7 +29,7 @@ async function runSequenceDispatchSchedulerTick() {
         ['pending', 'queued', 'retrying'].includes(step.status);
       if (!dueStep) return;
       if (step.status === 'pending') step.status = 'queued';
-      const channel = step.type === 'email' ? 'email' : 'whatsapp';
+      const channel = String(step.type || '').toLowerCase() === 'email' ? 'email' : 'whatsapp';
       enqueueSequenceStepJob({
         sequenceId: String(seq._id),
         stepIdx: idx,

@@ -432,7 +432,21 @@ router.post('/library/seed', protect, async (req, res) => {
 
     const entry =
       PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === key || t.metaName === key) || getPrebuiltByKey(key);
-    if (!entry) return res.status(404).json({ success: false, message: 'Template not in library' });
+
+    const { ensureMetaTemplateDraftFromBlueprint } = require('../utils/meta/orderMessageBlueprintService');
+
+    if (!entry) {
+      const fromBlueprint = await ensureMetaTemplateDraftFromBlueprint(clientId, key);
+      if (fromBlueprint) {
+        return res.json({
+          success: true,
+          message: 'Order message template ready — review and push to Meta',
+          templateId: String(fromBlueprint._id),
+          template: fromBlueprint,
+        });
+      }
+      return res.status(404).json({ success: false, message: 'Template not in library' });
+    }
 
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });

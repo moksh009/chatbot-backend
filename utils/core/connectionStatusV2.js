@@ -1,6 +1,7 @@
 'use strict';
 
 const { buildConnectionStatusPayload, decryptToken, isValidShopDomain } = require('./connectionStatus');
+const { isWorkspaceEmailReady } = require('./emailService');
 const {
   getEffectiveWhatsAppAccessToken,
   getEffectiveWhatsAppPhoneNumberId,
@@ -156,7 +157,18 @@ async function buildConnectionStatusContract(client) {
       issues: [],
     },
     email: {
-      connected: !!(client.emailUser || client.resendApiKey || client.emailTransport),
+      connected:
+        isWorkspaceEmailReady(client) &&
+        (client.emailMethod !== 'gmail_oauth' ||
+          (await getCachedOrProbe(client, 'gmail').catch(() => null))?.ok !== false),
+      method: client.emailMethod || null,
+      address: client.emailUser || client.gmailAddress || null,
+      hasRefreshToken: !!client.gmailRefreshToken,
+      hasAccessToken: !!client.gmailAccessToken,
+      tokenStatus: tokenStatusFrom(
+        client.gmailRefreshToken || client.gmailAccessToken,
+        await getCachedOrProbe(client, 'gmail').catch(() => null)
+      ),
       transport: client.resendApiKey ? 'resend' : client.emailUser ? 'gmail' : client.emailTransport || null,
       issues: [],
     },

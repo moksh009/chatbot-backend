@@ -8,9 +8,17 @@ const PERMANENT_BLOCKS = new Set([
   'template_not_approved',
   'channel_disabled',
   'invalid_contact',
+  'email_credentials',
+  'whatsapp_credentials',
 ]);
 
 const CONSENT_BLOCKS = new Set(['consent', 'suppression']);
+
+const EMAIL_SKIP_REASONS = new Set([
+  'email_opted_out',
+  'email_bounced',
+  'recipient_opted_out',
+]);
 
 function nextAttemptDelaySec(attempts) {
   const idx = Math.min(Math.max(attempts, 1), RETRY_DELAYS_SEC.length) - 1;
@@ -29,6 +37,9 @@ function classifyEnvelopeOutcome(result, attempts = 0) {
     return { action: 'sent', duplicate: true, recoveredFromDuplicate: true };
   }
   const blockedBy = result.blockedBy || result.reason;
+  if (result.status === 'blocked' && result.blockedBy === 'consent' && EMAIL_SKIP_REASONS.has(result.reason)) {
+    return { action: 'skipped', reason: result.reason };
+  }
   if (result.blockedBy === 'rate_limit' || result.retryAfter) {
     if (attempts >= MAX_ATTEMPTS) {
       return { action: 'failed', permanent: true, reason: 'max_retries_rate_limit' };

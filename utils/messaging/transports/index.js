@@ -1,5 +1,5 @@
 const WhatsApp = require('../../meta/whatsapp');
-const { sendEmail } = require('../../core/emailService');
+const { sendWorkspaceEmailDirect } = require('../../core/emailService');
 const { sendInstagram } = require('./sendInstagram');
 
 async function sendWhatsApp({ client, to, payload }) {
@@ -26,16 +26,17 @@ async function sendWhatsApp({ client, to, payload }) {
 }
 
 async function sendEmailMessage({ client, to, payload }) {
-  const ok = await sendEmail(client, {
+  const sendOut = await sendWorkspaceEmailDirect(client, {
     to,
     subject: payload.subject || 'Store update',
     html: payload.html || payload.text || '',
-    headers: payload.headers || {},
+    text: payload.text,
+    format: payload.format,
   });
-  if (!ok) {
-    throw new Error('email_send_failed');
+  if (!sendOut?.success) {
+    throw new Error(sendOut?.error || 'email_send_failed');
   }
-  return { messageId: null };
+  return { messageId: sendOut.messageId || null };
 }
 
 module.exports = {

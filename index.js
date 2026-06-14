@@ -297,11 +297,13 @@ const commerceHealthRoutes = require('./routes/commerceHealth');
 app.use('/api/commerce', commerceHealthRoutes);
 app.use('/api/hub-health', require('./routes/hubHealth'));
 app.use('/api/email-hub', require('./routes/emailHub'));
+app.use('/api/email', require('./routes/emailTracking'));
 app.use('/api/merchant-playbook', require('./routes/merchantPlaybook'));
 const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
+app.use('/api/logistics', require('./routes/logisticsInbound'));
 const shopifyCatalogRoutes = require('./routes/shopifyCatalog');
 const checkoutShortLinkRoutes = require('./routes/checkoutShortLink');
 app.use('/api/shopify-catalog', shopifyCatalogRoutes);
@@ -411,6 +413,11 @@ app.use('/api/shopify-pixel', shopifyPixelRoutes);
 app.get('/api/health', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   await HealthController.checkHealth(req, res);
+});
+app.get('/api/capabilities', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const { getApiCapabilities } = require('./constants/apiCapabilities');
+  res.json(getApiCapabilities());
 });
 app.get('/api/metrics/summary', HealthController.metricsSummary);
 

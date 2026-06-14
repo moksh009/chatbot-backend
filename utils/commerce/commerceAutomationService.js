@@ -642,27 +642,59 @@ async function upsertAutomation(clientId, automation = {}) {
     (existing?.isActive !== true) &&
     automation.actionType !== 'enroll_sequence' &&
     (existing?.actionType !== 'enroll_sequence' || automation.actionType === 'send_template');
+  const ruleChannels = Array.isArray(automation.channels)
+    ? automation.channels
+    : Array.isArray(existing?.channels)
+      ? existing.channels
+      : ['whatsapp'];
+  const wantsWhatsApp = ruleChannels.includes('whatsapp');
+  const wantsEmail = ruleChannels.includes('email');
+
   if (activatingNow) {
-    const tpl = automation.templateName || existing?.templateName || '';
-    if (!tpl) {
-      const err = new Error('Choose a WhatsApp template before activating this rule.');
-      err.code = 'TEMPLATE_REQUIRED';
-      err.status = 400;
-      throw err;
+    const { ruleIdToShipmentStatus } = require('../../constants/logisticsPartnerRegistry');
+    const { assertShipmentRuleEligible } = require('../../services/logisticsEligibilityService');
+    if (ruleIdToShipmentStatus(automation.id)) {
+      await assertShipmentRuleEligible(clientId, automation.id);
     }
-    const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
-    const hit = synced.find((t) => String(t?.name) === String(tpl));
-    const status = String(hit?.status || '').toUpperCase();
-    if (status !== 'APPROVED' && status !== 'ACTIVE') {
-      const reason = !hit
-        ? `Template "${tpl}" is not synced from Meta yet.`
-        : status === 'REJECTED'
-          ? `Template "${tpl}" was rejected by Meta. Edit and resubmit before activating.`
-          : `Template "${tpl}" is ${status.toLowerCase() || 'not approved'} on Meta. Wait for approval before activating.`;
-      const err = new Error(reason);
-      err.code = 'TEMPLATE_NOT_APPROVED';
-      err.status = 400;
-      throw err;
+    if (wantsWhatsApp) {
+      const tpl = automation.templateName || existing?.templateName || '';
+      if (!tpl) {
+        const err = new Error('Choose a WhatsApp template before activating this rule.');
+        err.code = 'TEMPLATE_REQUIRED';
+        err.status = 400;
+        throw err;
+      }
+      const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+      const hit = synced.find((t) => String(t?.name) === String(tpl));
+      const status = String(hit?.status || '').toUpperCase();
+      if (status !== 'APPROVED' && status !== 'ACTIVE') {
+        const reason = !hit
+          ? `Template "${tpl}" is not synced from Meta yet.`
+          : status === 'REJECTED'
+            ? `Template "${tpl}" was rejected by Meta. Edit and resubmit before activating.`
+            : `Template "${tpl}" is ${status.toLowerCase() || 'not approved'} on Meta. Wait for approval before activating.`;
+        const err = new Error(reason);
+        err.code = 'TEMPLATE_NOT_APPROVED';
+        err.status = 400;
+        throw err;
+      }
+    }
+    if (wantsEmail) {
+      const { isWorkspaceEmailReady } = require('../core/emailService');
+      const { ruleHasEmailConfig } = require('../core/orderEmailMergeFields');
+      if (!isWorkspaceEmailReady(client)) {
+        const err = new Error('Connect Gmail in Settings before activating email on this rule.');
+        err.code = 'EMAIL_NOT_CONNECTED';
+        err.status = 400;
+        throw err;
+      }
+      const mergedRule = { ...existing, ...automation, channels: ruleChannels };
+      if (!ruleHasEmailConfig(mergedRule)) {
+        const err = new Error('Choose an email template or subject/body before activating email on this rule.');
+        err.code = 'EMAIL_TEMPLATE_REQUIRED';
+        err.status = 400;
+        throw err;
+      }
     }
   }
 
@@ -712,6 +744,13 @@ async function upsertAutomation(clientId, automation = {}) {
       normalizeAutomationMappings(automation.variableMappings)
     ),
     customVariableValues: automation.customVariableValues || {},
+    channels: ruleChannels.filter((c) => c === 'whatsapp' || c === 'email').length
+      ? ruleChannels.filter((c) => c === 'whatsapp' || c === 'email')
+      : ['whatsapp'],
+    emailConfig:
+      automation.emailConfig !== undefined
+        ? automation.emailConfig
+        : existing?.emailConfig ?? null,
     meta: automation.meta || {},
   };
 
@@ -804,6 +843,11 @@ async function toggleAutomation(clientId, automationId, { active } = {}) {
   if (active === true && existing.actionType !== 'enroll_sequence') {
     if (!existing.templateName) {
       throw new Error('Choose a WhatsApp template before activating this rule.');
+    }
+    const { ruleIdToShipmentStatus } = require('../../constants/logisticsPartnerRegistry');
+    const { assertShipmentRuleEligible } = require('../../services/logisticsEligibilityService');
+    if (ruleIdToShipmentStatus(automationId)) {
+      await assertShipmentRuleEligible(clientId, automationId);
     }
     /** WS-2 guard: refuse to activate a rule whose template is not APPROVED
      *  on Meta. Without this, the webhook silently logs `not_approved` and

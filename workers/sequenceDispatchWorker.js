@@ -12,6 +12,10 @@ const { classifyEnvelopeOutcome } = require('../utils/messaging/dispatch/dispatc
 const { enqueueSequenceStepJob } = require('../utils/messaging/queues/sequenceDispatchQueue');
 const { getConnection } = require('../utils/messaging/queues/queueConnection');
 const { mergeEmailForLead } = require('../utils/core/emailMergeFields');
+const {
+  WHATSAPP_CREDENTIAL_SELECT,
+  EMAIL_CREDENTIAL_SELECT,
+} = require('../utils/meta/clientWhatsAppCreds');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { emitToClient } = require('../utils/core/socket');
 
@@ -22,13 +26,14 @@ async function emitSequenceProgress(clientId, sequenceId) {
     const steps = fresh.steps || [];
     const sent = steps.filter((s) => s.status === 'sent').length;
     const failed = steps.filter((s) => s.status === 'failed').length;
+    const skipped = steps.filter((s) => s.status === 'skipped').length;
     const pending = steps.filter((s) =>
       ['pending', 'queued', 'processing', 'retrying'].includes(s.status)
     ).length;
     emitToClient(clientId, 'sequence:progress', {
       sequenceId: String(sequenceId),
       status: fresh.status,
-      counts: { sent, failed, pending, total: steps.length },
+      counts: { sent, failed, skipped, pending, total: steps.length },
     });
   } catch {
     /* optional realtime */
@@ -37,6 +42,20 @@ async function emitSequenceProgress(clientId, sequenceId) {
 
 const WORKER_ID = `${os.hostname()}:${process.pid}`;
 const CONCURRENCY = Number(process.env.PHASE3_SEQUENCE_CONCURRENCY || 100);
+
+function resolveStepChannel(step) {
+  return String(step?.type || 'whatsapp').toLowerCase() === 'email' ? 'email' : 'whatsapp';
+}
+
+function normalizePhone(lead, seq) {
+  return String(lead?.phoneNumber || seq?.phone || '').replace(/\D/g, '');
+}
+
+function normalizeEmail(lead, seq) {
+  return String(lead?.email || seq?.email || '')
+    .trim()
+    .toLowerCase();
+}
 
 async function maybeFinalizeSequence(sequenceId, clientId) {
   const fresh = await FollowUpSequence.findById(sequenceId).lean();
@@ -62,22 +81,65 @@ async function maybeFinalizeSequence(sequenceId, clientId) {
   }
 }
 
+async function markStepSkipped(sequenceId, stepIdx, fromStatus, reason) {
+  const from = fromStatus === 'processing' ? 'processing' : fromStatus;
+  await transitionSequenceStep(sequenceId, stepIdx, from, 'skipped', {
+    failureReason: reason,
+    skipReason: reason,
+    lockedBy: null,
+    lockedAt: null,
+  });
+}
+
 async function processSequenceDispatchJob(job) {
-  const { sequenceId, stepIdx, clientId, channel = 'whatsapp' } = job.data;
+  const { sequenceId, stepIdx, clientId } = job.data;
   const seq = await FollowUpSequence.findById(sequenceId);
   if (!seq || seq.status !== 'active') return;
   const step = seq.steps?.[stepIdx];
   if (!step) return;
 
+  const stepChannel = resolveStepChannel(step);
   const fromStatus = step.status === 'pending' ? 'pending' : step.status;
   if (!['queued', 'pending', 'retrying'].includes(fromStatus)) return;
 
-  const client = await Client.findOne({ clientId }).lean();
+  const lead = await AdLead.findById(seq.leadId).lean();
+  const phone = normalizePhone(lead, seq);
+  const email = normalizeEmail(lead, seq);
+
+  if (stepChannel === 'email' && (!email || !email.includes('@'))) {
+    await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+      lockedBy: WORKER_ID,
+      lockedAt: new Date(),
+      attempts: (step.attempts || 0) + 1,
+      lastAttemptAt: new Date(),
+    });
+    await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_email');
+    await maybeFinalizeSequence(sequenceId, clientId);
+    await emitSequenceProgress(clientId, sequenceId);
+    return;
+  }
+
+  if (stepChannel === 'whatsapp' && phone.length < 10) {
+    await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+      lockedBy: WORKER_ID,
+      lockedAt: new Date(),
+      attempts: (step.attempts || 0) + 1,
+      lastAttemptAt: new Date(),
+    });
+    await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_phone');
+    await maybeFinalizeSequence(sequenceId, clientId);
+    await emitSequenceProgress(clientId, sequenceId);
+    return;
+  }
+
+  const credSelect =
+    stepChannel === 'email' ? EMAIL_CREDENTIAL_SELECT : WHATSAPP_CREDENTIAL_SELECT;
+  const client = await Client.findOne({ clientId }).select(credSelect).lean();
   if (!client) return;
 
-  const gate = await acquire({ client, clientId, channel });
+  const gate = await acquire({ client, clientId, channel: stepChannel });
   if (!gate.acquired) {
-    await enqueueSequenceStepJob(job.data, { delay: (gate.retryAfter || 2) * 1000 });
+    await enqueueSequenceStepJob({ ...job.data, channel: stepChannel }, { delay: (gate.retryAfter || 2) * 1000 });
     return;
   }
 
@@ -93,40 +155,52 @@ async function processSequenceDispatchJob(job) {
 
     hbKey = startHeartbeat({ workerId: WORKER_ID, type: 'sequence_step', recordId: sequenceId, stepIdx });
 
-    const lead = await AdLead.findById(seq.leadId).lean();
     let payload;
     let intent = 'marketing';
-    if (step.templateName) {
-      intent = intentFromTemplateCategory(step.templateCategory);
-      payload = { templateName: step.templateName, templateLanguage: 'en', components: [] };
-    } else if (step.type === 'email') {
+    if (stepChannel === 'email') {
       intent = 'marketing';
       const merged = mergeEmailForLead(
         step.subject || 'Follow up',
         step.content || '',
-        lead || {},
+        lead || { name: seq.name, email, phoneNumber: seq.phone },
         client
       );
       payload = {
         subject: merged.subject,
         html: merged.html,
       };
+    } else if (step.templateName) {
+      intent = intentFromTemplateCategory(step.templateCategory);
+      payload = { templateName: step.templateName, templateLanguage: 'en', components: [] };
     } else {
       payload = { text: step.content || '' };
     }
 
-    const result = await sendEnvelope({
+    const envelopeInput = {
       clientId,
-      channel: step.type === 'email' ? 'email' : 'whatsapp',
+      channel: stepChannel,
       intent,
       contactId: lead?._id,
-      contact: lead ? undefined : { phone: seq.phone },
       payload,
       idempotency: { key: `seq-step:${sequenceId}:${stepIdx}` },
-      context: { source: 'workers/sequenceDispatchWorker', sequenceId: String(sequenceId) },
-    });
+      context: {
+        source: 'workers/sequenceDispatchWorker',
+        sequenceId: String(sequenceId),
+        sequenceName: seq.name || 'Sequence',
+        stepIndex: stepIdx,
+        stepType: step.type || stepChannel,
+      },
+    };
 
+    if (stepChannel === 'email') {
+      envelopeInput.contact = lead?._id ? undefined : { email };
+    } else if (!lead?._id && phone) {
+      envelopeInput.contact = { phone: lead?.phoneNumber || seq.phone };
+    }
+
+    const result = await sendEnvelope(envelopeInput);
     const outcome = classifyEnvelopeOutcome(result, (step.attempts || 0) + 1);
+
     if (outcome.action === 'sent') {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', {
         sentAt: new Date(),
@@ -134,12 +208,18 @@ async function processSequenceDispatchJob(job) {
         lockedAt: null,
       });
       await maybeFinalizeSequence(sequenceId, clientId);
+    } else if (outcome.action === 'skipped') {
+      await markStepSkipped(sequenceId, stepIdx, 'processing', outcome.reason || 'skipped');
+      await maybeFinalizeSequence(sequenceId, clientId);
     } else if (outcome.action === 'retry') {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'retrying', {
         nextAttemptAt: new Date(Date.now() + outcome.delaySec * 1000),
         failureReason: outcome.reason,
       });
-      await enqueueSequenceStepJob(job.data, { delay: outcome.delaySec * 1000 });
+      await enqueueSequenceStepJob(
+        { ...job.data, channel: stepChannel },
+        { delay: outcome.delaySec * 1000 }
+      );
     } else {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
         failureReason: outcome.reason || 'failed',
@@ -160,7 +240,7 @@ async function processSequenceDispatchJob(job) {
     }
   } finally {
     if (hbKey) stopHeartbeat(hbKey);
-    await release({ clientId, channel });
+    await release({ clientId, channel: stepChannel });
     await emitSequenceProgress(clientId, sequenceId);
   }
 }

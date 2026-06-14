@@ -65,6 +65,17 @@ async function submitWorkspaceTemplateToMeta({ clientId, templateName, userId })
   }
 
   if (!local) {
+    const { blueprintToWorkspaceTemplate } = require('../../constants/orderMessageWaBlueprints');
+    const { ensureMetaTemplateDraftFromBlueprint } = require('./orderMessageBlueprintService');
+    const bpLocal = blueprintToWorkspaceTemplate(templateName);
+    if (bpLocal) {
+      await ensureMetaTemplateDraftFromBlueprint(clientId, templateName);
+      local = bpLocal;
+      source = 'order_message_blueprint';
+    }
+  }
+
+  if (!local) {
     return { success: false, status: 404, message: 'Template not found in workspace' };
   }
 

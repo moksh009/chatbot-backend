@@ -53,6 +53,7 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     lastAttemptAt: { type: Date, default: null },
     nextAttemptAt: { type: Date, default: null },
     failureReason: { type: String, default: null },
+    skipReason: { type: String, default: null },
     sentAt: Date,
     errorLog: String,
     condition: String,

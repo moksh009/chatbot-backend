@@ -66,7 +66,8 @@ const ScheduledMessageSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  timezone: { type: String, default: 'Asia/Kolkata' },
 });
 
 // Index for the cron job to quickly find pending messages

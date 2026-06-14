@@ -255,6 +255,9 @@ const adLeadSchema = new mongoose.Schema({
   optOutSource:     { type: String, default: "" },  // whatsapp_block | keyword_stop | unsubscribe_link | admin_manual | api
   optOutReason:     { type: String, default: "" },  // legacy compatibility field
   optOutKeyword:    { type: String, default: "" },  // the keyword they sent to opt out
+  emailBounced:         { type: Boolean, default: false },
+  emailBouncedAt:       { type: Date, default: null },
+  emailHardBounce:      { type: Boolean, default: false },
   optInHistory: [{
     event:     { type: String, enum: ['opted_in', 'opted_out', 'pending', 'confirmed'] },
     action:    String, // legacy compatibility

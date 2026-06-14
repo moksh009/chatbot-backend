@@ -263,7 +263,7 @@ async function sendTemplatedMessage({
   logMeta = {},
 }) {
   const { phone, email, clientId } = recipient || {};
-  if (!clientId || !phone) {
+  if (!clientId) {
     const result = { whatsapp: { skipped: true, reason: "missing_recipient" } };
     await logTemplateSendAttempt({
       clientId: clientId || "",
@@ -276,11 +276,60 @@ async function sendTemplatedMessage({
     });
     return result;
   }
+  if (channel === "whatsapp" && !phone) {
+    const result = { whatsapp: { skipped: true, reason: "no_phone" } };
+    await logTemplateSendAttempt({
+      clientId,
+      template,
+      recipient,
+      channel,
+      contextData,
+      result,
+      logMeta: { ...logMeta, failureCode: SEND_FAILURE_CODES.MISSING_RECIPIENT },
+    });
+    return result;
+  }
+  if (channel === "email" && !email) {
+    const result = { email: { skipped: true, reason: "no_email" } };
+    await logTemplateSendAttempt({
+      clientId,
+      template,
+      recipient,
+      channel,
+      contextData,
+      result,
+      logMeta: { ...logMeta, failureCode: SEND_FAILURE_CODES.MISSING_RECIPIENT },
+    });
+    return result;
+  }
+  if (channel === "both" && !phone && !email) {
+    const result = {
+      whatsapp: { skipped: true, reason: "no_phone" },
+      email: { skipped: true, reason: "no_email" },
+    };
+    await logTemplateSendAttempt({
+      clientId,
+      template,
+      recipient,
+      channel,
+      contextData,
+      result,
+      logMeta: { ...logMeta, failureCode: SEND_FAILURE_CODES.MISSING_RECIPIENT },
+    });
+    return result;
+  }
+
+  const leadQuery =
+    phone
+      ? { clientId, phoneNumber: phone }
+      : email
+        ? { clientId, email: String(email).trim().toLowerCase() }
+        : null;
 
   const [client, convo, lead] = await Promise.all([
     Client.findOne({ clientId }).lean(),
-    Conversation.findOne({ clientId, phone }).lean(),
-    AdLead.findOne({ clientId, phoneNumber: phone }).lean(),
+    phone ? Conversation.findOne({ clientId, phone }).lean() : Promise.resolve(null),
+    leadQuery ? AdLead.findOne(leadQuery).lean() : Promise.resolve(null),
   ]);
   if (!client) {
     const result = { whatsapp: { skipped: true, reason: "client_not_found" } };

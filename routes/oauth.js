@@ -1,6 +1,7 @@
 "use strict";
 
 const express = require("express");
+const { getGmailOAuthRedirectUri } = require('../utils/auth/googleOAuthConfig');
 const axios   = require("axios");
 const router  = express.Router();
 const Client  = require("../models/Client");
@@ -14,6 +15,29 @@ const {
   subscribeInstagramUserToWebhooks
 } = require('../utils/meta/igGraphApi');
 const { invalidateClientCache } = require('../utils/core/clientCache');
+
+async function bustGmailConnectionCaches(clientId) {
+  invalidateClientCache(clientId);
+  try {
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+  } catch (_) { /* non-fatal */ }
+  try {
+    const User = require('../models/User');
+    const users = await User.find({ clientId }).select('_id').limit(20).lean();
+    const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
+    for (const u of users) {
+      if (u?._id) invalidateBootstrapCache(String(u._id));
+    }
+  } catch (_) { /* non-fatal */ }
+  try {
+    const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
+    const redis = getAppRedis();
+    if (redis && isRedisReady(redis)) {
+      await redis.del(`workspace:connection:${clientId}`);
+    }
+  } catch (_) { /* non-fatal */ }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -504,8 +528,7 @@ router.get("/google/start/:clientId", protect, async (req, res) => {
     if (!client) return res.status(404).json({ error: "Client not found" });
 
     const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now() })).toString("base64");
-    const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
-    const redirectUri = `${base}/api/oauth/google/callback`;
+    const redirectUri = getGmailOAuthRedirectUri();
 
     if (!process.env.GCAL_CLIENT_ID) {
       return res.status(500).json({ error: "GCAL_CLIENT_ID is not configured" });
@@ -527,7 +550,8 @@ router.get("/google/start/:clientId", protect, async (req, res) => {
     authUrl.searchParams.set("access_type", "offline");
     authUrl.searchParams.set("prompt", "consent");
 
-    res.json({ authUrl: authUrl.toString() });
+    console.info('[Google OAuth] Gmail start redirect_uri=', redirectUri);
+    res.json({ authUrl: authUrl.toString(), redirectUri });
   } catch (err) {
     console.error("[Google OAuth] Start error:", err.message);
     res.status(500).json({ error: "Failed to generate Google OAuth URL" });
@@ -560,8 +584,7 @@ router.get("/google/callback", async (req, res) => {
       return res.redirect(`${frontendUrl}/settings?tab=email&google_error=config_error`);
     }
 
-    const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
-    const redirectUri = `${base}/api/oauth/google/callback`;
+    const redirectUri = getGmailOAuthRedirectUri();
 
     // Exchange code for tokens
     const tokenResp = await axios.post("https://oauth2.googleapis.com/token", null, {
@@ -582,22 +605,23 @@ router.get("/google/callback", async (req, res) => {
     });
     const gmailAddress = profileResp.data.email;
 
-    // Save to client
-    await Client.findOneAndUpdate(
-      { clientId },
-      {
-        googleConnected: true,
-        gmailAddress,
-        gmailAccessToken: access_token,
-        gmailRefreshToken: refresh_token || "",
-        emailUser: gmailAddress, // Also set the legacy emailUser field
-        emailMethod: "gmail_oauth" // Mark that we're using OAuth, not SMTP
-      }
-    );
-    invalidateClientCache(clientId);
+    // Save to client — never wipe an existing refresh token if Google omits one on re-auth
+    const updateFields = {
+      googleConnected: true,
+      gmailAddress,
+      gmailAccessToken: access_token,
+      emailUser: gmailAddress,
+      emailMethod: "gmail_oauth",
+    };
+    if (refresh_token) {
+      updateFields.gmailRefreshToken = refresh_token;
+    }
+
+    await Client.findOneAndUpdate({ clientId }, updateFields);
+    await bustGmailConnectionCaches(clientId);
 
     console.log(`[Google OAuth] Gmail connected for ${clientId}: ${gmailAddress}`);
-    return res.redirect(`${frontendUrl}/settings?tab=email&google_connected=true`);
+    return res.redirect(`${frontendUrl}/marketing-hub?tab=email&google_connected=true`);
   } catch (err) {
     console.error("[Google OAuth] Callback error:", err.response?.data || err.message);
     return res.redirect(`${frontendUrl}/settings?tab=email&google_error=callback_failed`);
@@ -620,7 +644,7 @@ router.post("/google/disconnect/:clientId", protect, async (req, res) => {
         emailMethod: ""
       }
     );
-    invalidateClientCache(clientId);
+    await bustGmailConnectionCaches(clientId);
 
     return res.json({ success: true });
   } catch (err) {

@@ -1541,6 +1541,17 @@ async function runDualBrainEngine(parsedMessage, client) {
   // --- PHASE 21: DUAL-BRAIN PRIORITY KEYWORDS (OPT-IN/OUT) ---
   const userTextRaw   = (parsedMessage.text?.body || '').trim();
   const userTextLower = userTextRaw.toLowerCase();
+
+  if (parsedMessage.type === 'text' && userTextRaw && convo?.metadata?.ndrFlow) {
+    const rtoProtectionService = require('./rtoProtectionService');
+    const ndrHandled = await rtoProtectionService.handleNdrCustomerText({
+      client,
+      phone,
+      text: userTextRaw,
+      convo,
+    });
+    if (ndrHandled) return true;
+  }
   
   // ── RTO Protection Suite: COD confirm + NDR rescue (WhatsApp button taps) ──
   if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id) {
@@ -1563,9 +1574,9 @@ async function runDualBrainEngine(parsedMessage, client) {
       await rtoProtectionService.handleCodConfirmationButton({ client, phone, buttonId: rtoBid });
       return true;
     }
-    if (rtoBid.startsWith('rto_ndr_alt_') || rtoBid.startsWith('rto_ndr_addr_')) {
+    if (/^rto_ndr_(alt|addr|phone|retry)_/.test(rtoBid)) {
       const rtoProtectionService = require('./rtoProtectionService');
-      await rtoProtectionService.handleNdrRescueButton({ client, phone, buttonId: rtoBid });
+      await rtoProtectionService.handleNdrRescueButton({ client, phone, buttonId: rtoBid, convo });
       return true;
     }
     if (rtoBid.startsWith('cart_btn_') || /^cart_recovery/i.test(rtoBid)) {

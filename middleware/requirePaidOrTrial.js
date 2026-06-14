@@ -16,6 +16,7 @@ const ALLOWLIST_PREFIXES = [
   '/api/ig-automation/webhook',
   '/api/admin',
   '/api/health',
+  '/api/capabilities',
   '/keepalive',
 ];
 

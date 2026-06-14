@@ -19,7 +19,17 @@ function checkConsent({ contact, channel, intent, strictMode = true, complianceE
   }
 
   if (status === 'opted_out') {
-    return { ...blocked, reason: 'recipient_opted_out' };
+    return { ...blocked, reason: channel === 'email' ? 'email_opted_out' : 'recipient_opted_out' };
+  }
+
+  if (channel === 'email') {
+    const emailStatus = String(contact?.channelConsent?.email?.status || '').toLowerCase();
+    if (emailStatus === 'opted_out') {
+      return { ...blocked, reason: 'email_opted_out' };
+    }
+    if (contact?.emailBounced) {
+      return { ...blocked, reason: 'email_bounced' };
+    }
   }
 
   return { pass: true, consentSnapshot: consent };

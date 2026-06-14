@@ -194,6 +194,7 @@ router.patch('/config', ...secure, async (req, res) => {
       const allowed = [
         'requireCodConfirmation',
         'enableNdrRescue',
+        'enableNdrAutoPush',
         'codConfirmationHours',
         'estimatedRtoCostPerOrder',
         'ndrTemplateName',
@@ -431,6 +432,42 @@ router.post('/commerce-automations/simulate', ...secure, async (req, res) => {
       order: req.body?.order || {},
     });
     return res.json({ success: true, result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/logistics/profile', ...secure, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { assertTenantAccess } = require('../utils/core/queryHelpers');
+    const access = assertTenantAccess(req, clientId);
+    if (!access.ok) {
+      return res.status(access.status).json({ success: false, error: access.message });
+    }
+
+    const { getLogisticsProfile } = require('../services/logisticsEligibilityService');
+    const profile = await getLogisticsProfile(clientId);
+    return res.json({ success: true, profile });
+  } catch (err) {
+    return res.status(err.message === 'Client not found' ? 404 : 500).json({ success: false, error: err.message });
+  }
+});
+
+router.patch('/logistics/settings', ...secure, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { assertTenantAccess } = require('../utils/core/queryHelpers');
+    const access = assertTenantAccess(req, clientId);
+    if (!access.ok) {
+      return res.status(access.status).json({ success: false, error: access.message });
+    }
+
+    const { updateLogisticsSettings } = require('../services/logisticsEligibilityService');
+    const profile = await updateLogisticsSettings(clientId, req.body || {});
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+    return res.json({ success: true, profile });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

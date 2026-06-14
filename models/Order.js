@@ -34,10 +34,22 @@ const OrderSchema = new mongoose.Schema({
   codConfirmationResponse: { type: String, default: '' },
   /** Count of courier non-delivery style events (from fulfillment webhooks). */
   deliveryAttempts: { type: Number, default: 0 },
+  /** Latest granular courier status from Shopify or direct webhook. */
+  lastShipmentStatus: { type: String, default: '' },
+  lastShipmentStatusAt: { type: Date, default: null },
   /** safe | at_risk | returned — operational RTO shielding state */
   rtoStatus: { type: String, enum: ['safe', 'at_risk', 'returned'], default: 'safe' },
   ndrRescueSentAt: { type: Date },
   lastNdrEventAt: { type: Date },
+  /** Shiprocket order id from webhook (fallback when AWB lives on trackingNumber). */
+  shiprocketOrderId: { type: String, default: '' },
+  ndrCourierPushedAt: { type: Date },
+  ndrCourierPushStatus: {
+    type: String,
+    enum: ['', 'success', 'failed', 'manual', 'pending'],
+    default: '',
+  },
+  ndrCourierPushError: { type: String, default: '' },
   /** Estimated ₹ attributed to RTO prevention (e.g. fake COD cancel). */
   rtoValueAttributed: { type: Number, default: 0 },
   /** Webhook idempotency: short-lived lock while COD WhatsApp is in flight. */
