@@ -49,19 +49,45 @@ function firstToken(name) {
 function buildCartItemsHtml(lead) {
   const items = lead?.cartSnapshot?.items;
   if (!Array.isArray(items) || !items.length) {
-    return `<p style="margin:0;padding:16px;color:#64748b;font-size:13px;border:1px dashed #e2e8f0;border-radius:12px;background:#f8fafc;">No cart snapshot on file for this contact — cart blocks will appear empty unless the shopper has an active abandoned cart.</p>`;
+    return `<p style="margin:0;padding:16px;color:#64748b;font-size:13px;border:1px dashed #e2e8f0;border-radius:12px;background:#f8fafc;">Your cart items will appear here when a shopper abandons checkout.</p>`;
   }
+
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatInr(amount) {
+    const num = Number(amount);
+    if (!Number.isFinite(num)) return '';
+    const hasDecimals = num % 1 !== 0;
+    return `₹${num.toLocaleString('en-IN', {
+      minimumFractionDigits: hasDecimals ? 2 : 0,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
   const rows = items
-    .map((it) => {
-      const title = it.title || it.name || 'Item';
+    .map((it, idx) => {
+      const title = it.title || it.name || it.product_title || `Item ${idx + 1}`;
       const qty = it.quantity || 1;
-      const img = it.image
-        ? `<img src="${String(it.image).replace(/"/g, '')}" alt="" style="width:72px;height:72px;border-radius:12px;object-fit:cover;border:1px solid #e2e8f0;" />`
-        : `<div style="width:72px;height:72px;border-radius:12px;background:#f1f5f9;border:1px solid #e2e8f0;"></div>`;
-      return `<div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #f1f5f9;">${img}<div style="flex:1;"><p style="margin:0;font-size:14px;font-weight:700;color:#0f172a;">${title}</p><p style="margin:4px 0 0;font-size:12px;color:#64748b;">Qty: ${qty}</p></div></div>`;
+      const unit = Number(it.price ?? it.line_price ?? it.presentment_price ?? 0) || 0;
+      const lineTotal = Number(it.lineTotal ?? it.line_total ?? unit * qty) || unit * qty;
+      const variant = it.variant_title || it.variant || '';
+      const imgSrc = it.image || it.image_url || it.featured_image?.url || it.featured_image || '';
+      const imgBlock = imgSrc
+        ? `<img src="${esc(imgSrc)}" alt="" width="80" height="80" style="width:80px;height:80px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0;display:block;flex-shrink:0;" />`
+        : `<div style="width:80px;height:80px;border-radius:14px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;flex-shrink:0;"></div>`;
+      const meta = variant
+        ? `${esc(variant)} · Qty ${qty}`
+        : `Qty ${qty}${unit > 0 ? ` · ${formatInr(unit)} each` : ''}`;
+      return `<div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #f1f5f9;">${imgBlock}<div style="flex:1;min-width:0;"><p style="margin:0;font-size:14px;font-weight:600;color:#0f172a;line-height:1.35;">${esc(title)}</p><p style="margin:5px 0 0;font-size:12px;color:#64748b;">${meta}</p></div><p style="margin:0;font-size:14px;font-weight:600;color:#0f172a;white-space:nowrap;">${lineTotal > 0 ? formatInr(lineTotal) : '—'}</p></div>`;
     })
     .join('');
-  return `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:20px;padding:20px;margin:12px 0;">${rows}</div>`;
+  return `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:4px 18px;margin:12px 0;">${rows}</div>`;
 }
 
 function cartTotalDisplay(lead) {

@@ -105,7 +105,7 @@ function appendUnsubscribeFooter(html, unsubscribeUrl, storeName) {
   if (!html || !unsubscribeUrl) return html;
   const safeStore = escapeHtmlAttr(storeName || 'our store');
   const footer = `
-<div style="text-align:center;margin-top:32px;font-size:11px;color:#94a3b8;">
+<div style="text-align:center;margin-top:24px;font-size:11px;color:#94a3b8;font-family:Inter,-apple-system,sans-serif;">
   You're receiving this because you shopped at ${safeStore}.<br>
   <a href="${escapeHtmlAttr(unsubscribeUrl)}" style="color:#7C3AED;">Unsubscribe</a>
 </div>`;
@@ -113,6 +113,21 @@ function appendUnsubscribeFooter(html, unsubscribeUrl, storeName) {
     return html.replace(/<\/body>/i, `${footer}</body>`);
   }
   return `${html}${footer}`;
+}
+
+function prependUnsubscribeHeader(html, unsubscribeUrl) {
+  if (!html || !unsubscribeUrl) return html;
+  if (UNSUB_PLACEHOLDER_RE.test(html) || /\/api\/email\/unsubscribe\//i.test(html)) {
+    return html;
+  }
+  const header = `<div style="padding:10px 20px;text-align:center;background:#f8fafc;border-bottom:1px solid #f1f5f9;font-family:Inter,-apple-system,sans-serif;font-size:11px;color:#94a3b8;">Prefer fewer emails? <a href="${escapeHtmlAttr(unsubscribeUrl)}" style="color:#7c3aed;text-decoration:underline;">Unsubscribe</a></div>`;
+  return String(html).replace(/^(<div[^>]*>)/i, `$1${header}`);
+}
+
+function appendTopEdgeBranding(html) {
+  if (!html || /automated by\s*topedge/i.test(html)) return html;
+  const branding = `<div style="text-align:center;padding:10px 20px 6px;font-family:Inter,-apple-system,sans-serif;"><p style="margin:0;font-size:10px;color:#cbd5e1;">Automated by <a href="https://topedgeai.com" style="color:#a78bfa;text-decoration:none;">TopEdge AI</a></p></div>`;
+  return `${html}${branding}`;
 }
 
 const UNSUB_PLACEHOLDER_RE = /\{\{\s*unsubscribe_(link|url)\s*\}\}/gi;
@@ -152,10 +167,13 @@ function prepareTrackedEmailHtml({
   if (shouldUnsub && envelopeId) {
     const unsubUrl = buildUnsubscribeUrl(envelopeId, clientId, leadId);
     out = injectUnsubscribePlaceholders(out, unsubUrl);
+    out = prependUnsubscribeHeader(out, unsubUrl);
     if (!templateHasUnsubscribe(out)) {
       out = appendUnsubscribeFooter(out, unsubUrl, storeName);
     }
   }
+
+  out = appendTopEdgeBranding(out);
 
   if (envelopeId) {
     out = wrapLinksForTracking(out, envelopeId, clientId);

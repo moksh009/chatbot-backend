@@ -52,7 +52,13 @@ async function exportLeadBundle({ leadId, phone, actor, clientId }) {
   bundle.records.Conversation = await Conversation.find({ clientId: cid, phone: lead.phoneNumber }).lean();
   const convIds = bundle.records.Conversation.map((c) => c._id);
   bundle.records.Message = await Message.find({ conversationId: { $in: convIds } }).lean();
-  bundle.records.Order = await Order.find({ clientId: cid, phone: lead.phoneNumber }).lean();
+
+  const orderOr = [{ phone: lead.phoneNumber }, { customerPhone: lead.phoneNumber }];
+  const orderIdRefs = [lead.recoveredOrderId, lead.lastOrderId].filter(Boolean);
+  for (const ref of orderIdRefs) {
+    orderOr.push({ orderId: String(ref) }, { shopifyOrderId: String(ref) }, { orderNumber: String(ref) });
+  }
+  bundle.records.Order = await Order.find({ clientId: cid, $or: orderOr }).sort({ createdAt: -1 }).lean();
   bundle.records.CampaignMessage = await CampaignMessage.find({ clientId: cid, phone: lead.phoneNumber }).lean();
   bundle.records.FollowUpSequence = await FollowUpSequence.find({ clientId: cid, leadId: lead._id }).lean();
   bundle.records.VisitorIdentity = await VisitorIdentity.find({ clientId: cid, phone: lead.phoneNumber }).lean();
