@@ -119,11 +119,12 @@ const FIXED_TEMPLATES = {
   },
   admin_human_alert: {
     category: 'UTILITY',
-    purpose: 'Notify admin/support for urgent takeover events.',
-    variables: { '1': 'Customer Name', '2': 'Customer Phone', '3': 'Issue Summary' },
-    bodyText: 'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.',
-    buttons: [{ type: 'QUICK_REPLY', text: 'Open Inbox' }]
-  }
+    purpose: 'Notify admin/support when a shopper needs human help in live chat.',
+    variables: { '1': 'Customer name', '2': 'Customer phone', '3': 'Chat summary' },
+    bodyText:
+      '🚨 *{{1}}* needs help\n\nPhone: {{2}}\nSummary: {{3}}\n\nTap below to open this chat in TopEdge Live Chat.',
+    buttons: [{ type: 'URL', text: 'Open live chat', url: 'https://dash.topedgeai.com/conversations/{{1}}' }],
+  },
 };
 
 // ─── HELPER: Build a snake_case template name from product handle ──────────

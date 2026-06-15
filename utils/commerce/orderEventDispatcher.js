@@ -32,10 +32,8 @@ function legacyStatusToSharedKey(newStatus) {
   }
   if (s === 'shipped' || s === 'fulfilled') return 'fulfillment_status_fulfilled';
   if (s === 'out_for_delivery') return 'shipment_status_out_for_delivery';
-  /** WS-2 fix: `delivered` is a DISTINCT customer event from `shipped`/
-   *  `fulfilled`. Sharing the same dedup key suppressed the delivered
-   *  message whenever the order had already been marked fulfilled. */
-  if (s === 'delivered') return 'fulfillment_status_delivered';
+  /** Align with new pipeline `buildStatusKey('shipment', 'delivered')` → shipment_status_delivered */
+  if (s === 'delivered') return 'shipment_status_delivered';
   if (s === 'partial') return 'fulfillment_status_partial';
   return null;
 }

@@ -9,6 +9,7 @@ const { flushCampaignProgress, readCampaignProgress } = require('../utils/messag
 const { launchCampaignDispatch } = require('../services/campaignLaunchService');
 const { getConnection } = require('../utils/messaging/queues/queueConnection');
 const log = require('../utils/core/logger')('DispatchMaintenance');
+const { CRON_BYPASS_SCOPE } = require('../utils/cron/cronQueryOptions');
 
 const ORPHAN_MS = 5 * 60 * 1000;
 
@@ -48,7 +49,7 @@ async function reapOrphanSequenceSteps() {
 }
 
 async function flushAllCampaignProgress() {
-  const sending = await Campaign.find({ status: 'SENDING' }).select('_id clientId recipientCount').lean();
+  const sending = await Campaign.find({ status: 'SENDING' }).select('_id clientId recipientCount').setOptions(CRON_BYPASS_SCOPE).lean();
   for (const c of sending) {
     await flushCampaignProgress(c._id, c.clientId, { totalHint: c.recipientCount });
     const counts = await readCampaignProgress(c._id);
@@ -74,7 +75,7 @@ async function refreshLiveAudiences() {
     audienceMode: 'live',
     audienceRefreshable: true,
     status: 'SENDING',
-  });
+  }).setOptions(CRON_BYPASS_SCOPE);
 
   let added = 0;
   for (const campaign of campaigns) {
@@ -86,7 +87,7 @@ async function refreshLiveAudiences() {
     }
     if (!campaign.segmentId) continue;
     const Segment = require('../models/Segment');
-    const segment = await Segment.findById(campaign.segmentId);
+    const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
     if (!segment) continue;
 
     const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId }).lean();

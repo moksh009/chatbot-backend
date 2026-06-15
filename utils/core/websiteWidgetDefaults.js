@@ -1,9 +1,10 @@
 /** Default + merge for Client.websiteChatWidgetConfig */
 const DEFAULT_WEBSITE_CHAT_WIDGET = {
   enabled: true,
-  mode: 'both',
-  experience: 'classic',
+  mode: 'chat',
+  experience: 'chat',
   flowId: '',
+  aiRepliesEnabled: true,
   theme: '#7C3AED',
   themeSecondary: '#5B21B6',
   position: 'bottom-right',
@@ -14,7 +15,7 @@ const DEFAULT_WEBSITE_CHAT_WIDGET = {
   headerTitle: '',
   headerSubtitle: '',
   showPoweredBy: true,
-  poweredByText: 'Powered by AI',
+  poweredByText: 'Created by TopEdge AI',
   poweredByUrl: 'https://topedgeai.com',
   logoUrl: '',
   launcherStyle: 'pill',
@@ -23,21 +24,31 @@ const DEFAULT_WEBSITE_CHAT_WIDGET = {
   bubblePulse: true,
 };
 
+function normalizeWidgetMode(mode, experience) {
+  if (mode === 'chat' || experience === 'chat') return 'chat';
+  return 'chat';
+}
+
 function mergeWebsiteWidgetConfig(stored) {
   const src = stored && typeof stored === 'object' ? stored : {};
-  return { ...DEFAULT_WEBSITE_CHAT_WIDGET, ...src };
+  const merged = { ...DEFAULT_WEBSITE_CHAT_WIDGET, ...src };
+  merged.mode = normalizeWidgetMode(merged.mode, merged.experience);
+  merged.experience = 'chat';
+  if (merged.showPoweredBy !== false) {
+    merged.showPoweredBy = true;
+    merged.poweredByText = DEFAULT_WEBSITE_CHAT_WIDGET.poweredByText;
+    merged.poweredByUrl = DEFAULT_WEBSITE_CHAT_WIDGET.poweredByUrl;
+  }
+  return merged;
 }
 
 function pickWebsiteWidgetForPublic(cfg) {
   const c = mergeWebsiteWidgetConfig(cfg);
-  const mode = c.mode || 'both';
-  const experience =
-    mode === 'guided' ? 'guided' : c.experience === 'guided' ? 'guided' : c.experience || 'classic';
   return {
     enabled: c.enabled !== false,
-    mode,
-    experience,
-    flowId: c.flowId || '',
+    mode: 'chat',
+    experience: 'chat',
+    aiRepliesEnabled: c.aiRepliesEnabled !== false,
     theme: c.theme || DEFAULT_WEBSITE_CHAT_WIDGET.theme,
     themeSecondary: c.themeSecondary || DEFAULT_WEBSITE_CHAT_WIDGET.themeSecondary,
     position: c.position || 'bottom-right',
@@ -59,23 +70,12 @@ function pickWebsiteWidgetForPublic(cfg) {
 }
 
 function buildWebsiteWidgetSettingsBundle(doc, { clientId, origin = '' } = {}) {
-  const websiteFlows = (doc?.visualFlows || []).filter((f) => f.platform === 'website');
   const cfg = mergeWebsiteWidgetConfig(doc?.websiteChatWidgetConfig);
-  const activeWebsiteFlow =
-    websiteFlows.find((f) => f.isActive) ||
-    (cfg.flowId
-      ? websiteFlows.find((f) => String(f.id) === String(cfg.flowId))
-      : null);
 
   const bundle = {
     websiteChatWidgetConfig: cfg,
-    websiteFlows: websiteFlows.map((f) => ({
-      id: f.id,
-      name: f.name,
-      isActive: !!f.isActive,
-      nodeCount: (f.publishedNodes || f.nodes || []).length,
-    })),
-    activeWebsiteFlowId: activeWebsiteFlow?.id || '',
+    websiteFlows: [],
+    activeWebsiteFlowId: '',
   };
 
   if (origin && clientId) {

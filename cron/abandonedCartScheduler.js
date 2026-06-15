@@ -1,4 +1,5 @@
 const AdLead = require('../models/AdLead');
+const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const Conversation = require('../models/Conversation');
 const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
@@ -28,6 +29,71 @@ const { pickAbTestTemplate, resolveAbTestTemplatesForSlot } = require('../utils/
 const { ABANDONED_CART_TAG } = require('../constants/cartRecoveryTags');
 
 const CART_DEDUP_TTL_SEC = 48 * 3600;
+
+function cartLeadDedupeKey(lead) {
+  if (hasRealPhone(lead?.phoneNumber)) return lead.phoneNumber;
+  const email = String(lead?.email || '').trim().toLowerCase();
+  return email || null;
+}
+
+/** Leads with a real phone OR email-only (unknown_ phone placeholder). */
+function cartLeadContactFilter() {
+  return {
+    $or: [
+      { phoneNumber: { $exists: true, $not: /^unknown_/ } },
+      { email: { $exists: true, $nin: [null, ''] }, phoneNumber: /^unknown_/ },
+    ],
+  };
+}
+
+async function setCartRuleSendError(clientId, ruleId, errorCode) {
+  if (!clientId || !ruleId) return;
+  try {
+    await Client.updateOne(
+      { clientId, 'commerceAutomations.id': String(ruleId) },
+      {
+        $set: {
+          'commerceAutomations.$.lastSendError': errorCode,
+          'commerceAutomations.$.lastSendErrorAt': new Date(),
+          'commerceAutomations.$.lastSendStatus': 'failed',
+        },
+      }
+    );
+  } catch (err) {
+    log.warn(`[CartRecovery] setCartRuleSendError failed: ${err.message}`);
+  }
+}
+
+async function resolveCartStepTemplate(client, cartRules, slot, config, lead) {
+  const rule = cartRules.find((x) => x.meta?.systemSlot === slot) || null;
+  const channels = Array.isArray(rule?.channels) ? rule.channels : ['whatsapp'];
+  const wantsWhatsApp = channels.includes('whatsapp');
+  const { primary, variantB } = resolveAbTestTemplatesForSlot(rule, null);
+
+  if (rule?.isActive === true && wantsWhatsApp && !primary) {
+    log.warn(
+      `[CartRecovery] Cart rule active but no template configured — ${client.clientId} ${slot}`
+    );
+    await setCartRuleSendError(client.clientId, rule.id, 'NO_TEMPLATE_CONFIGURED');
+    return { blocked: true, templateName: null, rule };
+  }
+
+  if (!primary) {
+    return { blocked: false, templateName: null, rule };
+  }
+
+  const stepNum = slot === 'followup_1' ? 1 : slot === 'followup_2' ? 2 : 3;
+  const templateName = pickAbTestTemplate({
+    clientId: client.clientId,
+    leadId: String(lead?._id || ''),
+    stepNum,
+    templateA: primary,
+    templateB: variantB,
+    abTestEnabled: config.abTestEnabled,
+  }).templateName;
+
+  return { blocked: false, templateName, rule };
+}
 
 function wasStepSentInActivityLog(lead, stepNum, maxAgeSec = CART_DEDUP_TTL_SEC) {
   if (!lead?.activityLog?.length) return false;
@@ -427,20 +493,6 @@ async function runAbandonedCartTick() {
                     return false;
                 };
                 const cartRuleForSlot = (slot) => cartRules.find((x) => x.meta?.systemSlot === slot) || null;
-                const tplForLead = (slot, fallback, lead) => {
-                    const rule = cartRules.find((x) => x.meta?.systemSlot === slot);
-                    const { primary, variantB } = resolveAbTestTemplatesForSlot(rule, fallback);
-                    if (!rule?.isActive || !primary) return fallback;
-                    const stepNum = slot === 'followup_1' ? 1 : slot === 'followup_2' ? 2 : 3;
-                    return pickAbTestTemplate({
-                      clientId: client.clientId,
-                      leadId: String(lead._id),
-                      stepNum,
-                      templateA: primary,
-                      templateB: variantB,
-                      abTestEnabled: config.abTestEnabled,
-                    }).templateName;
-                };
 
                 // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
                 // Was sending recovery messages even when the feature was disabled in settings
@@ -539,12 +591,7 @@ async function runAbandonedCartTick() {
                     recoveryStep: { $in: [null, 0] },
                     $and: [
                       smartSendEligibleFilter(now),
-                      {
-                        $or: [
-                          { phoneNumber: { $exists: true, $not: /^unknown_/ } },
-                          { email: { $exists: true, $nin: [null, ''] }, phoneNumber: /^unknown_/ },
-                        ],
-                      },
+                      cartLeadContactFilter(),
                       {
                         $or: [
                           { cartAbandonedAt: cartAbandonTimeFilter(now, delay1Min) },
@@ -560,16 +607,18 @@ async function runAbandonedCartTick() {
                   .limit(50);
 
                 for (const lead of batch1) {
-                    const dedupePhone = hasRealPhone(lead.phoneNumber) ? lead.phoneNumber : lead.email;
+                    const dedupeKey = cartLeadDedupeKey(lead);
                     if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
-                    if (!hasRealPhone(lead.phoneNumber) && !lead.email) continue;
+                    if (!dedupeKey) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, dedupePhone, 1, lead)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 1, lead)) continue;
                     const gate = await gateCartSend(client, lead, config, now);
                     if (!gate.ok) {
                       log.debug(`[CartRecovery] step 1 gated ${client.clientId} — ${gate.reason}`);
                       continue;
                     }
+                    const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_1', config, lead);
+                    if (resolved.blocked) continue;
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
 
                     /** WS-3 hardening: only advance `recoveryStep` when the send
@@ -577,18 +626,18 @@ async function runAbandonedCartTick() {
                      *  on step 0 so the next 5-min tick retries cleanly. */
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 1,
-                        templateName: tplForLead('followup_1', 'cart_recovery_1', lead),
-                        cartRule: cartRuleForSlot('followup_1'),
+                        templateName: resolved.templateName,
+                        cartRule: resolved.rule || cartRuleForSlot('followup_1'),
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
 
                     if (!outcome?.sent) {
-                        log.warn(`[CartRecovery] step 1 skipped for ${client.clientId}/${String(dedupePhone).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        log.warn(`[CartRecovery] step 1 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
                         continue;
                     }
 
-                    await markCartRecoverySent(client.clientId, dedupePhone, 1);
+                    await markCartRecoverySent(client.clientId, dedupeKey, 1);
                     await AdLead.findByIdAndUpdate(lead._id, {
                         recoveryStep: 1,
                         recoveryStartedAt: new Date(),
@@ -612,6 +661,7 @@ async function runAbandonedCartTick() {
                     recoveryStep: 1,
                     $and: [
                       smartSendEligibleFilter(now),
+                      cartLeadContactFilter(),
                       {
                         $or: [
                           { cartAbandonedAt: cartAbandonTimeFilter(now, delay2Min) },
@@ -627,27 +677,31 @@ async function runAbandonedCartTick() {
                   .limit(50);
 
                 for (const lead of batch2) {
-                    if (skipSet.has(lead.phoneNumber)) continue;
+                    const dedupeKey = cartLeadDedupeKey(lead);
+                    if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
+                    if (!dedupeKey) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 2, lead)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 2, lead)) continue;
                     const gate2 = await gateCartSend(client, lead, config, now);
                     if (!gate2.ok) continue;
+                    const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_2', config, lead);
+                    if (resolved.blocked) continue;
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
 
                     const outcome = await sendRichNudge(client, lead, msg, {
                         stepNum: 2,
-                        templateName: tplForLead('followup_2', 'cart_recovery_2', lead),
-                        cartRule: cartRuleForSlot('followup_2'),
+                        templateName: resolved.templateName,
+                        cartRule: resolved.rule || cartRuleForSlot('followup_2'),
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
                     if (!outcome?.sent) {
-                        log.warn(`[CartRecovery] step 2 skipped for ${client.clientId}/${String(lead.phoneNumber).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        log.warn(`[CartRecovery] step 2 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
                         continue;
                     }
 
-                    await markCartRecoverySent(client.clientId, lead.phoneNumber, 2);
+                    await markCartRecoverySent(client.clientId, dedupeKey, 2);
                     await AdLead.findByIdAndUpdate(lead._id, {
                         recoveryStep: Math.max(lead.recoveryStep || 0, 2),
                         recoveryStartedAt: lead.recoveryStartedAt || new Date(),
@@ -669,6 +723,7 @@ async function runAbandonedCartTick() {
                     recoveryStep: 2,
                     $and: [
                       smartSendEligibleFilter(now),
+                      cartLeadContactFilter(),
                       {
                         $or: [
                           { cartAbandonedAt: cartAbandonTimeFilter(now, delay3Min) },
@@ -684,18 +739,22 @@ async function runAbandonedCartTick() {
                   .limit(50);
 
                 for (const lead of batch3) {
-                    if (skipSet.has(lead.phoneNumber)) continue;
+                    const dedupeKey = cartLeadDedupeKey(lead);
+                    if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
+                    if (!dedupeKey) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
-                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 3, lead)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 3, lead)) continue;
                     const gate3 = await gateCartSend(client, lead, config, now);
                     if (!gate3.ok) continue;
+                    const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_3', config, lead);
+                    if (resolved.blocked) continue;
                     
                     // Phase 4: dynamic discount via cartRecoveryConfig
                     const { resolveCartStepDiscount } = require('../utils/commerce/cartDiscountService');
                     const discountOut = await resolveCartStepDiscount(client, lead, 3);
                     let discountCode = discountOut.discountCode || '';
                     let msg = (niche.abandonedMsg24h || niche.abandonedMsg3 || "Final call! Your cart is about to expire. 🛒").replace(/{name}/g, lead.name || 'there');
-                    let templateName = tplForLead('followup_3', 'cart_recovery_3', lead);
+                    let templateName = resolved.templateName;
                     if (discountCode) {
                       lead.lastDiscountCode = discountCode;
                       lead.discountCode = discountCode;
@@ -705,17 +764,17 @@ async function runAbandonedCartTick() {
                     const outcome3 = await sendRichNudge(client, lead, msg, {
                         stepNum: 3,
                         templateName: templateName,
-                        cartRule: cartRuleForSlot('followup_3'),
+                        cartRule: resolved.rule || cartRuleForSlot('followup_3'),
                         includeImage: niche.abandonedIncludeImage3 || !!templateName,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 
                     if (!outcome3?.sent) {
-                        log.warn(`[CartRecovery] step 3 skipped for ${client.clientId}/${String(lead.phoneNumber).slice(-4)} — ${outcome3?.reason || 'unknown'} ${outcome3?.detail || ''}`);
+                        log.warn(`[CartRecovery] step 3 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome3?.reason || 'unknown'} ${outcome3?.detail || ''}`);
                         continue;
                     }
 
-                    await markCartRecoverySent(client.clientId, lead.phoneNumber, 3);
+                    await markCartRecoverySent(client.clientId, dedupeKey, 3);
                     await AdLead.findByIdAndUpdate(lead._id, {
                         recoveryStep: 3,
                         activeDiscountCode: discountCode,

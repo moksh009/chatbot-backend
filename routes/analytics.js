@@ -549,7 +549,11 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
     }
 
     const { buildActivityTimeline } = require('../utils/customer360/buildActivityTimeline');
-    const { findOrdersForLead } = require('../utils/customer360/leadLookupHelpers');
+    const {
+      findOrdersForLead,
+      resolveLinkedPhonesForLead,
+      summarizeOrders,
+    } = require('../utils/customer360/leadLookupHelpers');
     const { phoneVariants } = require('../utils/messaging/cancelAllAutomationsFor');
     const CustomerIntelligence = require('../models/CustomerIntelligence');
     const CampaignMessage = require('../models/CampaignMessage');
@@ -565,7 +569,7 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       marketingLogs,
       sequences
     ] = await Promise.all([
-      findOrdersForLead(lead.clientId, lead.phoneNumber, { limit: 50 }),
+      findOrdersForLead(lead.clientId, lead.phoneNumber, { limit: 50, email: lead.email }),
       Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
       Conversation.findOne({
         clientId: lead.clientId,
@@ -631,14 +635,14 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
         const v = parseFloat(o.totalPrice ?? o.amount ?? o.total ?? 0);
         return sum + (Number.isFinite(v) ? v : 0);
       }, 0);
-      if ((!lead.totalSpent || lead.totalSpent === 0) && orderSum > 0) {
-        lead.totalSpent = orderSum;
-        updateData.totalSpent = orderSum;
-        updatedNeeded = true;
-      }
-      if ((!lead.ordersCount || lead.ordersCount === 0) && sortedOrders.length > 0) {
+      if (sortedOrders.length > 0) {
         lead.ordersCount = sortedOrders.length;
         updateData.ordersCount = sortedOrders.length;
+        updatedNeeded = true;
+      }
+      if (orderSum > 0) {
+        lead.totalSpent = orderSum;
+        updateData.totalSpent = orderSum;
         updatedNeeded = true;
       }
     }
@@ -688,12 +692,20 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
 
     const { buildLiveLeadPanels } = require('../services/customer360/liveLeadProfile');
     const livePanels = await buildLiveLeadPanels(lead);
+    const linkedPhones = await resolveLinkedPhonesForLead(lead.clientId, lead.phoneNumber, lead.email);
+    const orderSummary = summarizeOrders(orders);
     const { normalizeLeadForDisplay } = require('../utils/commerce/leadDisplayNormalize');
-    const displayLead = normalizeLeadForDisplay(lead, { orders });
+    const displayLead = normalizeLeadForDisplay(lead, { orders: orderSummary.orders });
 
     res.json({
       lead: displayLead,
-      orders,
+      orders: orderSummary.orders,
+      orderSummary,
+      identity: {
+        email: lead.email || null,
+        primaryPhone: lead.phoneNumber || null,
+        linkedPhones: linkedPhones.filter((phone) => phone !== lead.phoneNumber),
+      },
       appointments,
       conversation,
       messages,

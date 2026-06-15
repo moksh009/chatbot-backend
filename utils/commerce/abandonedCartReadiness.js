@@ -17,6 +17,7 @@ const CART_TEMPLATE_KEYS = ['cart_recovery_1', 'cart_recovery_2', 'cart_recovery
 const THIRD_PARTY_PROVIDERS = [
   { id: 'gokwik', label: 'GoKwik', path: 'gokwik', integrationKey: 'gokwik' },
   { id: 'razorpay', label: 'Razorpay Magic', path: 'razorpay-magic', integrationKey: 'razorpay_magic' },
+  { id: 'cashfree', label: 'Cashfree Payments', path: 'cashfree-checkout', integrationKey: 'cashfree_checkout' },
   { id: 'shiprocket', label: 'Shiprocket Checkout', path: 'shiprocket-checkout', integrationKey: 'shiprocket_checkout' },
 ];
 
@@ -75,7 +76,7 @@ function buildThirdPartyBlock(clientId, audienceContext = {}) {
       configured: Boolean(cfg.webhookSecret),
       secretMasked: maskSecret(cfg.webhookSecret),
       hasSecret: Boolean(cfg.webhookSecret),
-      lastReceivedAt: cfg.lastWebhookAt || null,
+      lastReceivedAt: cfg.partnerWebhookReceivedAt || null,
       lastTestAt: cfg.lastTestAt || null,
       consentStrategy: cfg.consentStrategy || 'explicit',
     };

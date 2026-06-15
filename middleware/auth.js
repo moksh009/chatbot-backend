@@ -78,7 +78,10 @@ const protect = async (req, res, next) => {
 
       const { autoTenantScope } = require('./autoTenantScope');
       const { roleForMethod } = require('./roleForMethod');
-      return autoTenantScope()(req, res, () => roleForMethod()(req, res, next));
+      const { hubApiGuard } = require('./hubApiGuard');
+      return autoTenantScope()(req, res, () =>
+        roleForMethod()(req, res, () => hubApiGuard()(req, res, next))
+      );
     } catch (error) {
       console.error('[Auth Middleware] Error validating token or fetching user:', error);
       

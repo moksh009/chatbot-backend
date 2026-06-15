@@ -47,7 +47,7 @@ test('buildAdminAlertWhatsAppComponents maps admin_human_alert body slots and UR
   assert.deepEqual(components[0].parameters.map((p) => p.text), [
     'Priya Sharma',
     '+919876543210',
-    'VIP lead — Checkout page',
+    'VIP lead — Checkout page — Priya Sharma',
   ]);
   assert.equal(components[1].type, 'button');
   assert.equal(components[1].sub_type, 'url');

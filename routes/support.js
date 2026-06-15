@@ -1,4 +1,5 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const SupportChat = require('../models/SupportChat');
 const Notification = require('../models/Notification');
@@ -546,6 +547,17 @@ const {
   pickWebsiteWidgetForPublic,
   mergeWebsiteWidgetConfig,
 } = require('../utils/core/websiteWidgetDefaults');
+const { resolveApiKeyForClient } = require('../services/ai/aiWalletService');
+const { generateWebsiteWidgetReply } = require('../services/websiteWidgetChatService');
+
+const widgetChatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: parseInt(process.env.WIDGET_CHAT_RATE_LIMIT_MAX || '30', 10) || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many messages. Please wait a moment and try again.' },
+  keyGenerator: (req) => `${req.ip || 'unknown'}:${req.body?.clientId || 'unknown'}`,
+});
 
 function resolveClientBranding(client) {
   const pv = client.platformVars || {};
@@ -636,17 +648,79 @@ router.get('/widget-config/:clientId', async (req, res) => {
 
     const branding = resolveClientBranding(client);
     const widget = pickWebsiteWidgetForPublic(client.websiteChatWidgetConfig);
-    const activeFlow = resolveWebsiteFlow(client);
+    const wallet = await resolveApiKeyForClient(client.clientId);
+    const aiChat = wallet.configured && widget.aiRepliesEnabled !== false;
 
     res.json({
       clientId: client.clientId,
       branding,
       widget,
-      hasPublishedFlow: !!(activeFlow && activeFlow.nodes?.length),
-      activeFlowId: activeFlow?.id || null,
+      capabilities: {
+        aiChat,
+        whatsAppHandoff: !!branding.supportWhatsApp,
+      },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// ── PUBLIC: Widget AI chat (no auth — rate limited) ───────────────────────
+// @route   POST /api/support-chat/widget-chat
+// @desc    AI reply for storefront website chat widget
+// @access  Public
+router.post('/widget-chat', widgetChatLimiter, async (req, res) => {
+  try {
+    const { clientId, message, history } = req.body || {};
+    const text = String(message || '').trim();
+    if (!clientId || !text) {
+      return res.status(400).json({ message: 'clientId and message are required' });
+    }
+    if (text.length > 1200) {
+      return res.status(400).json({ message: 'Message is too long' });
+    }
+
+    const client = await Client.findOne({ clientId })
+      .select('clientId businessName name brand platformVars websiteChatWidgetConfig ai.persona.name botName')
+      .lean();
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const widget = pickWebsiteWidgetForPublic(client.websiteChatWidgetConfig);
+    if (widget.enabled === false) {
+      return res.status(403).json({ message: 'Widget is disabled' });
+    }
+    if (widget.aiRepliesEnabled === false) {
+      return res.status(403).json({ message: 'AI replies are disabled for this widget' });
+    }
+
+    const wallet = await resolveApiKeyForClient(clientId);
+    if (!wallet.configured) {
+      return res.status(503).json({ message: 'AI is not configured for this store' });
+    }
+
+    const branding = resolveClientBranding(client);
+    const safeHistory = Array.isArray(history)
+      ? history
+          .filter((h) => h && typeof h.content === 'string' && ['user', 'assistant'].includes(h.role))
+          .slice(-8)
+          .map((h) => ({ role: h.role, content: String(h.content).slice(0, 800) }))
+      : [];
+
+    const reply = await generateWebsiteWidgetReply({
+      client,
+      branding,
+      message: text,
+      history: safeHistory,
+    });
+
+    res.json({ success: true, reply });
+  } catch (err) {
+    const code = err?.code || '';
+    if (code === 'AI_NOT_CONFIGURED') {
+      return res.status(503).json({ message: 'AI is not configured for this store' });
+    }
+    console.warn('[WidgetChat] AI reply failed:', err.message);
+    res.status(500).json({ message: 'Could not generate a reply right now' });
   }
 });
 

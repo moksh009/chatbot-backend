@@ -1269,7 +1269,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, 
       skuAutomations,
       simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
-      /** Lightweight auto-save merge: PATCH { flowDraft: { flowId, nodes, edges, syncLiveGraph? } } */
+      /** Lightweight auto-save merge: PATCH { flowDraft: { flowId, nodes, edges } } */
       flowDraft,
       wabaId, phoneNumberId, whatsappToken, verifyToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret, shopifyConnectionStatus,
@@ -1462,6 +1462,7 @@ router.patch('/my-settings', protect, async (req, res) => {
         'shopify_native',
         'gokwik',
         'razorpay_magic',
+        'cashfree',
         'shiprocket',
         'other_third_party',
         'unknown',
@@ -1486,7 +1487,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowDraft && flowDraft.flowId) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
       const { flattenFlowNodes } = require('../utils/flow/flowGraphResolver');
-      const { flowId, nodes = [], edges = [], syncLiveGraph } = flowDraft;
+      const { flowId, nodes = [], edges = [] } = flowDraft;
       const flatSteps = flattenFlowNodes(nodes).length;
       const linkCount = Array.isArray(edges) ? edges.length : 0;
       const wfExisting = await WhatsAppFlow.findOne({ clientId: targetClientId, flowId }).lean();
@@ -1534,27 +1535,12 @@ router.patch('/my-settings', protect, async (req, res) => {
       else vf.push(patchFlow);
       updateFields.visualFlows = vf;
 
-      if (syncLiveGraph) {
-        updateFields.flowNodes = nodes;
-        updateFields.flowEdges = edges;
-      }
-
+      // Autosave: invalidate stale cache only — never push draft nodes into runtime cache.
       try {
-        const { invalidateFlowGraphCache, setCachedFlowGraph } = require('../utils/flow/flowGraphCache');
+        const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
         invalidateFlowGraphCache(targetClientId, flowId);
-        setCachedFlowGraph(targetClientId, flowId, {
-          flowId,
-          name: flowName,
-          platform: wfExisting?.platform || 'whatsapp',
-          folderId: wfExisting?.folderId || '',
-          status: wfExisting?.status || 'DRAFT',
-          version: wfExisting?.version || 1,
-          nodes,
-          edges,
-          updatedAt: new Date(),
-        });
       } catch (cacheErr) {
-        console.warn('[flowDraft] graph cache refresh failed:', cacheErr.message);
+        console.warn('[flowDraft] graph cache invalidate failed:', cacheErr.message);
       }
     }
 

@@ -21,7 +21,7 @@ function envFlag(name, defaultValue = false) {
 }
 
 const SMART_RULES_ENGINE_ENABLED = envFlag('SMART_RULES_ENGINE_ENABLED', false);
-const WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED = envFlag('WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED', false);
+const WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED = envFlag('WEBSITE_CHAT_WIDGET_SETTINGS_ENABLED', true);
 const DELIVERY_RTO_INSIGHTS_ENABLED = envFlag('DELIVERY_RTO_INSIGHTS_ENABLED', false);
 
 function isSmartRulesEngineEnabled() {

@@ -189,11 +189,13 @@ function templateHasUrlButton(client = {}, templateName) {
 function buildAdminAlertWhatsAppComponents(
   templateName,
   client,
-  { customerPhone, topic, triggerSource, customerQuery, customerName, conversationId }
+  { customerPhone, topic, triggerSource, customerQuery, customerName, conversationId, issueSummary }
 ) {
   const phoneText = String(customerPhone || '—').slice(0, 256);
   const issueContext = String(
-    [topic, triggerSource].filter(Boolean).join(' — ') || 'Needs urgent support'
+    issueSummary ||
+      [topic, triggerSource, customerQuery].filter(Boolean).join(' — ') ||
+      'Needs urgent support'
   ).slice(0, 256);
 
   if (templateName === 'admin_notification_v1') {
@@ -250,6 +252,56 @@ function parseRecipientList(csv, fallback = '') {
   return [...new Set([...items, ...fb])];
 }
 
+function resolveAdminWhatsappRecipients(client = {}, adminPhoneOverride = '') {
+  let adminWhatsapps = parseRecipientList(client.adminAlertWhatsapp);
+  if (client.config?.adminPhones && Array.isArray(client.config.adminPhones)) {
+    adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
+  }
+  const primary = String(
+    adminPhoneOverride ||
+      client.adminPhone ||
+      client.brand?.adminPhone ||
+      client.platformVars?.adminWhatsappNumber ||
+      ''
+  ).trim();
+  if (primary) {
+    adminWhatsapps = [...new Set([primary, ...adminWhatsapps])];
+  }
+  return [...new Set(adminWhatsapps)].slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+}
+
+function resolveAdminEmailRecipients(client = {}) {
+  return parseRecipientList(client.adminAlertEmail, client.adminEmail).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+}
+
+async function hydrateClientForAdminAlert(client) {
+  if (!client) return null;
+  if (typeof client === 'string') {
+    const Client = require('../../models/Client');
+    return Client.findOne({ clientId: client })
+      .select(
+        'clientId adminPhone adminAlertWhatsapp adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config syncedMetaTemplates'
+      )
+      .lean();
+  }
+  const clientId = client.clientId;
+  if (!clientId) return client;
+  const hasPhone =
+    client.adminPhone ||
+    client.adminAlertWhatsapp ||
+    client.platformVars?.adminWhatsappNumber ||
+    client.brand?.adminPhone;
+  const hasEmail = client.adminEmail || client.adminAlertEmail;
+  if (hasPhone || hasEmail) return client;
+  const Client = require('../../models/Client');
+  const doc = await Client.findOne({ clientId })
+    .select(
+      'clientId adminPhone adminAlertWhatsapp adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config syncedMetaTemplates'
+    )
+    .lean();
+  return doc || client;
+}
+
 /**
  * NotificationService
  * Handles high-priority admin alerts triggered by flows or system events.
@@ -273,6 +325,7 @@ const NotificationService = {
     lead = null,
     skipDedup = false,
   }) {
+    client = (await hydrateClientForAdminAlert(client)) || client;
     const channel = resolveAdminAlertChannel(client, channelParam);
     const clientId = client?.clientId || String(client);
 
@@ -281,17 +334,8 @@ const NotificationService = {
       return { deduped: true, whatsapp: [], email: [] };
     }
 
-    const adminEmails = parseRecipientList(client.adminAlertEmail, client.adminEmail).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
-
-    let adminWhatsapps = parseRecipientList(client.adminAlertWhatsapp);
-    if (client.config?.adminPhones && Array.isArray(client.config.adminPhones)) {
-      adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
-    }
-    const primary = (adminPhoneOverride || client.adminPhone || '').trim();
-    if (primary) {
-      adminWhatsapps = [...new Set([primary, ...adminWhatsapps])];
-    }
-    adminWhatsapps = [...new Set(adminWhatsapps)].slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+    const adminEmails = resolveAdminEmailRecipients(client);
+    const adminWhatsapps = resolveAdminWhatsappRecipients(client, adminPhoneOverride);
 
     const baseUrl = process.env.DASHBOARD_URL || 'https://dash.topedgeai.com';
     const transcriptBundle = await loadRecentChatTranscript(
@@ -314,6 +358,22 @@ const NotificationService = {
       lead,
       customerQuery,
     });
+
+    const chatSummary = recentMessages.length
+      ? recentMessages
+          .slice(-3)
+          .map((m) => {
+            const who = m.direction === 'inbound' || m.from === 'user' ? 'Customer' : 'Bot';
+            return `${who}: ${String(m.content || '').slice(0, 80)}`;
+          })
+          .join(' · ')
+          .slice(0, 220)
+      : '';
+    const issueSummary = String(
+      chatSummary ||
+        [customerQuery, topic, triggerSource].filter(Boolean).join(' — ') ||
+        'Needs urgent support'
+    ).slice(0, 256);
 
     const results = { whatsapp: [], email: [] };
     const approvedTemplate = resolveAdminAlertTemplateName(client);
@@ -341,7 +401,7 @@ const NotificationService = {
           type: 'system',
           title: 'Approve admin alert template',
           message:
-            'A shopper needs human help but WhatsApp could not notify your team. Submit and approve the admin_human_alert template in Meta Manager, then sync templates.',
+            'A shopper needs human help. Your admin numbers are saved, but WhatsApp alerts need the admin_human_alert template approved in Meta Manager — then sync templates.',
           customerPhone,
           metadata: { topic, triggerSource, takeoverLink },
         });
@@ -368,6 +428,7 @@ const NotificationService = {
             customerQuery,
             customerName,
             conversationId: resolvedConvoId,
+            issueSummary,
           });
           const res = await WhatsApp.sendTemplate(
             client,
@@ -441,7 +502,7 @@ const NotificationService = {
               triggerSource: triggerSource || 'Automation flow',
               customerPhone: customerPhone || '—',
               customerName,
-              customerQuery,
+              customerQuery: issueSummary || customerQuery,
               takeoverLink,
               recentMessages,
               recentOrders,
@@ -526,3 +587,5 @@ module.exports.isAdminAlertTemplateApproved = isAdminAlertTemplateApproved;
 module.exports.buildAdminAlertWhatsAppComponents = buildAdminAlertWhatsAppComponents;
 module.exports.buildTakeoverLink = buildTakeoverLink;
 module.exports.templateHasUrlButton = templateHasUrlButton;
+module.exports.resolveAdminWhatsappRecipients = resolveAdminWhatsappRecipients;
+module.exports.resolveAdminEmailRecipients = resolveAdminEmailRecipients;

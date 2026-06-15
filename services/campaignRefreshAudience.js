@@ -33,7 +33,7 @@ async function refreshCampaignAudience(campaignId, clientId) {
     return { ok: false, status: 400, message: 'Campaign has no segment for live refresh' };
   }
 
-  const segment = await Segment.findById(campaign.segmentId);
+  const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
   if (!segment) return { ok: false, status: 404, message: 'Segment not found' };
 
   const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId }).lean();

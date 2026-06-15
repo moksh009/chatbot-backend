@@ -163,7 +163,7 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     category: "UTILITY",
     headerType: "NONE",
     bodyText:
-      "Admin alert: {{1}} ({{2}}) needs urgent support.\nContext: {{3}}\nOpen the live chat in your dashboard.",
+      "🚨 *{{1}}* needs help\n\nPhone: {{2}}\nSummary: {{3}}\n\nTap below to open this chat in TopEdge Live Chat.",
     variableMappings: { body: { 1: "first_name", 2: "phone_number", 3: "issue_summary" } },
     buttons: [{ type: "URL", text: "Open live chat", url: "https://dash.topedgeai.com/conversations/{{1}}" }],
     autoTrigger: null,

@@ -6,13 +6,12 @@ const { encrypt } = require('../utils/core/encryption');
 const {
   GRANULAR_STATUSES,
   SHOPIFY_DEFAULT_RELIABLE,
+  LOGISTICS_PARTNERS,
   ruleIdToShipmentStatus,
   shipmentStatusToRuleId,
   getPartnerDef,
   listPartnersForUi,
 } = require('../constants/logisticsPartnerRegistry');
-
-const DIRECT_RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 
 function publicApiBase() {
   return (
@@ -29,11 +28,7 @@ function buildWebhookUrl(clientId, providerCode) {
 }
 
 function isDirectWebhookLive(health = {}) {
-  if (health.directWebhookActive === true) return true;
-  const last = health.directWebhookLastSeenAt
-    ? new Date(health.directWebhookLastSeenAt).getTime()
-    : 0;
-  return last > 0 && Date.now() - last < DIRECT_RECENT_MS;
+  return Boolean(health.directWebhookLastSeenAt);
 }
 
 function normalizeHealth(client = {}) {
@@ -61,7 +56,6 @@ function canEnableShipmentRule(clientLean, ruleId) {
   const health = normalizeHealth(clientLean);
   const observed = new Set(health.observedShopifyStatuses);
   const directLive = health.directWebhookActive;
-  const planDeclared = !!clientLean?.logisticsIntegration?.planDeclared;
 
   if (directLive && partner.directWebhookStatuses.includes(status)) {
     return { allowed: true, path: 'direct_webhook' };
@@ -79,17 +73,6 @@ function canEnableShipmentRule(clientLean, ruleId) {
   const settingsUrl = '/settings?tab=connections&section=logistics';
 
   if (mode === 'direct' || mode === 'hybrid') {
-    if (!planDeclared && partner.directWebhookMinPlan) {
-      return {
-        allowed: false,
-        code: 'LOGISTICS_PLAN_REQUIRED',
-        message:
-          `${partner.label} direct tracking requires ${partner.directPlanLabel || 'an eligible plan'}. Confirm your plan below, then paste the webhook URL.`,
-        upgradeHint,
-        suggestedMode: 'direct',
-        settingsUrl,
-      };
-    }
     return {
       allowed: false,
       code: 'LOGISTICS_DIRECT_SETUP',
@@ -160,13 +143,22 @@ async function getLogisticsProfile(clientId) {
     health,
     eligibleRules,
     blockedRules,
-    partners: listPartnersForUi().map((p) => ({
-      id: p.id,
-      label: p.label,
-      directPlanLabel: p.directPlanLabel,
-      directPlanHelpUrl: p.directPlanHelpUrl,
-      shopifyReliableStatuses: p.shopifyReliableStatuses,
-    })),
+    partners: listPartnersForUi()
+      .filter((p) => p.id !== 'other')
+      .map((p) => ({
+        id: p.id,
+        label: p.label,
+        category: p.category,
+        region: p.region,
+        directPlanLabel: p.directPlanLabel,
+        directPlanHelpUrl: p.directPlanHelpUrl,
+        shopifyReliableStatuses: p.shopifyReliableStatuses,
+        supportsDirectWebhook: p.supportsDirectWebhook !== false,
+        setupCopy: p.setupCopy || [],
+        setupSteps: p.setupSteps || [],
+        webhookPastePath: p.webhookPastePath || '',
+        shopifySetupNote: p.shopifySetupNote || '',
+      })),
     shopifySyncNote:
       'Shopify sync supports Shipped (fulfillment) and Delivered for most partners. Out for delivery and NDR require direct webhook on an eligible plan.',
   };
@@ -179,7 +171,13 @@ async function updateLogisticsSettings(clientId, patch = {}) {
   const set = {};
   if (patch.logisticsPartner) {
     const p = String(patch.logisticsPartner).toLowerCase().trim();
-    set.logisticsPartner = getPartnerDef(p).id === 'unknown' && p !== 'unknown' ? 'other' : p;
+    if (LOGISTICS_PARTNERS[p]) {
+      set.logisticsPartner = p;
+    } else if (p === 'unknown') {
+      set.logisticsPartner = 'unknown';
+    } else {
+      set.logisticsPartner = 'other';
+    }
   }
   if (patch.logisticsMode) {
     const m = String(patch.logisticsMode).toLowerCase().trim();

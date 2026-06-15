@@ -16,6 +16,7 @@ const {
   WHATSAPP_CREDENTIAL_SELECT,
   EMAIL_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
+const { buildMappedBodyComponent } = require('../utils/meta/templateParams');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { emitToClient } = require('../utils/core/socket');
 
@@ -55,6 +56,60 @@ function normalizeEmail(lead, seq) {
   return String(lead?.email || seq?.email || '')
     .trim()
     .toLowerCase();
+}
+
+function inferDefaultVariableMapping(templateComponents) {
+  const body = (templateComponents || []).find((c) => String(c?.type || '').toUpperCase() === 'BODY');
+  const matches = (body?.text || '').match(/\{\{(\d+)\}\}/g) || [];
+  if (!matches.length) return {};
+  const indices = [...new Set(matches.map((m) => m.match(/\d+/)[0]))].sort(
+    (a, b) => Number(a) - Number(b)
+  );
+  const mapping = {};
+  for (const idx of indices) {
+    mapping[idx] = idx === '1' ? 'name' : 'customText';
+  }
+  return mapping;
+}
+
+async function buildSequenceWhatsAppPayload({ client, clientId, step, lead, seq }) {
+  const templateName = step.templateName;
+  const row = {
+    name: lead?.name || seq?.name || 'Customer',
+    customerName: lead?.name || seq?.name || 'Customer',
+    phone: lead?.phoneNumber || seq?.phone,
+    email: lead?.email || seq?.email,
+    tags: lead?.tags,
+    totalSpent: lead?.totalSpent,
+    lastPurchaseDate: lead?.lastPurchaseDate,
+    capturedData: lead?.capturedData,
+  };
+
+  let variableMapping =
+    step.variableMapping && typeof step.variableMapping === 'object' ? { ...step.variableMapping } : {};
+
+  const { resolveTemplateForSend } = require('../services/templateResolver');
+  const resolved = await resolveTemplateForSend(clientId, { name: templateName });
+  const tpl = resolved?.template;
+
+  if (!Object.keys(variableMapping).length) {
+    const fromTpl =
+      tpl?.variableMappings?.body || tpl?.variableMapping?.body || tpl?.variableMapping;
+    if (fromTpl && typeof fromTpl === 'object' && Object.keys(fromTpl).length) {
+      variableMapping = { ...fromTpl };
+    } else {
+      variableMapping = inferDefaultVariableMapping(tpl?.components);
+    }
+  }
+
+  const mappedBody = buildMappedBodyComponent({ variableMapping, row, client });
+  const components = mappedBody ? [mappedBody] : [];
+
+  return {
+    templateName,
+    templateLanguage: tpl?.language || step.templateLanguage || 'en',
+    components,
+  };
 }
 
 async function maybeFinalizeSequence(sequenceId, clientId) {
@@ -171,7 +226,13 @@ async function processSequenceDispatchJob(job) {
       };
     } else if (step.templateName) {
       intent = intentFromTemplateCategory(step.templateCategory);
-      payload = { templateName: step.templateName, templateLanguage: 'en', components: [] };
+      payload = await buildSequenceWhatsAppPayload({
+        client,
+        clientId,
+        step,
+        lead,
+        seq,
+      });
     } else {
       payload = { text: step.content || '' };
     }

@@ -4,6 +4,7 @@ const moment = require('moment');
 const Client = require('../../models/Client');
 const Campaign = require('../../models/Campaign');
 const FollowUpSequence = require('../../models/FollowUpSequence');
+const { isWorkspaceEmailReady } = require('../core/emailService');
 
 function relTime(date) {
   if (!date) return null;
@@ -12,10 +13,15 @@ function relTime(date) {
 
 async function buildMarketingHubHealth(clientId) {
   const client = await Client.findOne({ clientId })
-    .select('whatsappToken phoneNumberId wabaId syncedMetaTemplates templatesSyncedAt')
+    .select(
+      'whatsappToken phoneNumberId wabaId syncedMetaTemplates templatesSyncedAt ' +
+        'emailMethod gmailAddress emailUser gmailRefreshToken gmailAccessToken emailAppPassword'
+    )
     .lean();
 
   const waConnected = !!(client?.whatsappToken && client?.phoneNumberId);
+  const emailSendReady = isWorkspaceEmailReady(client);
+  const emailAddress = String(client?.emailUser || client?.gmailAddress || '').trim() || null;
   const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
   const approvedTemplates = synced.filter((t) => String(t?.status || '').toUpperCase() === 'APPROVED').length;
 
@@ -54,6 +60,12 @@ async function buildMarketingHubHealth(clientId) {
     },
     sequences: {
       active: activeSequences,
+    },
+    email: {
+      connected: emailSendReady,
+      sendReady: emailSendReady,
+      method: client?.emailMethod || null,
+      address: emailAddress,
     },
   };
 }

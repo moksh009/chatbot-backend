@@ -3,7 +3,7 @@
 const QRCodeModel = require("../../models/QRCode");
 const QRCodeLib   = require("qrcode");
 const crypto      = require("crypto");
-const Client      = require("../../models/Client");
+const { resolveClientWaPhone } = require("./qrClientScope");
 
 /**
  * Generate a unique 8-char short code: QR_A1B2C3D4
@@ -28,6 +28,17 @@ async function generateQRImage(text, fgColor = "#000000", bgColor = "#FFFFFF") {
   });
 }
 
+function buildWaLink(client, shortCode, config = {}) {
+  const phone = resolveClientWaPhone(client);
+  const customText = config?.prefilledText
+    ? `${config.prefilledText} (Ref: ${shortCode})`
+    : `Hi! I'd like to connect. (Ref: ${shortCode})`;
+
+  return phone
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(customText)}`
+    : `https://wa.me/?text=${encodeURIComponent(customText)}`;
+}
+
 /**
  * Create and persist a QR code record.
  * @param {Object} client  - Client mongoose document
@@ -35,8 +46,8 @@ async function generateQRImage(text, fgColor = "#000000", bgColor = "#FFFFFF") {
  * @returns {Object}       - Saved QRCode document
  */
 async function createQRCode(client, qrData) {
-  // Ensure uniqueness (retry up to 5 times)
-  let shortCode, existing;
+  let shortCode;
+  let existing;
   let attempts = 0;
   do {
     shortCode = generateShortCode();
@@ -44,29 +55,19 @@ async function createQRCode(client, qrData) {
     attempts++;
   } while (existing && attempts < 5);
 
-  // Build WA deep link using the client's phone number
-  const phone  = (client.adminPhone || "").replace(/\D/g, "");
-  
-  // Format user-provided prefilled text + the background Ref ID.
-  const customText = qrData.config?.prefilledText 
-    ? `${qrData.config.prefilledText} (Ref: ${shortCode})`
-    : `I want to connect! (Ref: ${shortCode})`;
-
-  const waLink = phone
-    ? `https://wa.me/${phone}?text=${encodeURIComponent(customText)}`
-    : `https://wa.me/?text=${encodeURIComponent(customText)}`;
-
-  const fgColor = qrData.config?.styleConfig?.fgColor || "#000000";
-  const bgColor = qrData.config?.styleConfig?.bgColor || "#FFFFFF";
+  const config = qrData.config || {};
+  const waLink = buildWaLink(client, shortCode, config);
+  const fgColor = config?.styleConfig?.fgColor || "#000000";
+  const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
   const qrImage = await generateQRImage(waLink, fgColor, bgColor);
 
   const qr = await QRCodeModel.create({
-    clientId:   client._id,
+    clientId:   String(client.clientId),
     name:       qrData.name,
     shortCode,
     type:       qrData.type || "flow",
     isActive:   true,
-    config:     qrData.config || {},
+    config,
     waLink,
     qrImageUrl: qrImage,
     createdAt:  new Date(),
@@ -76,4 +77,24 @@ async function createQRCode(client, qrData) {
   return qr;
 }
 
-module.exports = { createQRCode, generateQRImage, generateShortCode };
+/**
+ * Regenerate wa.me link + PNG when config or phone changes.
+ */
+async function refreshQRCodeAssets(client, qr) {
+  const config = qr.config || {};
+  const waLink = buildWaLink(client, qr.shortCode, config);
+  const fgColor = config?.styleConfig?.fgColor || "#000000";
+  const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
+  const qrImage = await generateQRImage(waLink, fgColor, bgColor);
+  qr.waLink = waLink;
+  qr.qrImageUrl = qrImage;
+  return qr;
+}
+
+module.exports = {
+  createQRCode,
+  generateQRImage,
+  generateShortCode,
+  buildWaLink,
+  refreshQRCodeAssets,
+};

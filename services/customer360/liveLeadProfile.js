@@ -9,32 +9,51 @@ const { phoneVariants } = require('../../utils/messaging/cancelAllAutomationsFor
 const {
   findOrdersForLead,
   findWarrantyRecordsForLead,
+  dedupeOrders,
+  resolveLinkedPhonesForLead,
 } = require('../../utils/customer360/leadLookupHelpers');
 
-async function cachedShopifyOrders(clientId, phone) {
+function identityCacheKey(clientId, lead) {
+  const email = String(lead?.email || '').trim().toLowerCase();
+  return `c360_orders:${clientId}:${lead?.phoneNumber || ''}:${email}`;
+}
+
+async function cachedShopifyOrders(clientId, lead) {
+  const phone = lead?.phoneNumber;
+  const email = lead?.email;
   const redis = getAppRedis();
-  const key = `c360_orders:${clientId}:${phone}`;
+  const key = identityCacheKey(clientId, lead);
   if (redis) {
     const hit = await redis.get(key);
     if (hit) return JSON.parse(hit);
   }
   let shopifyDataStale = false;
-  let orders = [];
+  let shopifyOrders = [];
   try {
-    const { searchCustomerByPhone } = require('../../utils/shopify/shopifyGraphQL');
-    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000));
+    const { searchCustomerByPhone, searchCustomerByEmail } = require('../../utils/shopify/shopifyGraphQL');
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500));
     const customer = await Promise.race([
       searchCustomerByPhone(clientId, phone),
       timeout,
     ]);
     if (customer?.orders?.edges) {
-      orders = customer.orders.edges.slice(0, 3).map((e) => e.node);
+      shopifyOrders = customer.orders.edges.map((e) => e.node);
+    } else if (email) {
+      const byEmail = await Promise.race([
+        searchCustomerByEmail(clientId, email),
+        timeout,
+      ]);
+      if (byEmail?.orders?.edges) {
+        shopifyOrders = byEmail.orders.edges.map((e) => e.node);
+      }
     }
   } catch {
     shopifyDataStale = true;
-    orders = await findOrdersForLead(clientId, phone, { limit: 5 });
   }
-  const payload = { orders, shopifyDataStale };
+
+  const dbOrders = await findOrdersForLead(clientId, phone, { limit: 50, email });
+  const orders = dedupeOrders([...dbOrders, ...shopifyOrders]);
+  const payload = { orders, shopifyDataStale, shopifyOrderCount: shopifyOrders.length };
   if (redis) await redis.set(key, JSON.stringify(payload), 'EX', 60);
   return payload;
 }
@@ -43,9 +62,12 @@ async function buildLiveLeadPanels(lead) {
   const phone = lead.phoneNumber;
   const clientId = lead.clientId;
   const phoneIn = phoneVariants(phone);
+  const linkedPhones = await resolveLinkedPhonesForLead(clientId, phone, lead.email);
+  const linkedVariants = collectLinkedVariants(linkedPhones);
+
   const convo = await Conversation.findOne({
     clientId,
-    phone: phoneIn.length ? { $in: phoneIn } : phone,
+    phone: linkedVariants.length ? { $in: linkedVariants } : phoneIn.length ? { $in: phoneIn } : phone,
   })
     .select('_id')
     .lean();
@@ -57,7 +79,7 @@ async function buildLiveLeadPanels(lead) {
     campaigns,
     warrantyPanel,
   ] = await Promise.all([
-    cachedShopifyOrders(clientId, phone),
+    cachedShopifyOrders(clientId, lead),
     convo
       ? Message.find({ conversationId: convo._id })
           .sort({ timestamp: -1 })
@@ -67,12 +89,12 @@ async function buildLiveLeadPanels(lead) {
       : [],
     FollowUpSequence.find({
       clientId,
-      phone: phoneIn.length ? { $in: phoneIn } : phone,
+      phone: linkedVariants.length ? { $in: linkedVariants } : phoneIn.length ? { $in: phoneIn } : phone,
       status: 'active',
     }).lean(),
     CampaignMessage.find({
       clientId,
-      phone: phoneIn.length ? { $in: phoneIn } : phone,
+      phone: linkedVariants.length ? { $in: linkedVariants } : phoneIn.length ? { $in: phoneIn } : phone,
       status: { $in: ['queued', 'processing', 'sent'] },
     })
       .limit(10)
@@ -90,8 +112,19 @@ async function buildLiveLeadPanels(lead) {
       warrantyRecords: warrantyPanel.records,
       recentSentimentTrend: lead.recentSentimentTrend,
       scoreBreakdown: lead.scoreBreakdown,
+      linkedPhones: linkedPhones.filter((item) => item !== phone),
     },
   };
+}
+
+function collectLinkedVariants(phones = []) {
+  const variants = new Set();
+  for (const phone of phones) {
+    for (const variant of phoneVariants(phone)) {
+      if (variant) variants.add(variant);
+    }
+  }
+  return [...variants];
 }
 
 module.exports = { buildLiveLeadPanels, cachedShopifyOrders };

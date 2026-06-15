@@ -18,6 +18,7 @@ const Client = require('../models/Client');
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
+const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
 
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
@@ -304,6 +305,7 @@ router.post('/:clientId', protect, async (req, res) => {
       });
 
       await sequence.save();
+      await enqueueDueStepsForSequence(sequence).catch(() => {});
 
       if (lid) {
         countMap.set(lid, activeCount + 1);
@@ -432,14 +434,248 @@ router.get('/:clientId/:sequenceId', protect, async (req, res) => {
   }
 });
 
-// POST enroll from campaign — API reserved; no dashboard UI in V1 (MK-P1-04)
+// POST enroll from campaign recipients (sent/delivered/read/replied)
 router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
-  return res.status(501).json({
-    success: false,
-    code: 'NOT_SHIPPED_V1',
-    message:
-      'Post-campaign sequence enrollment is not available in the dashboard V1. Use Marketing hub → Sequences to enroll contacts.',
-  });
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { campaignId, templateId, name } = req.body;
+    if (!campaignId) {
+      return res.status(400).json({ success: false, message: 'campaignId is required' });
+    }
+    if (!templateId) {
+      return res.status(400).json({ success: false, message: 'templateId is required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(String(campaignId))) {
+      return res.status(400).json({ success: false, message: 'Invalid campaignId' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId })
+      .select('_id name channel status')
+      .lean();
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+    if (String(campaign.channel || 'whatsapp') === 'email') {
+      return res.status(400).json({
+        success: false,
+        message: 'Post-campaign sequences are supported for WhatsApp campaigns only.',
+      });
+    }
+
+    if (isLegacyNicheAutomationBlocked() && isDeprecatedSequenceTemplateId(templateId)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This template is deprecated for e-commerce by default. Set BLOCK_LEGACY_NICHE_AUTOMATION=false to enroll.',
+      });
+    }
+
+    const template = SEQUENCE_TEMPLATES.find((t) => t.id === templateId);
+    if (!template) {
+      return res.status(404).json({ success: false, message: 'Sequence template not found' });
+    }
+
+    const templateHasEmail = (template.steps || []).some(
+      (s) => String(s.type || '').toLowerCase() === 'email'
+    );
+    const templateHasWa = (template.steps || []).some(
+      (s) => String(s.type || '').toLowerCase() !== 'email'
+    );
+    const templateOnlyEmail = templateHasEmail && !templateHasWa;
+
+    const client = await Client.findOne({ clientId })
+      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected')
+      .lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    if (templateHasEmail) {
+      const { isWorkspaceEmailReady } = require('../utils/core/emailService');
+      if (!isWorkspaceEmailReady(client)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Connect Gmail in Settings before enrolling email sequence playbooks.',
+        });
+      }
+    }
+
+    const CampaignMessage = require('../models/CampaignMessage');
+    const SUCCESS_STATUSES = ['sent', 'delivered', 'read', 'replied'];
+    const messageRows = await CampaignMessage.find({
+      campaignId: campaign._id,
+      clientId,
+      status: { $in: SUCCESS_STATUSES },
+    })
+      .select('phone metadata.leadId')
+      .lean();
+
+    if (!messageRows.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'No delivered campaign recipients found to enroll.',
+      });
+    }
+
+    const leadById = new Map();
+    const phonesNeedingLookup = [];
+    const seenKeys = new Set();
+
+    for (const row of messageRows) {
+      const leadId = row.metadata?.leadId;
+      const phone = String(row.phone || '').trim();
+      const key = leadId ? `id:${leadId}` : `ph:${phone}`;
+      if (!key || key === 'ph:' || seenKeys.has(key)) continue;
+      seenKeys.add(key);
+
+      if (leadId && mongoose.Types.ObjectId.isValid(String(leadId))) {
+        if (!leadById.has(String(leadId))) {
+          leadById.set(String(leadId), { _id: leadId, phoneNumber: phone });
+        }
+      } else if (phone) {
+        phonesNeedingLookup.push(phone);
+      }
+    }
+
+    if (phonesNeedingLookup.length) {
+      const phoneLeads = await AdLead.find({
+        clientId,
+        phoneNumber: { $in: phonesNeedingLookup },
+      })
+        .select('_id name phoneNumber email')
+        .lean();
+      phoneLeads.forEach((l) => leadById.set(String(l._id), l));
+    }
+
+    const missingLeadIds = [...leadById.keys()].filter(
+      (id) => !leadById.get(id)?.name && !leadById.get(id)?.email
+    );
+    if (missingLeadIds.length) {
+      const hydrated = await AdLead.find({
+        clientId,
+        _id: { $in: missingLeadIds.filter((id) => mongoose.Types.ObjectId.isValid(id)) },
+      })
+        .select('_id name phoneNumber email')
+        .lean();
+      hydrated.forEach((l) => leadById.set(String(l._id), l));
+    }
+
+    const leads = [...leadById.values()].filter((l) => l._id);
+
+    if (!leads.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'No matching audience leads found for campaign recipients.',
+      });
+    }
+
+    const templateFailures = await validateSequenceSteps(
+      template?.steps || [],
+      client.syncedMetaTemplates || [],
+      clientId
+    );
+    if (templateFailures.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Selected playbook includes WhatsApp templates that are not approved/eligible.',
+        details: templateFailures,
+      });
+    }
+
+    const limitCheck = await checkLimit(client._id, 'sequences');
+    if (!limitCheck.allowed) {
+      return res.status(403).json({ success: false, message: limitCheck.reason });
+    }
+
+    const enrolledSequences = [];
+    const errors = [];
+    let countMap = await activeSequenceCountMap(
+      clientId,
+      leads.map((l) => l._id)
+    );
+
+    for (const lead of leads) {
+      const lid = String(lead._id);
+      const normalizedPhone = String(lead.phoneNumber || '').replace(/\D/g, '');
+      const normalizedEmail = String(lead.email || '').trim();
+
+      if (templateOnlyEmail && !normalizedEmail) {
+        errors.push({ leadId: lead._id, message: 'Contact has no email address' });
+        continue;
+      }
+      if (templateHasWa && !templateHasEmail && normalizedPhone.length < 10) {
+        errors.push({ leadId: lead._id, message: 'Contact has no valid phone number' });
+        continue;
+      }
+      if (templateHasEmail && templateHasWa && !normalizedEmail && normalizedPhone.length < 10) {
+        errors.push({ leadId: lead._id, message: 'Contact needs email or phone for this hybrid sequence' });
+        continue;
+      }
+
+      const activeCount = countMap.get(lid) || 0;
+      if (activeCount >= MAX_ACTIVE_SEQUENCES) {
+        errors.push({ leadId: lead._id, message: 'Active sequence limit reached' });
+        continue;
+      }
+
+      let currentSendAt = moment();
+      const mappedSteps = (template.steps || []).map((step) => {
+        const normalizedUnit = normalizeDelayUnit(step.delayUnit);
+        const normalizedValue = normalizeDelayValue(step.delayValue);
+        currentSendAt = currentSendAt.add(normalizedValue, normalizedUnit);
+        return {
+          type: step.type || 'whatsapp',
+          templateId: step.templateId,
+          templateName: step.templateName,
+          subject: step.subject,
+          content: step.content,
+          delayValue: normalizedValue,
+          delayUnit: normalizedUnit,
+          condition: step.condition,
+          sendAt: currentSendAt.toDate(),
+          status: 'pending',
+        };
+      });
+
+      const sequence = new FollowUpSequence({
+        clientId,
+        leadId: lead._id,
+        phone: lead.phoneNumber,
+        email: lead.email,
+        name: name || template.name || `After ${campaign.name || 'campaign'}`,
+        type: template.category || 'custom',
+        steps: mappedSteps,
+      });
+
+      await sequence.save();
+      await enqueueDueStepsForSequence(sequence).catch(() => {});
+      countMap.set(lid, activeCount + 1);
+      await AdLead.findByIdAndUpdate(lead._id, { $set: { 'metaData.hasActiveSequence': true } });
+      enrolledSequences.push(sequence);
+    }
+
+    if (enrolledSequences.length > 0) {
+      await incrementUsage(client._id, 'sequences', enrolledSequences.length);
+    }
+
+    return res.json({
+      success: true,
+      count: enrolledSequences.length,
+      skipped: errors.length,
+      errors: errors.length ? errors : undefined,
+      campaignId: String(campaign._id),
+    });
+  } catch (error) {
+    console.error('Campaign sequence enrollment error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to enroll sequence from campaign',
+    });
+  }
 });
 
 // Enroll a sequence from imported CSV audience batch
@@ -606,6 +842,7 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
       });
 
       await sequence.save();
+      await enqueueDueStepsForSequence(sequence).catch(() => {});
       countMap.set(lid, activeCount + 1);
       await AdLead.findByIdAndUpdate(lead._id, { $set: { 'metaData.hasActiveSequence': true } });
       enrolledSequences.push(sequence);

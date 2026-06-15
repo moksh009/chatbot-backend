@@ -2485,33 +2485,85 @@ router.post('/:id/assign', protect, async (req, res) => {
 
 
 /**
+ * Shared resolve side-effects — keeps Leads CRM, Live Chat inbox, and AdLead.pendingSupport in sync.
+ */
+async function applyConversationResolved(conversation, req) {
+  conversation.status = 'BOT_ACTIVE';
+  conversation.requiresAttention = false;
+  conversation.botPaused = false;
+  conversation.isBotPaused = false;
+  conversation.botStatus = 'active';
+  conversation.resolvedAt = new Date();
+  await conversation.save();
+
+  try {
+    const ConversationNote = require('../models/ConversationNote');
+    await ConversationNote.create({
+      conversationId: conversation._id,
+      clientId: conversation.clientId,
+      content: `Ticket marked as RESOLVED by ${req.user?.name || 'Agent'}. Bot is active for new messages.`,
+      authorId: req.user._id,
+      authorName: 'System',
+      createdAt: new Date(),
+    });
+  } catch (noteErr) {
+    console.error('[resolve] Note create failed:', noteErr.message);
+  }
+
+  try {
+    const AdLead = require('../models/AdLead');
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: conversation.phone, clientId: conversation.clientId },
+      { $set: { pendingSupport: false } }
+    );
+  } catch (err) {
+    console.error('[resolve] AdLead pendingSupport clear failed:', err.message);
+  }
+
+  const { triggerCSAT } = require('../utils/core/csatService');
+  await triggerCSAT(conversation);
+
+  const io = req.app?.get('socketio');
+  if (io) {
+    const payload = conversation.toObject ? conversation.toObject() : conversation;
+    const room = `client_${conversation.clientId}`;
+    io.to(room).emit('conversation_resolved', payload);
+    io.to(room).emit('conversation_update', payload);
+    io.to(room).emit('conversationUpdated', {
+      conversationId: conversation._id,
+      status: conversation.status,
+      requiresAttention: conversation.requiresAttention,
+      botStatus: conversation.botStatus,
+    });
+    io.to(room).emit('botStatusChanged', {
+      conversationId: String(conversation._id),
+      botStatus: conversation.botStatus,
+    });
+  }
+
+  return conversation;
+}
+
+async function findConversationForResolve(req) {
+  const clientId = tenantClientId(req);
+  if (!clientId) return { error: { status: 403, message: 'Unauthorized' } };
+  const conversation = await Conversation.findOne({ _id: req.params.id, clientId });
+  if (!conversation) return { error: { status: 404, message: 'Conversation not found' } };
+  return { conversation };
+}
+
+
+/**
  * @route   PUT /api/conversations/:id/resolve
  * @desc    Mark conversation as resolved
  * @access  Private
  */
 router.put('/:id/resolve', protect, async (req, res) => {
   try {
-    const query = { _id: req.params.id };
-    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+    const { conversation, error } = await findConversationForResolve(req);
+    if (error) return res.status(error.status).json({ success: false, message: error.message });
 
-    const conversation = await Conversation.findOne(query);
-    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
-
-    conversation.status = 'BOT_ACTIVE';
-    conversation.botPaused = false;
-    conversation.isBotPaused = false;
-    conversation.resolvedAt = new Date();
-    conversation.requiresAttention = false;
-    await conversation.save();
-
-    // --- Phase 23: Track 6 CSAT Trigger ---
-    const { triggerCSAT } = require('../utils/core/csatService');
-    await triggerCSAT(conversation); 
-
-    const io = req.app.get('socketio');
-
-    if (io) io.to(`client_${conversation.clientId}`).emit('conversation_resolved', conversation);
-
+    await applyConversationResolved(conversation, req);
     res.json({ success: true, conversation });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -2686,14 +2738,23 @@ router.post('/bulk-export', protect, async (req, res) => {
 
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    
+
+    const uniqueIds = [...new Set(ids.map(String))];
+    const valid = await Conversation.countDocuments({
+      _id: { $in: uniqueIds },
+      clientId,
+    });
+    if (valid < uniqueIds.length) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
     // Create Export Job
     const job = await ExportJob.create({
       clientId,
       userId: req.user._id,
       type: `conversations_${format}`,
       status: 'pending',
-      totalItems: ids.length,
+      totalItems: uniqueIds.length,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h expiration
     });
 
@@ -2728,9 +2789,12 @@ router.post('/bulk-export', protect, async (req, res) => {
 
           doc.pipe(stream);
 
-          for (let i = 0; i < ids.length; i++) {
-            const convoId = ids[i];
-            const conversation = await Conversation.findById(convoId).lean();
+          for (let i = 0; i < uniqueIds.length; i++) {
+            const convoId = uniqueIds[i];
+            const conversation = await Conversation.findOne({
+              _id: convoId,
+              clientId: job.clientId,
+            }).lean();
             if (!conversation) continue;
 
             const messages = await Message.find({ conversationId: convoId }).sort({ createdAt: 1 }).lean();
@@ -2763,7 +2827,7 @@ router.post('/bulk-export', protect, async (req, res) => {
             }
             
             job.processedItems = i + 1;
-            job.progress = Math.round(((i + 1) / ids.length) * 100);
+            job.progress = Math.round(((i + 1) / uniqueIds.length) * 100);
             await job.save();
           }
           doc.end();
@@ -2771,11 +2835,15 @@ router.post('/bulk-export', protect, async (req, res) => {
           await new Promise((resolve) => stream.on('finish', resolve));
         } else if (format === 'json') {
           const data = [];
-          for (let i = 0; i < ids.length; i++) {
-             const convo = await Conversation.findById(ids[i]).lean();
-             const msgs  = await Message.find({ conversationId: ids[i] }).lean();
+          for (let i = 0; i < uniqueIds.length; i++) {
+             const convo = await Conversation.findOne({
+               _id: uniqueIds[i],
+               clientId: job.clientId,
+             }).lean();
+             if (!convo) continue;
+             const msgs  = await Message.find({ conversationId: uniqueIds[i] }).lean();
              data.push({ conversation: convo, messages: msgs });
-             job.progress = Math.round(((i + 1) / ids.length) * 100);
+             job.progress = Math.round(((i + 1) / uniqueIds.length) * 100);
              await job.save();
           }
           fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
@@ -3013,63 +3081,10 @@ router.get('/:clientId/:phone/context', protect, logPersonalDataAccess, async (r
 
 router.post('/:id/resolve', protect, async (req, res) => {
     try {
-        const query = { _id: req.params.id };
-        if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+        const { conversation, error } = await findConversationForResolve(req);
+        if (error) return res.status(error.status).json({ success: false, message: error.message });
 
-        const conversation = await Conversation.findOne(query);
-        if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
-
-        conversation.status = 'BOT_ACTIVE';
-        conversation.requiresAttention = false;
-        conversation.botStatus = 'active';
-        conversation.botPaused = false;
-        conversation.isBotPaused = false;
-        conversation.resolvedAt = new Date();
-
-        await conversation.save();
-
-        try {
-            const ConversationNote = require('../models/ConversationNote');
-            await ConversationNote.create({
-                conversationId: conversation._id,
-                clientId: conversation.clientId,
-                content: `Ticket marked as RESOLVED by ${req.user.name || 'Agent'}. Bot is active for new messages.`,
-                authorId: req.user._id,
-                authorName: 'System',
-                createdAt: new Date()
-            });
-        } catch (noteErr) {
-            console.error('[POST resolve] Note create failed:', noteErr.message);
-        }
-
-        try {
-            const AdLead = require('../models/AdLead');
-            await AdLead.findOneAndUpdate(
-                { phoneNumber: conversation.phone, clientId: conversation.clientId },
-                { $set: { pendingSupport: false } }
-            );
-        } catch (err) {}
-
-        const { triggerCSAT } = require('../utils/core/csatService');
-        await triggerCSAT(conversation);
-
-        const io = req.app.get('socketio');
-        if (io) {
-            const payload = conversation.toObject ? conversation.toObject() : conversation;
-            io.to(`client_${conversation.clientId}`).emit('conversation_resolved', payload);
-            io.to(`client_${conversation.clientId}`).emit('conversation_update', payload);
-            io.to(`client_${conversation.clientId}`).emit('conversationUpdated', {
-                conversationId: conversation._id,
-                status: conversation.status,
-                requiresAttention: conversation.requiresAttention,
-                botStatus: conversation.botStatus
-            });
-            io.to(`client_${conversation.clientId}`).emit('botStatusChanged', {
-                conversationId: String(conversation._id),
-                botStatus: conversation.botStatus
-            });
-        }
-
+        await applyConversationResolved(conversation, req);
         res.json({ success: true, conversation });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });

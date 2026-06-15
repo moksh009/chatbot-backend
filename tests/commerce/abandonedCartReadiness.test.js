@@ -104,7 +104,7 @@ test('buildThirdPartyBlock exposes webhook URLs per provider', () => {
   const rows = buildThirdPartyBlock('client_abc', {
     integrations: { gokwik: { webhookSecret: 'secret123' } },
   });
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 4);
   const gokwik = rows.find((r) => r.id === 'gokwik');
   assert.match(gokwik.webhookUrl, /\/api\/webhooks\/gokwik\/client_abc$/);
   assert.equal(gokwik.configured, true);

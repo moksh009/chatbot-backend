@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
+const { CRON_BYPASS_SCOPE } = require('../utils/cron/cronQueryOptions');
 
 const scheduleAbTestCron = () => {
   // A/B test winner evaluator (runs hourly)
@@ -9,7 +10,7 @@ const scheduleAbTestCron = () => {
         isAbTest: true,
         winnerVariant: { $exists: false },
         createdAt: { $lte: new Date(Date.now() - 4 * 60 * 60 * 1000) }
-      });
+      }).setOptions(CRON_BYPASS_SCOPE);
       
       for (const campaign of abCampaigns) {
         if (!campaign.abVariants || campaign.abVariants.length < 2) continue;

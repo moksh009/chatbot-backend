@@ -203,7 +203,7 @@ async function enrichLeadRow(clientId, row) {
 
   const variants = phoneVariants(row.phoneNumber);
   const [orders, conversation] = await Promise.all([
-    findOrdersForLead(clientId, row.phoneNumber, { limit: 50 }),
+    findOrdersForLead(clientId, row.phoneNumber, { limit: 50, email: row.email }),
     variants.length
       ? Conversation.findOne(
           { clientId, phone: { $in: variants } },
@@ -809,10 +809,95 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
   };
 }
 
+/**
+ * Materialize Shopify order-only customers into AdLead so segments/campaigns can target them.
+ */
+async function syncOrderBackedCustomersToAdLeads(clientId) {
+  if (!clientId) return { created: 0, updated: 0, skipped: 0 };
+
+  const orderRows = await loadOrderBackedCustomerRows(clientId);
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const row of orderRows) {
+    const phone = phoneForAdLeadStorage(row.phoneNumber);
+    if (!phone || isShopifyTestPhone(phone)) {
+      skipped += 1;
+      continue;
+    }
+
+    const suffix = phoneSuffixKey(phone);
+    if (!suffix) {
+      skipped += 1;
+      continue;
+    }
+
+    const phoneRegex = new RegExp(`${escapeRegex(suffix)}$`);
+    const existing = await AdLead.findOne({ clientId, phoneNumber: phoneRegex }).lean();
+
+    if (existing) {
+      const nextOrders = Math.max(Number(existing.ordersCount) || 0, Number(row.ordersCount) || 0);
+      const nextSpent = Math.max(Number(existing.totalSpent) || 0, Number(row.totalSpent) || 0);
+      const patch = {
+        ordersCount: nextOrders,
+        totalSpent: nextSpent,
+        lifetimeValue: nextSpent,
+        isOrderPlaced: true,
+      };
+      if (row.lastPurchaseDate) {
+        patch.lastPurchaseDate = row.lastPurchaseDate;
+        patch.lastOrderAt = row.lastOrderAt || row.lastPurchaseDate;
+      }
+      if (row.email && !existing.email) patch.email = row.email;
+      if (row.name && (!existing.name || existing.name === 'Customer')) patch.name = row.name;
+      if (!existing.source || existing.source === 'Direct') patch.source = 'shopify';
+
+      const changed =
+        nextOrders !== (existing.ordersCount || 0) ||
+        nextSpent !== (existing.totalSpent || 0) ||
+        patch.email ||
+        patch.name;
+      if (changed) {
+        await AdLead.updateOne({ _id: existing._id, clientId }, { $set: patch });
+        updated += 1;
+      } else {
+        skipped += 1;
+      }
+      continue;
+    }
+
+    try {
+      await AdLead.create({
+        clientId,
+        phoneNumber: phone,
+        name: row.name || 'Customer',
+        email: row.email || undefined,
+        ordersCount: row.ordersCount || 1,
+        totalSpent: row.totalSpent || 0,
+        lifetimeValue: row.totalSpent || 0,
+        lastPurchaseDate: row.lastPurchaseDate || null,
+        lastOrderAt: row.lastOrderAt || row.lastPurchaseDate || null,
+        isOrderPlaced: true,
+        source: 'shopify',
+        optStatus: 'unknown',
+        leadScore: Math.min(50, 10 + (Number(row.ordersCount) || 1) * 5),
+      });
+      created += 1;
+    } catch (err) {
+      if (err?.code === 11000) skipped += 1;
+      else throw err;
+    }
+  }
+
+  return { created, updated, skipped };
+}
+
 module.exports = {
   buildLeadsListQuery,
   fetchLeadsAnalyticsBundle,
   fetchOrderBackedAudienceBundle,
   shouldUseOrderBackedAudience,
   resolveAudienceLeadById,
+  syncOrderBackedCustomersToAdLeads,
 };

@@ -14,6 +14,8 @@ const PROVIDER_KEYS = {
   gokwik: 'gokwik',
   razorpay_magic: 'razorpay_magic',
   razorpay: 'razorpay_magic',
+  cashfree: 'cashfree_checkout',
+  cashfree_checkout: 'cashfree_checkout',
   shiprocket: 'shiprocket_checkout',
   shiprocket_checkout: 'shiprocket_checkout',
   generic: 'generic',
@@ -104,6 +106,31 @@ function normalizeRazorpayPayload(body = {}) {
   };
 }
 
+function isCashfreeAbandonedCart(body = {}) {
+  const event = String(body.event || body.type || '').toLowerCase();
+  return (
+    event.includes('abandon') ||
+    event.includes('checkout') ||
+    Boolean(body.data?.customer_details?.customer_phone || body.customer_phone)
+  );
+}
+
+function normalizeCashfreePayload(body = {}) {
+  const data = body.data || body;
+  const customer = data.customer_details || data.customer || {};
+  return {
+    phone: customer.customer_phone || customer.phone || data.customer_phone || data.phone,
+    email: customer.customer_email || customer.email || data.customer_email || data.email,
+    customerName: customer.customer_name || customer.name || data.customer_name,
+    cartItems: data.cart_items || data.order_items || [],
+    cartTotal: data.order_amount ?? data.cart_value ?? data.amount,
+    checkoutUrl: data.checkout_url || data.return_url || data.link_url,
+    checkoutToken: data.order_id || data.link_id || data.cart_id,
+    source: 'cashfree',
+    optInSource: 'cashfree_checkout',
+  };
+}
+
 function normalizeShiprocketPayload(body = {}) {
   return {
     phone: body.customer_phone || body.phone,
@@ -130,6 +157,8 @@ async function handleAbandonedCartWebhook(clientId, provider, req) {
     normalized = normalizeRazorpayPayload(body);
   } else if (provider === 'shiprocket' || isShiprocketAbandonedCart(body)) {
     normalized = normalizeShiprocketPayload(body);
+  } else if (provider === 'cashfree' || provider === 'cashfree_checkout' || isCashfreeAbandonedCart(body)) {
+    normalized = normalizeCashfreePayload(body);
   } else {
     const { phone, email, name } = extractLegacyContact(body);
     normalized = {
@@ -254,7 +283,7 @@ async function upsertCheckoutLead({ clientId, provider, phone, email, name, stra
   return { success: result.success, leadId: result.lead?._id, optStatus };
 }
 
-async function handleThirdPartyWebhook(clientId, provider, req) {
+async function handleThirdPartyWebhook(clientId, provider, req, options = {}) {
   const key = integrationKey(provider);
   const client = await Client.findOne({ clientId }).select('audienceContext businessName').lean();
   if (!client) return { status: 404, body: { success: false, message: 'Client not found' } };
@@ -299,16 +328,22 @@ async function handleThirdPartyWebhook(clientId, provider, req) {
     };
   }
 
-  await Client.updateOne(
-    { clientId },
-    {
-      $set: {
-        [`audienceContext.integrations.${key}.lastWebhookAt`]: new Date(),
-        'audienceContext.updatedAt': new Date(),
-      },
-    }
-  );
-  invalidateStackContextCache(clientId);
+  const status = Number(result?.status || 500);
+  const ok = status >= 200 && status < 400 && result?.body?.success !== false;
+  if (ok && options.source === 'partner_inbound') {
+    const now = new Date();
+    await Client.updateOne(
+      { clientId },
+      {
+        $set: {
+          [`audienceContext.integrations.${key}.partnerWebhookReceivedAt`]: now,
+          [`audienceContext.integrations.${key}.lastWebhookAt`]: now,
+          'audienceContext.updatedAt': now,
+        },
+      }
+    );
+    invalidateStackContextCache(clientId);
+  }
 
   return result;
 }

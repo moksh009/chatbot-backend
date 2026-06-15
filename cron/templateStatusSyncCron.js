@@ -81,6 +81,17 @@ async function syncClientTemplates(client) {
       }
     );
 
+    try {
+      const {
+        reconcileSyncedTemplatesWithCatalog,
+        pollPendingMetaTemplatesForClient,
+      } = require('../services/templateLifecycleBridge');
+      await reconcileSyncedTemplatesWithCatalog(client.clientId, freshTemplates);
+      await pollPendingMetaTemplatesForClient(client.clientId);
+    } catch (lifeErr) {
+      log.warn(`[${client.clientId}] Post-sync lifecycle: ${lifeErr.message}`);
+    }
+
     return result;
   } catch (err) {
     // Handle specific Meta API errors

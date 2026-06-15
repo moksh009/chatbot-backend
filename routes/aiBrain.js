@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { requireIntelligenceV2 } = require('../middleware/requireIntelligenceV2');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const Client = require('../models/Client');
 const { buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaAcrossSystem, resolveQuickFaqReply, buildQuickFaqDirective } = require('../utils/core/personaEngine');
@@ -10,7 +11,9 @@ const { callAI } = require('../utils/core/aiGateway');
 const { retrieveKnowledge, notifyRagFailure, isRagUnavailableError, getActiveKnowledgeHealth } = require('../utils/core/ragEngine');
 const { sendAiError } = require('../utils/core/aiProviderErrors');
 
-router.get('/persona', protect, async (req, res) => {
+router.use(protect, requireIntelligenceV2());
+
+router.get('/persona', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -27,7 +30,7 @@ router.get('/persona', protect, async (req, res) => {
   }
 });
 
-router.put('/persona', protect, async (req, res) => {
+router.put('/persona', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -67,21 +70,30 @@ router.put('/persona', protect, async (req, res) => {
   }
 });
 
-router.post('/persona/preview', protect, async (req, res) => {
+router.post('/persona/preview', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const { message, quickFaqs: draftQuickFaqs } = req.body || {};
+    const { message, quickFaqs: draftQuickFaqs, persona: draftPersona } = req.body || {};
     if (!message?.trim()) return res.status(400).json({ error: 'Message is required.' });
 
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.status(404).json({ error: 'Client not found.' });
 
+    const previewPersona =
+      draftPersona && typeof draftPersona === 'object'
+        ? { ...(client.ai?.persona || {}), ...draftPersona }
+        : client.ai?.persona;
+    const previewClient = {
+      ...client,
+      ai: { ...(client.ai || {}), persona: previewPersona },
+    };
+
     const faqResolved = resolveQuickFaqReply(
-      client,
+      previewClient,
       message.trim(),
-      client.ai?.persona,
+      previewPersona,
       Array.isArray(draftQuickFaqs) ? draftQuickFaqs : null
     );
 
@@ -127,7 +139,7 @@ router.post('/persona/preview', protect, async (req, res) => {
     const faqMatch = faqResolved.faqMatch;
 
     const systemPrompt = buildPersonaSystemPrompt(
-      client,
+      previewClient,
       ragContext ? `RETRIEVED KNOWLEDGE (use when relevant — do not invent facts):\n${ragContext}` : ''
     );
 
@@ -140,7 +152,7 @@ router.post('/persona/preview', protect, async (req, res) => {
       temperature: 0.55,
     });
 
-    const reply = applyPersonaPostProcess(result.content, client.ai?.persona);
+    const reply = applyPersonaPostProcess(result.content, previewPersona);
 
     res.json({
       reply,

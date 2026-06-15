@@ -138,16 +138,97 @@ module.exports = {
                 zip
                 address1
               }
+              orders(first: 25, sortKey: CREATED_AT, reverse: true) {
+                edges {
+                  node {
+                    id
+                    name
+                    createdAt
+                    displayFinancialStatus
+                    totalPriceSet {
+                      shopMoney {
+                        amount
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
         `;
         try {
-            // Shopify query syntax for phone search
             const result = await executeGraphQL(clientId, query, { query: `phone:${phone}` });
-            return result.customers.nodes[0] || null;
+            const node = result.customers.nodes[0] || null;
+            if (!node) return null;
+            return {
+              ...node,
+              orders: {
+                edges: (node.orders?.edges || []).map((edge) => ({
+                  node: {
+                    id: edge.node.id,
+                    name: edge.node.name,
+                    createdAt: edge.node.createdAt,
+                    financialStatus: edge.node.displayFinancialStatus,
+                    totalPrice: parseFloat(edge.node.totalPriceSet?.shopMoney?.amount || 0),
+                  },
+                })),
+              },
+            };
         } catch (err) {
             log.error(`Failed to search customer for ${clientId}:`, err.message);
+            return null;
+        }
+    },
+    searchCustomerByEmail: async (clientId, email) => {
+        const query = `
+        query searchCustomer($query: String!) {
+          customers(first: 1, query: $query) {
+            nodes {
+              id
+              firstName
+              lastName
+              email
+              phone
+              orders(first: 25, sortKey: CREATED_AT, reverse: true) {
+                edges {
+                  node {
+                    id
+                    name
+                    createdAt
+                    displayFinancialStatus
+                    totalPriceSet {
+                      shopMoney {
+                        amount
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        `;
+        try {
+            const result = await executeGraphQL(clientId, query, { query: `email:${email}` });
+            const node = result.customers.nodes[0] || null;
+            if (!node) return null;
+            return {
+              ...node,
+              orders: {
+                edges: (node.orders?.edges || []).map((edge) => ({
+                  node: {
+                    id: edge.node.id,
+                    name: edge.node.name,
+                    createdAt: edge.node.createdAt,
+                    financialStatus: edge.node.displayFinancialStatus,
+                    totalPrice: parseFloat(edge.node.totalPriceSet?.shopMoney?.amount || 0),
+                  },
+                })),
+              },
+            };
+        } catch (err) {
+            log.error(`Failed to search customer by email for ${clientId}:`, err.message);
             return null;
         }
     }

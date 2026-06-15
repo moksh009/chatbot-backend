@@ -37,6 +37,8 @@ async function createShopifyDraftOrder(client, originalOrder, discountCode) {
 }
 
 function isCodPrepaidEnabled(client) {
+  // Merchant Settings marks this Coming soon — keep dispatch off until COD_PREPAID_LIVE=true.
+  if (process.env.COD_PREPAID_LIVE !== 'true') return false;
   if (readFeatureFromClient(client, 'codToPrepaid')) return true;
   const flow = (client.automationFlows || []).find((f) => f.id === 'cod_to_prepaid');
   return flow?.isActive === true;

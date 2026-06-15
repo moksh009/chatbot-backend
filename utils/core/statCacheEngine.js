@@ -4,7 +4,7 @@ const Order = require('../../models/Order');
 const Conversation = require('../../models/Conversation');
 const Appointment = require('../../models/Appointment');
 const DailyStat = require('../../models/DailyStat');
-const { startOfDayIST, startOfDayForDateStrIST } = require('./queryHelpers');
+const { startOfDayForDateStrIST, todayDateStrIST } = require('./queryHelpers');
 const log = require('./logger')('StatCache');
 
 /**
@@ -38,7 +38,7 @@ async function rebuildCache(clientId) {
     const timer = createTimer('statCacheEngine.rebuildCache', clientId);
     timer.checkpoint('START');
 
-    const today = startOfDayIST();
+    const today = startOfDayForDateStrIST(todayDateStrIST());
     const query = { clientId };
 
     const {

@@ -49,6 +49,24 @@ const {
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 const { isWorkspaceEmailReady } = require('../utils/core/emailService');
 
+async function resolveCampaignTemplateForPreflight(clientId, templateName, synced = []) {
+  const fromSync = (synced || []).find((t) => t?.name === templateName);
+  if (fromSync) return fromSync;
+  const { resolveTemplateForSend } = require('../services/templateResolver');
+  const resolved = await resolveTemplateForSend(clientId, { name: templateName });
+  if (!resolved?.template) return null;
+  const sub = String(resolved.template.submissionStatus || resolved.template.status || '').toLowerCase();
+  return {
+    name: templateName,
+    status: sub === 'approved' ? 'APPROVED' : String(resolved.template.status || 'DRAFT').toUpperCase(),
+    components: resolved.template.components,
+    primaryPurpose: resolved.template.primaryPurpose || 'campaign',
+    secondaryPurposes: Array.isArray(resolved.template.secondaryPurposes)
+      ? resolved.template.secondaryPurposes
+      : ['campaign', 'utility'],
+  };
+}
+
 /** Hot-leads smart-send audience (leadScore ≥ 60, marketing-opt-in safe). */
 async function resolveHotLeadsAudience(clientId, limit, campaign) {
   const optQ = audienceOptQueryForCampaign(campaign);
@@ -141,8 +159,6 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       return res.status(403).json({ message: limits.reason });
     }
 
-    await incrementUsage(client._id, 'campaigns', 1);
-
     const rows = [];
     await new Promise((resolve, reject) => {
       fs.createReadStream(req.file.path)
@@ -175,6 +191,12 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
     });
 
     const validCount = audience.length;
+    if (validCount === 0) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(400).json({ message: 'No valid contacts found in CSV. Map phone or email columns.' });
+    }
+
+    await incrementUsage(client._id, 'campaigns', 1);
 
     const campaign = await Campaign.create({
       clientId: tenantId,
@@ -421,25 +443,17 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       });
     }
 
-    const { resolveTemplateForSend } = require('../services/templateResolver');
-    const resolved = await resolveTemplateForSend(clientId, { name: templateName });
-    if (!resolved?.template) {
+    const eligibilityTpl = await resolveCampaignTemplateForPreflight(
+      clientId,
+      templateName,
+      client.syncedMetaTemplates || []
+    );
+    if (!eligibilityTpl) {
       return res.status(400).json({
         success: false,
         message: `Template "${templateName}" was not found. Open Meta Manager and sync approved templates.`,
       });
     }
-
-    const syncedTpl = (client.syncedMetaTemplates || []).find((t) => t?.name === templateName);
-    const eligibilityTpl = syncedTpl || {
-      name: templateName,
-      status: resolved.template.submissionStatus === 'approved' ? 'APPROVED' : 'APPROVED',
-      components: resolved.template.components,
-      primaryPurpose: resolved.template.primaryPurpose || 'campaign',
-      secondaryPurposes: Array.isArray(resolved.template.secondaryPurposes)
-        ? resolved.template.secondaryPurposes
-        : ['campaign', 'utility'],
-    };
 
     const preflight = validateTemplateEligibility({
       template: eligibilityTpl,
@@ -1104,7 +1118,7 @@ router.post('/preflight', protect, async (req, res) => {
     if (!isEmail && templateName) {
       const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
       const synced = client?.syncedMetaTemplates || [];
-      const tpl = synced.find((t) => t?.name === templateName);
+      const tpl = await resolveCampaignTemplateForPreflight(clientId, templateName, synced);
       if (!tpl) {
         blockers.push({
           code: 'template_missing',
@@ -1217,7 +1231,7 @@ router.post('/estimate-cost', protect, async (req, res) => {
 // @route   POST /api/campaigns/start
 // @desc    Start a CSV campaign and send messages
 // @access  Private
-router.post('/start', protect, async (req, res) => {
+router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (req, res) => {
   const { campaignId, templateType } = req.body;
   if (!campaignId) {
     return res.status(400).json({ message: 'campaignId is required' });
@@ -1341,7 +1355,7 @@ router.post('/start', protect, async (req, res) => {
             const limit = Math.max(1, Number(campaign.audienceCount) || 50);
             campaign.audience = await resolveHotLeadsAudience(effectiveClientId, limit, campaign);
         } else if (campaign.segmentId) {
-            const segment = await Segment.findById(campaign.segmentId);
+            const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
             if (segment) {
                 const leads = await AdLead.find({
                   ...segment.query,
@@ -1449,7 +1463,14 @@ router.post('/start', protect, async (req, res) => {
     const candidateTemplateName = req.body.templateName || actualTemplateName || campaign.templateName;
     if (candidateTemplateName && !isEmailChannel) {
         const synced = client.syncedMetaTemplates || [];
-        const tpl = synced.find(t => t?.name === candidateTemplateName);
+        const tpl = await resolveCampaignTemplateForPreflight(tenantClientId(req), candidateTemplateName, synced);
+        if (!tpl) {
+          campaign.status = 'FAILED';
+          await campaign.save();
+          return res.status(400).json({
+            message: `Template "${candidateTemplateName}" is not synced from Meta. Open Meta Manager and sync templates.`,
+          });
+        }
         const mappedVariables = Object.keys(campaign.variableMapping || {})
           .sort((a, b) => Number(a) - Number(b))
           .map((k) => campaign.variableMapping[k]);

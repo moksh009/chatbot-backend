@@ -54,12 +54,32 @@ router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (
   const legacy = contract._legacy || buildConnectionStatusPayload(client);
   delete contract._legacy;
 
+  let workerHealth = null;
+  try {
+    const { buildWorkerHealthSnapshot } = require('../utils/hub/workerHealth');
+    workerHealth = await buildWorkerHealthSnapshot();
+  } catch (workerErr) {
+    console.warn('[workspace] workerHealth:', workerErr.message);
+    workerHealth = { workerHealthy: false, error: workerErr.message };
+  }
+
+  if (client?.shopifyAccessToken && client?.shopDomain) {
+    try {
+      const { getPixelWebhookSecret, ensurePixelWebhookSecret } = require('../utils/commerce/pixelWebhookSecret');
+      const pixelSecret = await getPixelWebhookSecret(clientId);
+      if (!pixelSecret) await ensurePixelWebhookSecret(clientId);
+    } catch (pixelErr) {
+      console.warn('[workspace] pixelWebhookSecret backfill:', pixelErr.message);
+    }
+  }
+
   const payload = {
     ...contract,
     shopify_connected: legacy.shopify_connected,
     whatsapp_connected: legacy.whatsapp_connected,
     meta_connected: legacy.meta_connected,
     instagram_connected: legacy.instagram_connected,
+    workerHealth,
     featureRollout: {
       smartRulesEngine: isSmartRulesEngineEnabled(),
       websiteChatWidgetSettings: isWebsiteChatWidgetSettingsEnabled(),

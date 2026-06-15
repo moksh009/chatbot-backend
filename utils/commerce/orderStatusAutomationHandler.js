@@ -172,24 +172,38 @@ async function alreadySentForOrder({ clientId, orderId, statusKey, channel = 'wh
 
 async function recordRuleSendOutcome(clientId, ruleId, outcome = {}) {
   if (!clientId || !ruleId) return;
+  let errorCode = outcome.sent
+    ? null
+    : String(outcome.reason || outcome.error || 'send_failed').slice(0, 240);
+  if (errorCode === 'not_approved' || errorCode === 'prebuilt_not_approved') {
+    errorCode = 'TEMPLATE_NOT_APPROVED';
+  }
   const patch = {
     lastSendAt: new Date(),
     lastSendStatus: outcome.sent ? 'sent' : 'failed',
-    lastSendError: outcome.sent
-      ? null
-      : String(outcome.reason || outcome.error || 'send_failed').slice(0, 240),
+    lastSendError: errorCode,
   };
   try {
+    const setFields = {
+      'commerceAutomations.$.lastSendAt': patch.lastSendAt,
+      'commerceAutomations.$.lastSendStatus': patch.lastSendStatus,
+      'commerceAutomations.$.lastSendError': patch.lastSendError,
+    };
+    if (errorCode) {
+      setFields['commerceAutomations.$.lastSendErrorAt'] = new Date();
+    }
     await Client.updateOne(
       { clientId, 'commerceAutomations.id': String(ruleId) },
-      {
-        $set: {
-          'commerceAutomations.$.lastSendAt': patch.lastSendAt,
-          'commerceAutomations.$.lastSendStatus': patch.lastSendStatus,
-          'commerceAutomations.$.lastSendError': patch.lastSendError,
-        },
-      }
+      { $set: setFields }
     );
+    if (!outcome.sent && errorCode === 'TEMPLATE_NOT_APPROVED' && global.io) {
+      global.io.to(`client:${clientId}`).emit('automation_send_failed', {
+        type: 'automation_send_failed',
+        ruleId: String(ruleId),
+        reason: errorCode,
+        clientId,
+      });
+    }
   } catch (err) {
     log.warn(`recordRuleSendOutcome failed for ${ruleId}: ${err.message}`);
   }
@@ -343,7 +357,11 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
     return { sent: true, channel: 'whatsapp', ruleId: rule.id };
   }
 
-  const failReason = result?.whatsapp?.reason || result?.failureCode || 'send_failed';
+  const failReasonRaw = result?.failureCode || result?.whatsapp?.reason || 'send_failed';
+  const failReason =
+    failReasonRaw === 'not_approved' || failReasonRaw === 'prebuilt_not_approved'
+      ? 'TEMPLATE_NOT_APPROVED'
+      : failReasonRaw;
   await logRuleDispatchActivity({
     client,
     payload,
@@ -550,6 +568,18 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
   if (fulfillment) checks.push({ type: 'fulfillment', status: fulfillment });
 
   for (const { type, status } of checks) {
+    if (type === 'financial' && status === 'pending') {
+      const { detectCodFromShopify } = require('../shopify/shopifyOrderMapper');
+      const rp = client.rtoProtection || {};
+      const requireCod =
+        rp.requireCodConfirmation === true || client.requireCodConfirmation === true;
+      if (requireCod && detectCodFromShopify(payload)) {
+        log.info(
+          `[${source}] Skipping financial pending — COD confirmation handles order ${payload.id || payload.order_id}`
+        );
+        continue;
+      }
+    }
     const statusKey = buildStatusKey(type, status);
     const matching = rules.filter((r) => ruleMatchesStatus(r, type, status));
     if (!matching.length) continue;

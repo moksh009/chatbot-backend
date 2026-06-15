@@ -391,6 +391,20 @@ function dedupeLeadsForWorkspace(leads = []) {
   return merged;
 }
 
+const PLACEHOLDER_CUSTOMER_NAMES = new Set([
+  '',
+  'checkout customer',
+  'guest',
+  'guest shopper',
+  'a customer',
+  'customer',
+  'shopify customer',
+]);
+
+function isPlaceholderCustomerName(name) {
+  return PLACEHOLDER_CUSTOMER_NAMES.has(String(name || '').trim().toLowerCase());
+}
+
 function formatAddressBlock(addr = {}) {
   if (!addr || typeof addr !== 'object') return null;
   const line1 = String(addr.address1 || addr.line1 || '').trim();
@@ -402,7 +416,7 @@ function formatAddressBlock(addr = {}) {
   const name = [addr.first_name, addr.last_name].filter(Boolean).join(' ').trim() || String(addr.name || '').trim();
   const phone = addr.phone ? String(addr.phone).trim() : null;
   if (!line1 && !city && !name && !phone) return null;
-  const parts = [name, line1, line2, [city, province, zip].filter(Boolean).join(', '), country].filter(Boolean);
+  const parts = [line1, line2, [city, province, zip].filter(Boolean).join(', '), country].filter(Boolean);
   return {
     name: name || null,
     phone,
@@ -412,16 +426,78 @@ function formatAddressBlock(addr = {}) {
     province: province || null,
     zip: zip || null,
     country: country || null,
-    formatted: parts.join(' · ') || null,
+    formatted: parts.join(', ') || null,
   };
 }
 
-function buildCheckoutContact(lead) {
+function formatAddressBlockFromOrder(order) {
+  if (!order || typeof order !== 'object') return null;
+  const shipping = order.shippingAddress && typeof order.shippingAddress === 'object'
+    ? formatAddressBlock(order.shippingAddress)
+    : null;
+  if (shipping?.formatted) return shipping;
+  const line1 = String(order.address || '').trim();
+  const city = String(order.city || '').trim();
+  const province = String(order.state || '').trim();
+  const zip = String(order.zip || '').trim();
+  if (!line1 && !city) return null;
+  return formatAddressBlock({
+    address1: line1,
+    city,
+    province,
+    zip,
+    name: order.customerName || order.name,
+    phone: order.customerPhone || order.phone,
+  });
+}
+
+function resolveCustomerName(lead, contact = {}, order = null) {
+  const candidates = [
+    lead?.name,
+    contact?.name,
+    contact?.shipping?.name,
+    contact?.billing?.name,
+    order?.customerName,
+    order?.name,
+    order?.shippingAddress?.name,
+    [order?.shippingAddress?.first_name, order?.shippingAddress?.last_name].filter(Boolean).join(' '),
+    order?.billingAddress?.name,
+    [order?.billingAddress?.first_name, order?.billingAddress?.last_name].filter(Boolean).join(' '),
+  ];
+  for (const raw of candidates) {
+    const name = String(raw || '').trim();
+    if (name && !isPlaceholderCustomerName(name)) return name;
+  }
+  return 'Guest shopper';
+}
+
+function enrichContactFromOrder(contact = {}, order = null) {
+  const next = { ...contact };
+  if (!order) return next;
+
+  const orderShipping = formatAddressBlockFromOrder(order);
+  const orderBilling = order.billingAddress && typeof order.billingAddress === 'object'
+    ? formatAddressBlock(order.billingAddress)
+    : null;
+
+  if (!next.shipping?.formatted && orderShipping?.formatted) next.shipping = orderShipping;
+  if (!next.billing?.formatted && orderBilling?.formatted) next.billing = orderBilling;
+
+  if (!next.email) next.email = order.customerEmail || order.email || null;
+  if (!next.phone) next.phone = order.customerPhone || order.phone || null;
+  if (isPlaceholderCustomerName(next.name)) {
+    const resolved = resolveCustomerName(null, next, order);
+    if (!isPlaceholderCustomerName(resolved)) next.name = resolved;
+  }
+  return next;
+}
+
+function buildCheckoutContact(lead, order = null) {
   const meta = lead?.meta && typeof lead.meta === 'object' ? lead.meta : {};
   const checkout = meta.checkoutContact && typeof meta.checkoutContact === 'object' ? meta.checkoutContact : {};
   const shipping = formatAddressBlock(checkout.shipping);
   const billing = formatAddressBlock(checkout.billing);
-  return {
+  const base = {
     name: lead?.name || checkout.name || shipping?.name || billing?.name || null,
     phone: lead?.phoneNumber && !isPlaceholderPhone(lead.phoneNumber) ? lead.phoneNumber : shipping?.phone || billing?.phone || null,
     email: lead?.email || checkout.email || null,
@@ -433,6 +509,7 @@ function buildCheckoutContact(lead) {
     referrerDomain: lead?.referrerDomain || null,
     source: lead?.source || null,
   };
+  return enrichContactFromOrder(base, order);
 }
 
 function resolveCustomerTags(lead, { recovered, nonRecoverable }) {
@@ -518,7 +595,7 @@ async function latestOrdersByPhone(clientId, phones = [], leadsByPhone = new Map
   const orders = await Order.find({ clientId })
     .sort({ createdAt: -1 })
     .select(
-      'phone customerPhone orderId orderNumber shopifyOrderId financialStatus fulfillmentStatus status totalPrice amount createdAt customerEmail'
+      'phone customerPhone customerName name customerEmail email orderId orderNumber shopifyOrderId financialStatus fulfillmentStatus status totalPrice amount createdAt address city state zip shippingAddress billingAddress checkoutToken'
     )
     .limit(5000)
     .lean();
@@ -590,6 +667,8 @@ function buildRecoveredOrderPayload(lead, latestOrder, attempt, recovered) {
 
   if (!orderRef && !totalPrice && !createdAt) return null;
 
+  const shipping = formatAddressBlockFromOrder(latestOrder);
+
   return {
     orderNumber: orderRef || '',
     orderId: orderRef || String(latestOrder?._id || ''),
@@ -598,6 +677,10 @@ function buildRecoveredOrderPayload(lead, latestOrder, attempt, recovered) {
     createdAt,
     recoveredViaWhatsapp: Boolean(attempt?.recoveredViaWhatsapp || isWaRecoveredLead(lead)),
     displayLabel: orderRef ? `Order #${orderRef}` : 'Order placed',
+    customerName: latestOrder?.customerName || latestOrder?.name || shipping?.name || null,
+    customerEmail: latestOrder?.customerEmail || latestOrder?.email || null,
+    customerPhone: latestOrder?.customerPhone || latestOrder?.phone || null,
+    shippingAddress: shipping,
   };
 }
 
@@ -848,14 +931,15 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     const isInCheckout = lead.cartStatus === 'active' && !!lead.contactCapturedAt;
     const canShowPredicted = active && !nonRecoverable && !isInCheckout;
     const leadTags = resolveCustomerTags(lead, { recovered, nonRecoverable });
-    const checkoutContact = buildCheckoutContact(lead);
+    const checkoutContact = buildCheckoutContact(lead, latestOrder);
+    const displayName = resolveCustomerName(lead, checkoutContact, latestOrder);
 
     rows.push({
       id: String(lead._id),
       customer: {
-        name: lead.name || 'Guest',
+        name: displayName,
         phone: lead.phoneNumber,
-        email: lead.email || checkoutContact.email || null,
+        email: lead.email || checkoutContact.email || latestOrder?.customerEmail || latestOrder?.email || null,
         phoneDisplay: formatLeadContactDisplay(lead),
         tags: leadTags,
         contact: checkoutContact,

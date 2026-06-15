@@ -33,7 +33,9 @@ const CommerceShopifySchema = new mongoose.Schema({
   refreshToken: { type: String, default: "" }, 
   clientId: { type: String, default: "" },
   clientSecret: { type: String, default: "" }, 
-  webhookSecret: { type: String, default: "" } 
+  webhookSecret: { type: String, default: "" },
+  /** Shared secret for theme/extension posts to /api/client/:id/webhook/shopify/* */
+  pixelWebhookSecret: { type: String, default: "" },
 }, { _id: false });
 
 const CommerceSchema = new mongoose.Schema({
@@ -293,6 +295,7 @@ const ClientSchema = new mongoose.Schema({
         'shopify_native',
         'gokwik',
         'razorpay_magic',
+        'cashfree',
         'shiprocket',
         'other_third_party',
         'unknown',
@@ -312,23 +315,34 @@ const ClientSchema = new mongoose.Schema({
         consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
         lastWebhookAt: { type: Date, default: null },
         lastTestAt: { type: Date, default: null },
+        partnerWebhookReceivedAt: { type: Date, default: null },
       },
       razorpay_magic: {
         webhookSecret: { type: String, default: '' },
         consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
         lastWebhookAt: { type: Date, default: null },
         lastTestAt: { type: Date, default: null },
+        partnerWebhookReceivedAt: { type: Date, default: null },
       },
       shiprocket_checkout: {
         webhookSecret: { type: String, default: '' },
         consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
         lastWebhookAt: { type: Date, default: null },
         lastTestAt: { type: Date, default: null },
+        partnerWebhookReceivedAt: { type: Date, default: null },
+      },
+      cashfree_checkout: {
+        webhookSecret: { type: String, default: '' },
+        consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
+        lastWebhookAt: { type: Date, default: null },
+        lastTestAt: { type: Date, default: null },
+        partnerWebhookReceivedAt: { type: Date, default: null },
       },
       generic: {
         webhookSecret: { type: String, default: '' },
         consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
         lastWebhookAt: { type: Date, default: null },
+        partnerWebhookReceivedAt: { type: Date, default: null },
       },
     },
     manualOverrides: {
@@ -459,9 +473,10 @@ const ClientSchema = new mongoose.Schema({
   /** Website chat widget (Settings → Chat Widget, public/widget.js) */
   websiteChatWidgetConfig: {
     enabled: { type: Boolean, default: true },
-    mode: { type: String, default: 'both' }, // whatsapp | form | both | guided
-    experience: { type: String, default: 'classic' }, // classic | guided
+    mode: { type: String, default: 'chat' },
+    experience: { type: String, default: 'chat' },
     flowId: { type: String, default: '' },
+    aiRepliesEnabled: { type: Boolean, default: true },
     theme: { type: String, default: '#7C3AED' },
     themeSecondary: { type: String, default: '#5B21B6' },
     position: { type: String, default: 'bottom-right' },
@@ -472,7 +487,7 @@ const ClientSchema = new mongoose.Schema({
     headerTitle: { type: String, default: '' },
     headerSubtitle: { type: String, default: '' },
     showPoweredBy: { type: Boolean, default: true },
-    poweredByText: { type: String, default: 'Powered by AI' },
+    poweredByText: { type: String, default: 'Created by TopEdge AI' },
     poweredByUrl: { type: String, default: 'https://topedgeai.com' },
     logoUrl: { type: String, default: '' },
     launcherStyle: { type: String, default: 'pill' }, // circle | pill
@@ -487,7 +502,26 @@ const ClientSchema = new mongoose.Schema({
   rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
   logisticsPartner: {
     type: String,
-    enum: ['shiprocket', 'nimbuspost', 'ithink', 'shyplite', 'other', 'unknown'],
+    enum: [
+      'shiprocket',
+      'nimbuspost',
+      'ithink',
+      'shyplite',
+      'shipway',
+      'easyship',
+      'shippo',
+      'delhivery',
+      'bluedart',
+      'xpressbees',
+      'dtdc',
+      'ekart',
+      'usps',
+      'ups',
+      'fedex',
+      'dhl',
+      'other',
+      'unknown',
+    ],
     default: 'unknown',
   },
   logisticsMode: {
@@ -1170,6 +1204,7 @@ function encryptSubDocs(doc) {
   if (doc.commerce?.shopify?.refreshToken) doc.commerce.shopify.refreshToken = enc(doc.commerce.shopify.refreshToken);
   if (doc.commerce?.shopify?.clientSecret) doc.commerce.shopify.clientSecret = enc(doc.commerce.shopify.clientSecret);
   if (doc.commerce?.shopify?.webhookSecret) doc.commerce.shopify.webhookSecret = enc(doc.commerce.shopify.webhookSecret);
+  if (doc.commerce?.shopify?.pixelWebhookSecret) doc.commerce.shopify.pixelWebhookSecret = enc(doc.commerce.shopify.pixelWebhookSecret);
   if (doc.ai?.geminiKey) doc.ai.geminiKey = enc(doc.ai.geminiKey);
   if (doc.ai?.openaiKey) doc.ai.openaiKey = enc(doc.ai.openaiKey);
   if (doc.social?.instagram?.accessToken) doc.social.instagram.accessToken = enc(doc.social.instagram.accessToken);
@@ -1283,7 +1318,7 @@ function encryptUpdateQuery(update) {
   };
   
   const encPaths = [
-    'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
+    'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret', 'commerce.shopify.pixelWebhookSecret',
     'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
     'whatsappToken', 'metaCatalogAccessToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 

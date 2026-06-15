@@ -1617,6 +1617,13 @@ router.patch("/:clientId/features", protect, async (req, res) => {
 
     const $set = mapFeatureToggle(features);
 
+    if (features.enableCodToPrepaid === true) {
+      return res.status(400).json({
+        success: false,
+        error: 'COD → Prepaid nudge is coming soon and cannot be enabled yet.',
+      });
+    }
+
     if (features.enableWarranty === true && wasWarrantyOff) {
       $set['wizardFeatures.warrantyEnabledAt'] = new Date();
     }

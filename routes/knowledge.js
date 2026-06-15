@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { requireIntelligenceV2 } = require('../middleware/requireIntelligenceV2');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const KnowledgeDocument = require('../models/KnowledgeDocument');
 const { buildKnowledgeFromWebsite } = require('../utils/core/websiteKnowledgeBuilder');
@@ -15,7 +16,9 @@ const {
 } = require('../utils/core/ragEngine');
 const { sendAiError, isAiProviderError } = require('../utils/core/aiProviderErrors');
 
-router.get('/stats', protect, async (req, res) => {
+router.use(protect, requireIntelligenceV2());
+
+router.get('/stats', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -26,7 +29,7 @@ router.get('/stats', protect, async (req, res) => {
   }
 });
 
-router.get('/documents', protect, async (req, res) => {
+router.get('/documents', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -44,7 +47,7 @@ router.get('/documents', protect, async (req, res) => {
   }
 });
 
-router.post('/documents', protect, async (req, res) => {
+router.post('/documents', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -72,7 +75,7 @@ router.post('/documents', protect, async (req, res) => {
   }
 });
 
-router.put('/documents/:id', protect, async (req, res) => {
+router.put('/documents/:id', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -107,7 +110,7 @@ router.put('/documents/:id', protect, async (req, res) => {
   }
 });
 
-router.delete('/documents/:id', protect, async (req, res) => {
+router.delete('/documents/:id', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -120,7 +123,7 @@ router.delete('/documents/:id', protect, async (req, res) => {
   }
 });
 
-router.post('/import-url', protect, async (req, res) => {
+router.post('/import-url', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -210,7 +213,7 @@ async function embedDocumentNow(documentId, clientId, { force = false } = {}) {
   await queueDocumentEmbedding(documentId, clientId, { force: false });
 }
 
-router.post('/documents/:id/reembed', protect, async (req, res) => {
+router.post('/documents/:id/reembed', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -237,7 +240,7 @@ router.post('/documents/:id/reembed', protect, async (req, res) => {
   }
 });
 
-router.post('/process-pending-embeddings', protect, async (req, res) => {
+router.post('/process-pending-embeddings', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -263,7 +266,7 @@ router.post('/process-pending-embeddings', protect, async (req, res) => {
   }
 });
 
-router.post('/test', protect, async (req, res) => {
+router.post('/test', async (req, res) => {
   const clientId = tenantClientId(req);
   try {
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });

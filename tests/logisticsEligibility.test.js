@@ -3,7 +3,11 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { canEnableShipmentRule } = require('../services/logisticsEligibilityService');
-const { shipmentStatusToRuleId } = require('../constants/logisticsPartnerRegistry');
+const {
+  shipmentStatusToRuleId,
+  getPartnerDef,
+  listPartnersForUi,
+} = require('../constants/logisticsPartnerRegistry');
 
 describe('logisticsEligibilityService', () => {
   it('allows delivered on shopify_only without direct webhook', () => {
@@ -52,5 +56,20 @@ describe('logisticsEligibilityService', () => {
     const gate = canEnableShipmentRule(client, 'sys_shipment_out_for_delivery');
     assert.equal(gate.allowed, true);
     assert.equal(gate.path, 'shopify_observed');
+  });
+
+  it('resolves expanded partner catalog entries', () => {
+    const del = getPartnerDef('delhivery');
+    assert.equal(del.id, 'delhivery');
+    assert.equal(del.providerCode, 'del');
+    assert.ok(del.setupCopy.length > 0);
+
+    const usps = getPartnerDef('usps');
+    assert.equal(usps.supportsDirectWebhook, false);
+
+    const partners = listPartnersForUi().map((p) => p.id);
+    assert.ok(partners.includes('shipway'));
+    assert.ok(partners.includes('dhl'));
+    assert.ok(partners.includes('delhivery'));
   });
 });

@@ -3,6 +3,7 @@ const log = require('../utils/core/logger')('ApiCache');
 const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
 
 const memoryCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 /** Lazily resolve Redis — skip when connection is dead (use memory fallback). */
 function getRedisForCache() {
@@ -44,7 +45,8 @@ const apiCache = (ttlSeconds = 60) => {
       return next();
     }
 
-    const clientId = req.user?.clientId || req.params?.clientId || 'public';
+    const scopedClientId = tenantClientId(req);
+    const clientId = scopedClientId || req.user?.clientId || req.params?.clientId || 'public';
     const route = req.originalUrl || req.url;
 
     let cacheKey = `api_cache:${clientId}:${route}`;

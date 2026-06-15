@@ -843,7 +843,9 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
             orderId,
             duration,
             durationMonths,
-            purchaseDate
+            purchaseDate,
+            customerName,
+            customerEmail,
         } = req.body || {};
 
         if (!phoneNumber || !productName) {
@@ -856,13 +858,29 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
         const expiry = new Date(purchase);
         expiry.setMonth(expiry.getMonth() + months);
 
+        const resolvedName = String(customerName || '').trim() || 'Manual Customer';
+        const resolvedEmail = String(customerEmail || '').trim().toLowerCase() || '';
+
         let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
         if (!contact) {
             contact = await Contact.create({
                 clientId,
                 phoneNumber: normalizedPhone,
-                name: 'Manual Customer'
+                name: resolvedName,
+                ...(resolvedEmail ? { email: resolvedEmail } : {}),
             });
+        } else {
+            const contactPatch = {};
+            if (resolvedName && resolvedName !== 'Manual Customer' && (!contact.name || contact.name === 'Manual Customer')) {
+                contactPatch.name = resolvedName;
+            }
+            if (resolvedEmail && !contact.email) {
+                contactPatch.email = resolvedEmail;
+            }
+            if (Object.keys(contactPatch).length) {
+                await Contact.updateOne({ _id: contact._id }, { $set: contactPatch });
+                contact = { ...contact, ...contactPatch };
+            }
         }
 
         let batch = await WarrantyBatch.findOne({ clientId, status: 'active' }).sort({ createdAt: -1 });

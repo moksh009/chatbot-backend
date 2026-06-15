@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
+const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
@@ -1186,7 +1186,7 @@ router.get('/overrides', protect, async (req, res) => {
     try {
         const clientId = tenantClientId(req) || req.query.clientId;
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        await getClientCredentials(clientId, req.user.id);
+        if (!denyUnlessTenant(req, res, clientId)) return;
         const data = await listOverridesForClient(clientId);
         if (!data) return res.status(404).json({ success: false, message: 'Client not found' });
         return res.json({ success: true, data });
@@ -1199,7 +1199,7 @@ router.patch('/overrides/:slotId', protect, async (req, res) => {
     try {
         const clientId = tenantClientId(req) || req.body?.clientId;
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        await getClientCredentials(clientId, req.user.id);
+        if (!denyUnlessTenant(req, res, clientId)) return;
         const result = await patchOverrideForSlot(clientId, req.params.slotId, req.body || {});
         return res.json({ success: true, data: result });
     } catch (error) {

@@ -297,7 +297,7 @@
         {
           "id": "admin_human_alert",
           "title": "Admin handoff alert",
-          "description": "Ping your team when a shopper asks for a human in chat.",
+          "description": "WhatsApp alert to your team when a shopper needs a human — includes customer name, phone, chat summary, and a button to open Live Chat.",
           "canonicalMetaName": "admin_human_alert",
           "metaNames": ["admin_human_alert", "admin_handoff"],
           "usedIn": ["Live chat", "Flow Builder", "AI Setup"],

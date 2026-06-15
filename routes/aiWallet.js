@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { requireIntelligenceV2 } = require('../middleware/requireIntelligenceV2');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { formatReplyForWhatsApp } = require('../utils/core/personaEngine');
 const AiTokenTransaction = require('../models/AiTokenTransaction');
@@ -19,7 +20,9 @@ const {
 const { validateGeminiKey, validateOpenAiKey, callAI } = require('../utils/core/aiGateway');
 const { sendAiError } = require('../utils/core/aiProviderErrors');
 
-router.get('/status', protect, async (req, res) => {
+router.use(protect, requireIntelligenceV2());
+
+router.get('/status', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -35,7 +38,7 @@ router.get('/status', protect, async (req, res) => {
   }
 });
 
-router.post('/validate-key', protect, async (req, res) => {
+router.post('/validate-key', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -80,7 +83,7 @@ router.post('/validate-key', protect, async (req, res) => {
   }
 });
 
-router.delete('/disconnect', protect, async (req, res) => {
+router.delete('/disconnect', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -91,7 +94,7 @@ router.delete('/disconnect', protect, async (req, res) => {
   }
 });
 
-router.patch('/settings', protect, async (req, res) => {
+router.patch('/settings', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -103,7 +106,7 @@ router.patch('/settings', protect, async (req, res) => {
   }
 });
 
-router.post('/select-model', protect, async (req, res) => {
+router.post('/select-model', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -116,7 +119,7 @@ router.post('/select-model', protect, async (req, res) => {
   }
 });
 
-router.post('/test-prompt', protect, async (req, res) => {
+router.post('/test-prompt', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -135,7 +138,7 @@ router.post('/test-prompt', protect, async (req, res) => {
   }
 });
 
-router.get('/transaction-history', protect, async (req, res) => {
+router.get('/transaction-history', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -179,7 +182,7 @@ router.get('/transaction-history', protect, async (req, res) => {
  * One-time maintenance: remove stale embedding token ledger rows.
  * SUPER_ADMIN only — never call from merchant UI on tab load.
  */
-router.post('/purge-embedding-noise', protect, async (req, res) => {
+router.post('/purge-embedding-noise', async (req, res) => {
   try {
     if (req.user?.role !== 'SUPER_ADMIN') {
       return res.status(403).json({ error: 'Super admin only' });
@@ -199,7 +202,7 @@ router.post('/purge-embedding-noise', protect, async (req, res) => {
   }
 });
 
-router.get('/usage-summary', protect, async (req, res) => {
+router.get('/usage-summary', async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });

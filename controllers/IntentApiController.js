@@ -82,19 +82,21 @@ exports.upsertIntent = async (req, res) => {
       trainingPhrases: cleanPhrases,
       antiIntentPhrases: cleanAntiPhrases,
       actions,
-      isActive: true
     };
 
     if (intentId) {
+      const existing = await IntentRule.findOne({ _id: intentId, clientId }).select('isActive').lean();
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Intent rule not found for update.' });
+      }
+      ruleData.isActive = req.body.isActive !== undefined ? !!req.body.isActive : existing.isActive;
       rule = await IntentRule.findOneAndUpdate(
         { _id: intentId, clientId },
         { $set: ruleData, $unset: { languageConfig: '' } },
         { new: true, runValidators: true }
       );
-      if (!rule) {
-        return res.status(404).json({ success: false, message: 'Intent rule not found for update.' });
-      }
     } else {
+      ruleData.isActive = true;
       rule = await IntentRule.create(ruleData);
     }
 

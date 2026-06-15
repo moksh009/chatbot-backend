@@ -13,7 +13,8 @@ function getCampaignDispatchQueue() {
       defaultJobOptions: {
         removeOnComplete: 500,
         removeOnFail: 1000,
-        attempts: 1,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
       },
     });
   }

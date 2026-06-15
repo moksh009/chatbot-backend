@@ -2373,7 +2373,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   if (F.enableWarranty)          branches.push(buildWarrantyBranch(ctx, IDS, content));
   if (F.enableInstallSupport)    branches.push(buildInstallSupportBranch(ctx, IDS, content));
   if (F.enableAIFallback)        branches.push(buildAiHelpDeskBranch(ctx, IDS));
-  else if (F.enableFAQ)          branches.push(buildFAQBranch(ctx, IDS, content));
+  if (F.enableFAQ && !F.enableInstallSupport) branches.push(buildFAQBranch(ctx, IDS, content));
   if (F.enableSupportEscalation) branches.push(buildSupportBranch(ctx, IDS, content));
 
   // Build the menu using only enabled branches' rows (deduped, ≤8 for WhatsApp).

@@ -29,21 +29,25 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
   }
 
   const adminDigits =
-    body.adminPhone !== undefined
-      ? String(body.adminPhone || "").trim()
-      : body.adminAlertWhatsapp !== undefined
-        ? String(body.adminAlertWhatsapp || "").trim()
-        : null;
+    body.adminPhone !== undefined ? String(body.adminPhone || "").trim() : null;
 
   if (adminDigits !== null) {
     updateFields.adminPhone = adminDigits;
     updateFields["brand.adminPhone"] = adminDigits;
-    updateFields.adminAlertWhatsapp = adminDigits;
     updateFields["platformVars.adminWhatsappNumber"] = adminDigits;
   }
 
+  if (body.adminAlertWhatsapp !== undefined) {
+    updateFields.adminAlertWhatsapp = String(body.adminAlertWhatsapp || "").trim();
+  }
+
   if (body.adminEmail !== undefined) {
+    updateFields.adminEmail = String(body.adminEmail || "").trim();
     updateFields["platformVars.supportEmail"] = String(body.adminEmail || "").trim();
+  }
+
+  if (body.adminAlertEmail !== undefined) {
+    updateFields.adminAlertEmail = String(body.adminAlertEmail || "").trim();
   }
 
   if (body.businessName !== undefined) {

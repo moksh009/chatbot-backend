@@ -43,27 +43,14 @@
       border: none; background: rgba(255,255,255,.18); color: #fff; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
     }
-    .tabs {
-      display: flex; background: var(--card); border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-    .tabs.hidden { display: none; }
-    .tab {
-      flex: 1; padding: 11px; font-size: 11px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .06em; color: var(--muted); border: none; background: none; cursor: pointer;
-      border-bottom: 2px solid transparent;
-    }
-    .tab.active { color: var(--theme); border-bottom-color: var(--theme); }
     .body { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
-    .panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
-    .panel.active { display: flex; }
     .chat-scroll {
       flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
       scroll-behavior: smooth;
     }
     .bubble {
       max-width: 88%; padding: 10px 14px; border-radius: 16px; font-size: 13px; line-height: 1.5;
-      animation: fadeUp .25s ease;
+      animation: fadeUp .25s ease; white-space: pre-wrap;
     }
     @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     .bubble--bot { align-self: flex-start; background: var(--bot); color: #334155; border-bottom-left-radius: 4px; }
@@ -79,78 +66,33 @@
       flex-shrink: 0; padding: 10px 12px 12px; background: var(--card);
       border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end;
     }
-    .composer.hidden { display: none; }
-    .composer input, .composer textarea {
+    .composer textarea {
       flex: 1; border: 1.5px solid var(--border); border-radius: 12px; padding: 10px 12px;
       font-size: 13px; font-family: inherit; outline: none; resize: none; min-height: 42px; max-height: 100px;
     }
-    .composer input:focus, .composer textarea:focus { border-color: var(--theme); }
+    .composer textarea:focus { border-color: var(--theme); }
     .send-btn {
       width: 42px; height: 42px; border-radius: 12px; border: none; cursor: pointer;
       background: linear-gradient(135deg, var(--theme), var(--theme2)); color: #fff;
       display: flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-    .wa-hero {
-      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 28px 20px; text-align: center; gap: 16px;
-      background: linear-gradient(165deg, #ecfdf5 0%, #f0fdf4 50%, #fff 100%);
+    .send-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .typing { font-size: 11px; color: var(--muted); padding: 0 14px 6px; }
+    .typing.hidden { display: none; }
+    .handoff-bar {
+      padding: 10px 14px; flex-shrink: 0; background: #faf5ff; border-top: 1px solid #ede9fe;
     }
-    .wa-icon {
-      width: 72px; height: 72px; border-radius: 50%; background: #25d366;
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 12px 32px rgba(37,211,102,.35);
+    .handoff-bar.hidden { display: none; }
+    .handoff-wa {
+      width: 100%; padding: 10px; border-radius: 10px; font-size: 12px; font-weight: 700;
+      cursor: pointer; border: none; background: #25d366; color: #fff;
     }
-    .wa-icon svg { width: 38px; height: 38px; fill: #fff; }
-    .wa-hero h2 { font-size: 18px; font-weight: 800; color: #166534; }
-    .wa-hero p { font-size: 13px; color: #4ade80; font-weight: 600; }
-    .wa-card {
-      width: 100%; background: #fff; border-radius: 14px; padding: 14px; text-align: left;
-      border: 1px solid #d1fae5; font-size: 13px; line-height: 1.55; color: #374151;
-    }
-    .wa-card textarea {
-      width: 100%; margin-top: 10px; min-height: 72px; border: 1.5px solid #d1fae5;
-      border-radius: 10px; padding: 10px; font-family: inherit; font-size: 13px; resize: none;
-    }
-    .btn-primary {
-      width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 14px;
-      font-weight: 800; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
-    }
-    .btn-wa { background: #25d366; color: #fff; box-shadow: 0 6px 20px rgba(37,211,102,.35); }
-    .btn-theme { background: linear-gradient(135deg, var(--theme), var(--theme2)); color: #fff; }
-    .btn-ghost {
-      width: 100%; padding: 11px; margin-top: 6px; border-radius: 12px; font-size: 12px;
-      font-weight: 600; cursor: pointer; background: #fff; border: 1px solid var(--border); color: var(--muted);
-    }
-    .form-panel { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-    .form-panel label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-    .form-panel input, .form-panel textarea {
-      width: 100%; padding: 12px; border: 1.5px solid var(--border); border-radius: 12px;
-      font-size: 13px; font-family: inherit;
-    }
-    .form-panel input:focus, .form-panel textarea:focus { outline: none; border-color: var(--theme); }
-    .success {
-      display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center;
-      padding: 32px; text-align: center; gap: 12px;
-    }
-    .success.visible { display: flex; }
-    .success-icon {
-      width: 64px; height: 64px; border-radius: 50%; background: #dcfce7;
-      display: flex; align-items: center; justify-content: center;
-    }
-    .success-icon svg { width: 32px; height: 32px; fill: #16a34a; }
     .footer {
       flex-shrink: 0; text-align: center; padding: 8px; font-size: 10px; color: #94a3b8;
       background: var(--card); border-top: 1px solid var(--border);
     }
     .footer a { color: var(--theme); text-decoration: none; font-weight: 600; }
     .footer.hidden { display: none; }
-    .typing { font-size: 11px; color: var(--muted); padding: 0 14px 6px; }
-    .handoff-bar {
-      padding: 10px 14px; display: flex; gap: 8px; flex-shrink: 0; background: #faf5ff; border-top: 1px solid #ede9fe;
-    }
-    .handoff-bar button { flex: 1; padding: 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; }
-    .handoff-wa { background: #25d366; color: #fff; }
-    .handoff-form { background: #fff; border: 1px solid var(--border); color: var(--text); }
   </style>
 </head>
 <body>
@@ -166,43 +108,21 @@
       </button>
     </header>
 
-    <div class="tabs hidden" id="tabBar" aria-hidden="true"></div>
-
     <div class="body">
-      <div class="panel" id="panel-guided">
-        <div class="chat-scroll" id="chatScroll"></div>
-        <p class="typing hidden" id="typing">Assistant is typing…</p>
-        <div class="composer hidden" id="composer">
-          <textarea id="userInput" rows="1" placeholder="Type a message…"></textarea>
-          <button type="button" class="send-btn" id="sendBtn" aria-label="Send">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
-        </div>
-        <div class="handoff-bar hidden" id="handoffBar">
-          <button type="button" class="handoff-wa" id="handoffWa">Continue on WhatsApp</button>
-        </div>
+      <div class="chat-scroll" id="chatScroll"></div>
+      <p class="typing hidden" id="typing">Assistant is typing…</p>
+      <div class="handoff-bar hidden" id="handoffBar">
+        <button type="button" class="handoff-wa" id="handoffWa">Continue on WhatsApp</button>
       </div>
-
-      <div class="panel active" id="panel-whatsapp">
-        <div class="wa-hero">
-          <div class="wa-icon">
-            <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
-          </div>
-          <h2>Chat on WhatsApp</h2>
-          <p>Message us on WhatsApp — same inbox as your store automations.</p>
-          <div class="wa-card" style="max-width:100%">
-            <p id="waGreeting">Hi! How can we help?</p>
-            <textarea id="waMessage" placeholder="Your message…"></textarea>
-          </div>
-          <button type="button" class="btn-primary btn-wa" id="waOpenBtn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
-            Open WhatsApp
-          </button>
-        </div>
+      <div class="composer" id="composer">
+        <textarea id="userInput" rows="1" placeholder="Ask about orders, shipping, products…"></textarea>
+        <button type="button" class="send-btn" id="sendBtn" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
       </div>
     </div>
 
-    <footer class="footer" id="footer">Powered by <a href="https://topedgeai.com" target="_blank" rel="noopener">AI</a></footer>
+    <footer class="footer" id="footer">Created by <a href="https://topedgeai.com" target="_blank" rel="noopener">TopEdge AI</a></footer>
   </div>
 
 <script>
@@ -213,6 +133,12 @@
     if (kv[0]) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
   });
 
+  var FAQ = [
+    { id: 'shipping', label: 'Shipping & delivery', reply: 'We ship across India. Most orders arrive in 3–7 business days. You will get tracking once your order ships.' },
+    { id: 'returns', label: 'Returns & exchanges', reply: 'If something is not right, contact us with your order ID within the return window from your confirmation email.' },
+    { id: 'order', label: 'Track my order', reply: 'Share your order number and the phone used at checkout — we will look up the latest status for you.' },
+  ];
+
   var STATE = {
     clientId: params.clientId || 'default',
     apiBase: location.origin,
@@ -220,19 +146,18 @@
     greeting: 'Hi! How can we help you today? 👋',
     theme: '#7C3AED',
     theme2: '#5B21B6',
-    mode: 'whatsapp',
-    showPoweredBy: true,
-    poweredByText: 'Powered by AI',
-    poweredByUrl: 'https://topedgeai.com',
-    flow: null,
-    flowCursor: null,
-    waitingInput: false,
-    guided: false,
+    aiChat: false,
+    hasWhatsApp: false,
+    history: [],
+    awaitingPhone: false,
+    pendingMessage: '',
+    busy: false,
   };
 
   var chatScroll = document.getElementById('chatScroll');
-  var composer = document.getElementById('composer');
+  var typing = document.getElementById('typing');
   var userInput = document.getElementById('userInput');
+  var sendBtn = document.getElementById('sendBtn');
   var handoffBar = document.getElementById('handoffBar');
 
   function digitsOnly(s) { return String(s || '').replace(/\D/g, ''); }
@@ -246,60 +171,19 @@
     var title = widget.headerTitle || branding.businessName || 'Support';
     document.getElementById('headerTitle').textContent = title;
     document.getElementById('headerSub').textContent =
-      widget.headerSubtitle || branding.supportHint || 'We typically reply in minutes';
+      widget.headerSubtitle || branding.supportHint || 'Ask us anything about your order';
     var av = document.getElementById('headerAvatar');
     if (widget.logoUrl || branding.logoUrl) {
       av.innerHTML = '<img src="' + (widget.logoUrl || branding.logoUrl) + '" alt="" />';
     } else {
       av.textContent = (branding.avatarLetter || title.charAt(0) || 'S').toUpperCase();
     }
-    document.getElementById('waGreeting').textContent = STATE.greeting;
     var foot = document.getElementById('footer');
     if (widget.showPoweredBy === false) {
       foot.classList.add('hidden');
     } else {
-      foot.innerHTML =
-        (widget.poweredByText || 'Powered by AI').replace(
-          /AI|TopEdge/i,
-          '<a href="' +
-            (widget.poweredByUrl || 'https://topedgeai.com') +
-            '" target="_blank" rel="noopener">$&</a>'
-        );
+      foot.innerHTML = 'Created by <a href="' + (widget.poweredByUrl || 'https://topedgeai.com') + '" target="_blank" rel="noopener">TopEdge AI</a>';
     }
-  }
-
-  function showPanel(id) {
-    document.querySelectorAll('.panel').forEach(function (p) {
-      p.classList.toggle('active', p.id === 'panel-' + id);
-    });
-    document.querySelectorAll('.tab').forEach(function (t) {
-      t.classList.toggle('active', t.getAttribute('data-tab') === id);
-    });
-  }
-
-  function switchTab(tab) {
-    if (tab === 'chat' && STATE.guided) showPanel('guided');
-    else showPanel(tab);
-  }
-
-  document.getElementById('closeBtn').addEventListener('click', function () {
-    parent.postMessage({ type: 'topedge_close' }, '*');
-  });
-  document.getElementById('waOpenBtn').addEventListener('click', openWhatsApp);
-  document.getElementById('handoffWa').addEventListener('click', openWhatsApp);
-  document.getElementById('sendBtn').addEventListener('click', onUserSend);
-  userInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onUserSend(); }
-  });
-
-  function openWhatsApp() {
-    var wa = digitsOnly(STATE.waNumber);
-    if (!wa) {
-      alert('WhatsApp is not set up yet. The store will add a support number soon.');
-      return;
-    }
-    var msg = (document.getElementById('waMessage').value || '').trim() || STATE.greeting;
-    parent.postMessage({ type: 'topedge_wa_redirect', text: msg, waNumber: wa }, '*');
   }
 
   function addBubble(text, who) {
@@ -310,203 +194,173 @@
     chatScroll.scrollTop = chatScroll.scrollHeight;
   }
 
-  function addChips(buttons, onPick) {
+  function addChips(items, onPick) {
     var wrap = document.createElement('div');
     wrap.className = 'chips';
-    buttons.forEach(function (b) {
+    items.forEach(function (item) {
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'chip';
-      btn.textContent = b.label;
-      btn.addEventListener('click', function () { onPick(b); });
+      btn.textContent = item.label;
+      btn.addEventListener('click', function () {
+        addBubble(item.label, 'user');
+        onPick(item);
+      });
       wrap.appendChild(btn);
     });
     chatScroll.appendChild(wrap);
     chatScroll.scrollTop = chatScroll.scrollHeight;
   }
 
-  function buildFlowIndex(nodes, edges) {
-    var out = {};
-    edges.forEach(function (e) {
-      if (!out[e.source]) out[e.source] = [];
-      out[e.source].push(e);
+  function setBusy(on) {
+    STATE.busy = on;
+    sendBtn.disabled = on;
+    typing.classList.toggle('hidden', !on);
+  }
+
+  function pushHistory(role, content) {
+    STATE.history.push({ role: role, content: content });
+    if (STATE.history.length > 12) STATE.history = STATE.history.slice(-12);
+  }
+
+  function showQuickChips() {
+    addChips(FAQ, function (item) {
+      addBubble(item.reply, 'bot');
+      pushHistory('assistant', item.reply);
     });
-    var start =
-      nodes.find(function (n) { return n.type === 'trigger'; }) ||
-      nodes.find(function (n) { return n.type === 'message'; }) ||
-      nodes[0];
-    return { nodes: nodes, out: out, currentId: start ? start.id : null };
   }
 
-  function nodeText(node) {
-    var d = node.data || {};
-    return (d.text || d.label || d.message || '').trim() || '…';
+  function openWhatsApp(prefill) {
+    var wa = digitsOnly(STATE.waNumber);
+    if (!wa) return;
+    var msg = prefill || STATE.pendingMessage || STATE.greeting;
+    parent.postMessage({ type: 'topedge_wa_redirect', text: msg, waNumber: wa }, '*');
   }
 
-  function presentNode(node) {
-    var t = node.type;
-    var d = node.data || {};
-    if (t === 'message') {
-      if (d.action === 'ESCALATE_HUMAN') return { kind: 'handoff', text: nodeText(node) };
-      return { kind: 'bot', text: nodeText(node) };
-    }
-    if (t === 'interactive') {
-      var buttons = (d.buttonsList || []).map(function (b) {
-        return { id: b.id, label: b.title || b.label || 'Option' };
-      });
-      if (!buttons.length) buttons.push({ id: 'continue', label: 'Continue' });
-      return { kind: 'buttons', text: nodeText(node), buttons: buttons };
-    }
-    if (t === 'capture_input') {
-      return { kind: 'input', text: d.prompt || d.label || nodeText(node) };
-    }
-    if (t === 'livechat') return { kind: 'handoff', text: nodeText(node) };
-    if (t === 'delay') return { kind: 'skip' };
-    if (t === 'trigger') return { kind: 'skip' };
-    return { kind: 'bot', text: nodeText(node), buttons: [{ id: 'continue', label: 'Continue' }] };
+  function submitLead(phone, message) {
+    return fetch(STATE.apiBase + '/api/support-chat/widget-lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: STATE.clientId,
+        phone: phone,
+        message: message,
+        source: 'website_widget',
+        pageUrl: (function () { try { return parent.location.href; } catch (e) { return ''; } })(),
+      }),
+    });
   }
 
-  function nextNodeId(fromId, handle) {
-    var edges = STATE.flowCursor.out[fromId] || [];
-    if (!edges.length) return null;
-    if (handle) {
-      var match = edges.find(function (e) { return e.sourceHandle === handle; });
-      if (match) return match.target;
-    }
-    return edges[0].target;
-  }
-
-  function nodeById(id) {
-    return STATE.flowCursor.nodes.find(function (n) { return n.id === id; });
-  }
-
-  function advanceFlow(fromId, handle) {
-    var nextId = nextNodeId(fromId, handle);
-    if (!nextId) {
-      showHandoff();
+  function handleNoAiReply(userText) {
+    pushHistory('user', userText);
+    if (!STATE.awaitingPhone) {
+      STATE.pendingMessage = userText;
+      STATE.awaitingPhone = true;
+      var reply = STATE.hasWhatsApp
+        ? 'Thanks! Share your WhatsApp number and our team will reply shortly. You can also tap Continue on WhatsApp below.'
+        : 'Thanks! Share your WhatsApp number and our team will reply shortly.';
+      addBubble(reply, 'bot');
+      pushHistory('assistant', reply);
+      if (STATE.hasWhatsApp) handoffBar.classList.remove('hidden');
       return;
     }
-    STATE.flowCursor.currentId = nextId;
-    runCurrentNode();
+
+    var phone = digitsOnly(userText);
+    if (phone.length < 10) {
+      addBubble('Please enter a valid 10-digit WhatsApp number.', 'bot');
+      return;
+    }
+
+    setBusy(true);
+    submitLead(phone, STATE.pendingMessage || userText)
+      .then(function () {
+        addBubble('Got it — our team will message you on WhatsApp soon.', 'bot');
+        STATE.awaitingPhone = false;
+        STATE.pendingMessage = '';
+      })
+      .catch(function () {
+        addBubble('We could not save your details right now. Please try again in a moment.', 'bot');
+      })
+      .finally(function () { setBusy(false); });
   }
 
-  function showHandoff() {
-    handoffBar.classList.remove('hidden');
-    composer.classList.add('hidden');
-    STATE.waitingInput = false;
-    addBubble('Continue the conversation on WhatsApp.', 'bot');
-  }
-
-  function runCurrentNode() {
-    var node = nodeById(STATE.flowCursor.currentId);
-    if (!node) { showHandoff(); return; }
-    var p = presentNode(node);
-    if (p.kind === 'skip') {
-      advanceFlow(node.id);
-      return;
-    }
-    if (p.kind === 'handoff') {
-      addBubble(p.text, 'bot');
-      showHandoff();
-      return;
-    }
-    if (p.kind === 'bot') {
-      addBubble(p.text, 'bot');
-      if (p.buttons && p.buttons.length) {
-        addChips(p.buttons, function (b) {
-          addBubble(b.label, 'user');
-          advanceFlow(node.id, b.id);
-        });
-      } else {
-        setTimeout(function () { advanceFlow(node.id); }, 400);
-      }
-      return;
-    }
-    if (p.kind === 'buttons') {
-      addBubble(p.text, 'bot');
-      addChips(p.buttons, function (b) {
-        addBubble(b.label, 'user');
-        advanceFlow(node.id, b.id);
-      });
-      return;
-    }
-    if (p.kind === 'input') {
-      addBubble(p.text, 'bot');
-      STATE.waitingInput = true;
-      composer.classList.remove('hidden');
-      userInput.focus();
-    }
+  function handleAiReply(userText) {
+    pushHistory('user', userText);
+    setBusy(true);
+    fetch(STATE.apiBase + '/api/support-chat/widget-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: STATE.clientId,
+        message: userText,
+        history: STATE.history.slice(0, -1),
+      }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.data.reply) throw new Error('no reply');
+        addBubble(res.data.reply, 'bot');
+        pushHistory('assistant', res.data.reply);
+      })
+      .catch(function () {
+        addBubble('Sorry — I could not reply right now. Try again or use WhatsApp below.', 'bot');
+        if (STATE.hasWhatsApp) handoffBar.classList.remove('hidden');
+      })
+      .finally(function () { setBusy(false); });
   }
 
   function onUserSend() {
     var text = userInput.value.trim();
-    if (!text || !STATE.waitingInput) return;
+    if (!text || STATE.busy) return;
     userInput.value = '';
     addBubble(text, 'user');
-    STATE.waitingInput = false;
-    composer.classList.add('hidden');
-    var cur = STATE.flowCursor.currentId;
-    advanceFlow(cur);
+    if (STATE.aiChat) handleAiReply(text);
+    else handleNoAiReply(text);
   }
 
-  function startGuided() {
-    STATE.guided = true;
-    document.getElementById('tabBar').classList.add('hidden');
-    showPanel('guided');
-    if (!STATE.flow || !STATE.flow.nodes || !STATE.flow.nodes.length) {
-      addBubble(STATE.greeting, 'bot');
-      addBubble('Tap below to message us on WhatsApp.', 'bot');
-      showHandoff();
-      return;
-    }
-    STATE.flowCursor = buildFlowIndex(STATE.flow.nodes, STATE.flow.edges || []);
-    runCurrentNode();
+  function startChat() {
+    addBubble(STATE.greeting, 'bot');
+    pushHistory('assistant', STATE.greeting);
+    showQuickChips();
+    if (STATE.hasWhatsApp && !STATE.aiChat) handoffBar.classList.remove('hidden');
   }
 
-  function normalizeMode(mode, experience) {
-    if (mode === 'guided' || experience === 'guided') return 'guided';
-    return 'whatsapp';
-  }
-
-  function initWhatsAppMode() {
-    document.getElementById('tabBar').classList.add('hidden');
-    showPanel('whatsapp');
-  }
+  document.getElementById('closeBtn').addEventListener('click', function () {
+    parent.postMessage({ type: 'topedge_close' }, '*');
+  });
+  document.getElementById('handoffWa').addEventListener('click', function () {
+    openWhatsApp();
+  });
+  document.getElementById('sendBtn').addEventListener('click', onUserSend);
+  userInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onUserSend(); }
+  });
 
   function boot() {
     applyTheme();
     if (STATE.clientId === 'default') {
-      initWhatsAppMode();
+      STATE.aiChat = false;
+      startChat();
       return;
     }
-    Promise.all([
-      fetch(STATE.apiBase + '/api/support-chat/widget-config/' + encodeURIComponent(STATE.clientId)).then(function (r) { return r.json(); }),
-      fetch(STATE.apiBase + '/api/support-chat/widget-flow/' + encodeURIComponent(STATE.clientId)).then(function (r) { return r.json(); }),
-    ])
-      .then(function (results) {
-        var cfg = results[0] || {};
-        var flowRes = results[1] || {};
+    fetch(STATE.apiBase + '/api/support-chat/widget-config/' + encodeURIComponent(STATE.clientId))
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
         var w = cfg.widget || {};
         var b = cfg.branding || {};
+        var caps = cfg.capabilities || {};
         STATE.theme = w.theme || STATE.theme;
         STATE.theme2 = w.themeSecondary || STATE.theme2;
-        STATE.mode = normalizeMode(w.mode, w.experience);
         STATE.greeting = w.greeting || b.greeting || STATE.greeting;
         STATE.waNumber = b.supportWhatsApp || STATE.waNumber;
-        STATE.showPoweredBy = w.showPoweredBy;
-        STATE.poweredByText = w.poweredByText;
-        STATE.poweredByUrl = w.poweredByUrl;
-        if (flowRes.flow) STATE.flow = flowRes.flow;
+        STATE.aiChat = caps.aiChat === true;
+        STATE.hasWhatsApp = caps.whatsAppHandoff === true;
         applyTheme();
         setHeader(b, w);
-        if (STATE.mode === 'guided') {
-          startGuided();
-        } else {
-          initWhatsAppMode();
-        }
+        startChat();
       })
       .catch(function () {
-        initWhatsAppMode();
+        startChat();
       });
   }
 

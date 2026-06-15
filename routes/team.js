@@ -13,6 +13,7 @@ const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/co
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
+const { sanitizeHubAccess, DEFAULT_AGENT_HUB_ACCESS } = require('../constants/hubSections');
 
 const TEN_MIN_MS = 10 * 60 * 1000;
 
@@ -41,7 +42,11 @@ async function buildTeamWithMetrics(clientId) {
 
     return users.map((user) => {
         const metric = metricByUser.get(String(user._id));
-        const pendingTasks = (user.tasks || []).filter((t) => t.status === 'pending').length;
+        const pendingTasks = (user.tasks || []).filter((t) => t.status !== 'completed').length;
+        const completedTasks = (user.tasks || []).filter((t) => t.status === 'completed').length;
+        const taskRows = (user.tasks || []).slice().sort(
+            (a, b) => new Date(b.assignedAt || 0) - new Date(a.assignedAt || 0)
+        );
         const lastActive = metric?.lastActive || null;
         const isOnline = lastActive && Date.now() - new Date(lastActive).getTime() < TEN_MIN_MS;
 
@@ -54,8 +59,20 @@ async function buildTeamWithMetrics(clientId) {
                 avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
                 lastActive,
                 pendingTasks,
+                completedTasks,
                 isOnline,
             },
+            tasks: taskRows.map((t) => ({
+                _id: t._id,
+                title: t.title,
+                description: t.description,
+                type: t.type,
+                priority: t.priority || 'medium',
+                status: t.status,
+                assignedAt: t.assignedAt,
+                dueAt: t.dueAt,
+                completedAt: t.completedAt,
+            })),
         };
     });
 }
@@ -107,7 +124,7 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
 // @desc    Invite a new team member (Agent)
 // @access  Private (Admin only)
 router.post('/invite', ...teamAdmin, async (req, res) => {
-    const { name, email } = req.body;
+    const { name, email, hubAccess: rawHubAccess } = req.body;
 
     if (!name || !email) {
         return res.status(400).json({ message: 'Name and Email are required' });
@@ -134,13 +151,17 @@ router.post('/invite', ...teamAdmin, async (req, res) => {
         const tempPassword = crypto.randomBytes(4).toString('hex'); // 8 char hex
 
         // 1. Create the User
+        const hubAccess = sanitizeHubAccess(rawHubAccess);
+        const resolvedHubAccess = hubAccess.length ? hubAccess : [...DEFAULT_AGENT_HUB_ACCESS];
+
         const newUser = await User.create({
             name,
             email,
             password: tempPassword, // Will be hashed by User model pre-save hook
             role: 'AGENT',
             clientId,
-            business_type: client.businessType || 'ecommerce'
+            business_type: client.businessType || 'ecommerce',
+            hubAccess: resolvedHubAccess,
         });
 
         // Increment usage
@@ -194,15 +215,16 @@ router.post('/assign-task', ...teamAdmin, async (req, res) => {
         }
 
         const dueAt = dueDate ? new Date(dueDate) : null;
-        const descParts = [];
-        if (priority) descParts.push(`Priority: ${priority}`);
-        if (description) descParts.push(description);
-        const fullDescription = descParts.join('\n\n') || '';
+        const cleanDescription = description ? String(description).trim() : '';
+        const normalizedPriority = ['low', 'medium', 'high', 'critical'].includes(priority)
+            ? priority
+            : 'medium';
 
         agent.tasks.push({
             title: String(title).trim(),
-            description: fullDescription,
+            description: cleanDescription,
             type: 'custom',
+            priority: normalizedPriority,
             assignedBy: req.user._id,
             assignedAt: new Date(),
             dueAt: dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt : undefined,
@@ -221,10 +243,60 @@ router.post('/assign-task', ...teamAdmin, async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Task assigned',
-            pendingTasks: agent.tasks.filter((t) => t.status === 'pending').length,
+            pendingTasks: agent.tasks.filter((t) => t.status !== 'completed').length,
+            task: agent.tasks[agent.tasks.length - 1],
         });
     } catch (error) {
         console.error('[TeamAPI] Assign task error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @route   POST /api/team/resolve-task
+// @desc    Mark an agent task completed (or reopen)
+router.post('/resolve-task', ...teamAdmin, async (req, res) => {
+    try {
+        const { agentId, taskId, status = 'completed' } = req.body;
+        if (!agentId || !taskId) {
+            return res.status(400).json({ message: 'agentId and taskId are required' });
+        }
+        const allowed = ['pending', 'in_progress', 'completed'];
+        if (!allowed.includes(status)) {
+            return res.status(400).json({ message: 'Invalid task status' });
+        }
+
+        const agent = await User.findById(agentId);
+        if (!agent) return res.status(404).json({ message: 'Agent not found' });
+        if (agent.clientId !== req.user.clientId) {
+            return res.status(403).json({ message: 'Unauthorized' });
+        }
+
+        const task = agent.tasks.id(taskId);
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        task.status = status;
+        if (status === 'completed') {
+            task.completedAt = new Date();
+        } else {
+            task.completedAt = undefined;
+        }
+        await agent.save();
+
+        await logActivity(req.user.clientId, {
+            type: 'TEAM',
+            status: 'info',
+            title: status === 'completed' ? 'Task resolved' : 'Task reopened',
+            message: `${req.user.name} updated "${task.title}" for ${agent.name}`,
+            metadata: { agentId: agent._id, taskId, status },
+        });
+
+        res.json({
+            success: true,
+            message: status === 'completed' ? 'Task marked resolved' : 'Task reopened',
+            pendingTasks: agent.tasks.filter((t) => t.status !== 'completed').length,
+        });
+    } catch (error) {
+        console.error('[TeamAPI] Resolve task error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
@@ -262,6 +334,45 @@ router.delete('/:id', ...teamAdmin, async (req, res) => {
         res.json({ success: true, message: 'Team member removed successfully' });
     } catch (error) {
         console.error('[TeamAPI] Remove Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @route   PATCH /api/team/:id/hub-access
+// @desc    Update assignable dashboard sections for an agent
+router.patch('/:id/hub-access', ...teamAdmin, async (req, res) => {
+    try {
+        const hubAccess = sanitizeHubAccess(req.body?.hubAccess);
+        if (!hubAccess.length) {
+            return res.status(400).json({ message: 'Select at least one section' });
+        }
+
+        const userToUpdate = await User.findById(req.params.id);
+        if (!userToUpdate) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        if (req.user.role !== 'SUPER_ADMIN' && userToUpdate.clientId !== req.user.clientId) {
+            return res.status(403).json({ message: 'Unauthorized to modify this user' });
+        }
+
+        if (['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(userToUpdate.role)) {
+            return res.status(400).json({ message: 'Workspace admins always have full access' });
+        }
+
+        userToUpdate.hubAccess = hubAccess;
+        await userToUpdate.save();
+
+        res.json({
+            success: true,
+            message: 'Section access updated',
+            user: {
+                _id: userToUpdate._id,
+                hubAccess: userToUpdate.hubAccess,
+            },
+        });
+    } catch (error) {
+        console.error('[TeamAPI] Hub Access Update Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });

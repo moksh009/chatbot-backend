@@ -42,7 +42,7 @@ async function resolveAudience(campaign) {
   if (campaign.segmentId) {
     const Segment = require('../models/Segment');
     const AdLead = require('../models/AdLead');
-    const segment = await Segment.findById(campaign.segmentId);
+    const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
     if (segment) {
       const optQ = audienceOptQueryForCampaign(campaign);
       const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId, ...optQ })

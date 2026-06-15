@@ -857,6 +857,13 @@ router.get('/callback', async (req, res) => {
     invalidateClientCache(clientId);
 
     try {
+      const { ensurePixelWebhookSecret } = require('../utils/commerce/pixelWebhookSecret');
+      await ensurePixelWebhookSecret(clientId);
+    } catch (pixelSecretErr) {
+      console.warn(`[ShopifyOAuth] pixelWebhookSecret: ${pixelSecretErr.message}`);
+    }
+
+    try {
       const { reconcileShopifyConnection } = require('../utils/shopify/shopifyConnectionHeal');
       await reconcileShopifyConnection(clientId, { tryRefresh: false });
     } catch (_) {}

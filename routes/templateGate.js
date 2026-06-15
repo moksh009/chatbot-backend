@@ -59,8 +59,14 @@ const TEMPLATE_BLUEPRINTS = {
       {
         type: 'BODY',
         text:
-          'Admin alert: {{1}} ({{2}}) needs urgent support.\nContext: {{3}}\nOpen the live chat in your dashboard.',
-        example: { body_text: [['Priya Sharma', '+919876543210', 'Asked for a human on checkout']] }
+          '🚨 *{{1}}* needs help\n\nPhone: {{2}}\nSummary: {{3}}\n\nTap below to open this chat in TopEdge Live Chat.',
+        example: {
+          body_text: [[
+            'Priya Sharma',
+            '+919876543210',
+            'Asked for a human on checkout — wants order update before COD',
+          ]],
+        },
       },
       {
         type: 'BUTTONS',

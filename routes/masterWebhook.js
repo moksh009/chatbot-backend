@@ -19,31 +19,35 @@ const Client = require('../models/Client');
  * Middleware to verify Meta X-Hub-Signature-256
  */
 const verifyMetaSignature = (req, res, next) => {
+  const appSecret = process.env.META_APP_SECRET;
+  if (!appSecret) {
+    log.error('META_APP_SECRET not configured — cannot verify webhook signature');
+    return res.status(500).send('Webhook verification not configured');
+  }
+
   const signature = req.headers['x-hub-signature-256'];
   if (!signature) {
-    log.warn("Meta Signature Missing");
-    if (process.env.META_APP_SECRET) return res.status(401).send('Signature missing');
-    return next();
+    log.warn('Meta Signature Missing');
+    return res.status(401).send('Signature missing');
   }
 
   const elements = signature.split('=');
-  const signatureHash = elements[1];
-  
-  const appSecret = process.env.META_APP_SECRET;
-  if (!appSecret) {
-    log.error("META_APP_SECRET not configured — cannot verify webhook signature");
-    return res.status(500).send('Webhook verification not configured');
+  if (elements[0] !== 'sha256' || !elements[1]) {
+    return res.status(401).send('Invalid signature format');
   }
-  
-  // Use req.rawBody if available for accurate HMAC verification
-  const payload = req.rawBody ? req.rawBody : JSON.stringify(req.body);
-  const expectedHash = crypto
-    .createHmac('sha256', appSecret)
-    .update(payload)
-    .digest('hex');
+  const signatureHash = elements[1];
 
-  if (signatureHash !== expectedHash) {
-    log.error("Meta Signature Mismatch");
+  const payload = req.rawBody ? req.rawBody : JSON.stringify(req.body);
+  const expectedHash = crypto.createHmac('sha256', appSecret).update(payload).digest('hex');
+
+  try {
+    const sigBuf = Buffer.from(signatureHash, 'hex');
+    const expBuf = Buffer.from(expectedHash, 'hex');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      log.error('Meta Signature Mismatch');
+      return res.status(401).send('Signature mismatch');
+    }
+  } catch {
     return res.status(401).send('Signature mismatch');
   }
   next();

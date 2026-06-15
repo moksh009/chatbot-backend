@@ -207,13 +207,9 @@ function enrichCommerceFromOrders(lead, orders = []) {
     return sum + (Number.isFinite(v) ? v : 0);
   }, 0);
   const orderCount = orders.length;
-  if ((!next.ordersCount || next.ordersCount === 0) && orderCount > 0) {
+  if (orderCount > 0) {
     next.ordersCount = orderCount;
-  }
-  if ((!next.totalSpent || next.totalSpent === 0) && orderSum > 0) {
     next.totalSpent = orderSum;
-  }
-  if ((!next.lifetimeValue || next.lifetimeValue === 0) && orderSum > 0) {
     next.lifetimeValue = orderSum;
   }
   return next;

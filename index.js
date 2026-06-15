@@ -379,7 +379,8 @@ app.use('/api/notifications', notificationsRoutes);
 const dashboardRoutes = require('./routes/dashboard');
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/inventory', require('./routes/inventory'));
-app.use('/api/amazon', require('./routes/amazon'));
+// Amazon seller connect removed from Settings — inventory sync uses separate ops paths.
+// app.use('/api/amazon', require('./routes/amazon'));
 
 const storeEconomicsRoutes = require('./routes/storeEconomics');
 app.use('/api/store-economics', storeEconomicsRoutes);
@@ -459,6 +460,16 @@ app.get('/api/health/crons', async (req, res) => {
   const isHealthy =
     Boolean(lastTick) && Date.now() - new Date(lastTick).getTime() < 10 * 60 * 1000;
   res.json({ cartCron: { healthy: isHealthy, lastTick } });
+});
+app.get('/api/health/workers', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { buildWorkerHealthSnapshot } = require('./utils/hub/workerHealth');
+    const snapshot = await buildWorkerHealthSnapshot();
+    res.json(snapshot);
+  } catch (err) {
+    res.status(500).json({ error: err.message, workerHealthy: false });
+  }
 });
 app.get('/api/capabilities', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');

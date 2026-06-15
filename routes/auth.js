@@ -101,6 +101,7 @@ async function buildAuthSessionPayload(user, client) {
     subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client?.tier || lean?.tier || 'v1'),
     plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client?.plan || lean?.plan || 'CX Agent (V1)'),
     hasCompletedTour: user.hasCompletedTour,
+    hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
     telemetryConsent: user.telemetryConsent || '',
     telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
     trialActive: client?.trialActive ?? lean?.trialActive ?? true,
@@ -227,6 +228,7 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
         hasCompletedTour: user.hasCompletedTour,
+        hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
         manuallySuspended: access.manuallySuspended,
@@ -282,7 +284,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const payload = await getBootstrapPayload(String(req.user.id), { refresh }, async () => {
     timer.checkpoint('bootstrap_cache_miss');
     let user = await User.findById(req.user.id).select(
-      'name email role clientId isLifetimeAdmin hasCompletedTour telemetryConsent telemetryConsentUpdatedAt'
+      'name email role clientId isLifetimeAdmin hasCompletedTour telemetryConsent telemetryConsentUpdatedAt hubAccess'
     );
     if (!user) {
       const err = new Error('User not found');
@@ -321,6 +323,7 @@ router.get('/bootstrap', protect, async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         telemetryConsent: user.telemetryConsent || '',
         telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
+        hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
         business_type: 'ecommerce',
         manuallySuspended: access.manuallySuspended,
         trialWindowActive: access.trialWindowActive,

@@ -3,6 +3,8 @@
 const Client = require("../models/Client");
 const { getSlotById, getCatalogGroups } = require("../constants/templateCatalog/catalog");
 const { STANDARD_TEMPLATES } = require("../constants/standardTemplates");
+const { getOrderMessageBlueprint } = require("../constants/orderMessageWaBlueprints");
+const { getPrebuiltByKey } = require("../constants/prebuiltTemplateLibrary");
 
 const MULTI_STORE_MODEL = {
   id: "one_client_one_waba",
@@ -38,6 +40,24 @@ function getOverrideForSlot(client, slotId) {
   const overrides = getClientOverrides(client);
   const hit = overrides[slotId];
   return hit && typeof hit === "object" ? hit : null;
+}
+
+/** Customer-facing default body — blueprints / prebuilt library, not catalog slot.description. */
+function resolveCatalogDefaultBody(slot, eco) {
+  const ecoBody = eco?.components?.find((c) => c.type === "BODY")?.text;
+  if (ecoBody) return ecoBody;
+
+  const seedKey = slot.prebuiltKey || slot.canonicalMetaName || slot.id;
+  const blueprint = getOrderMessageBlueprint(seedKey);
+  const blueprintBody = blueprint?.components?.find(
+    (c) => String(c.type).toUpperCase() === "BODY"
+  )?.text;
+  if (blueprintBody) return blueprintBody;
+
+  const prebuilt = getPrebuiltByKey(seedKey);
+  if (prebuilt?.bodyText) return prebuilt.bodyText;
+
+  return "";
 }
 
 function sanitizeOverridePatch(patch = {}) {
@@ -79,10 +99,7 @@ async function listOverridesForClient(clientId) {
     for (const slot of group.slots || []) {
       const eco = ecoById.get(slot.id);
       const ov = overrides[slot.id] || null;
-      const defaultBody =
-        eco?.components?.find((c) => c.type === "BODY")?.text ||
-        slot.description ||
-        "";
+      const defaultBody = resolveCatalogDefaultBody(slot, eco);
       const defaultFooter =
         eco?.components?.find((c) => c.type === "FOOTER")?.text || "";
       const defaultHeader =

@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const FollowUpSequence = require('../models/FollowUpSequence');
-const { enqueueSequenceStepJob } = require('../utils/messaging/queues/sequenceDispatchQueue');
+const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
 const log = require('../utils/core/logger')('SequenceDispatchScheduler');
 
 /**
@@ -22,24 +22,7 @@ async function runSequenceDispatchSchedulerTick() {
 
   let enqueued = 0;
   for (const seq of due) {
-    seq.steps.forEach((step, idx) => {
-      const dueStep =
-        step.sendAt &&
-        step.sendAt <= now &&
-        ['pending', 'queued', 'retrying'].includes(step.status);
-      if (!dueStep) return;
-      if (step.status === 'pending') step.status = 'queued';
-      const channel = String(step.type || '').toLowerCase() === 'email' ? 'email' : 'whatsapp';
-      enqueueSequenceStepJob({
-        sequenceId: String(seq._id),
-        stepIdx: idx,
-        leadId: String(seq.leadId),
-        clientId: seq.clientId,
-        channel,
-      }).catch((e) => log.warn(`Enqueue failed ${seq._id}:${idx}: ${e.message}`));
-      enqueued += 1;
-    });
-    await seq.save();
+    enqueued += await enqueueDueStepsForSequence(seq, { now });
   }
   if (enqueued) log.info(`Enqueued ${enqueued} sequence step jobs`);
 }

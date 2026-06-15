@@ -268,6 +268,11 @@ async function handleOrderAtomic(client, data, cleanPhone) {
       attachVisitorJourneyOnOrder(client, lead, data).catch((e) =>
         log.warn(`Visitor journey stitch failed: ${e.message}`)
       );
+
+      const { maybeAttributeQrConversion } = require('../commerce/qrInboundHandler');
+      maybeAttributeQrConversion(client.clientId, cleanPhone, lead).catch((e) =>
+        log.warn(`QR conversion attribution failed: ${e.message}`)
+      );
     }
   });
 

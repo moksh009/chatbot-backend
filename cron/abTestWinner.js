@@ -5,6 +5,7 @@ const Client = require('../models/Client');
 const { sendForAutomation } = require('../services/templateSender');
 const { wrapCron } = require('../utils/core/perfLogger');
 const log = require('../utils/core/logger')('ABTestWinner');
+const { CRON_BYPASS_SCOPE } = require('../utils/cron/cronQueryOptions');
 
 function scheduleAbTestWinnerCron() {
   cron.schedule(
@@ -16,7 +17,7 @@ function scheduleAbTestWinnerCron() {
       isAbTest: true,
       'abTestConfig.holdbackProcessed': false,
       status: 'COMPLETED'
-    });
+    }).setOptions(CRON_BYPASS_SCOPE);
 
     for (const campaign of campaigns) {
       const waitHours = campaign.abTestConfig?.holdbackHours || 4;

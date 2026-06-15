@@ -220,6 +220,113 @@ async function getFlowGraphForConversation(client, convo) {
   return { nodes: [], edges: [] };
 }
 
+function buildWhatsAppFlowRefFilter(clientId, activeFlowId) {
+  if (!clientId || activeFlowId == null || activeFlowId === '') return null;
+  const ref = String(activeFlowId);
+  const mongoose = require('mongoose');
+  if (mongoose.Types.ObjectId.isValid(ref) && String(new mongoose.Types.ObjectId(ref)) === ref) {
+    return { clientId, $or: [{ flowId: ref }, { _id: ref }] };
+  }
+  return { clientId, flowId: ref };
+}
+
+/**
+ * Single nfm_reply handler — published graph via getFlowGraphForConversation on all webhook paths.
+ */
+async function handleNfmReply(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
+  const flowResponse = parsedMessage.interactive?.nfm_reply;
+  if (!flowResponse?.response_json) return false;
+
+  try {
+    const flowData = JSON.parse(flowResponse.response_json || '{}');
+    log.info(`[DualBrain] Flow response from ${phone}`, { keys: Object.keys(flowData) });
+
+    const prevLead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId })
+      .select('capturedData')
+      .lean();
+    const mergedCaptured = { ...(prevLead?.capturedData || {}), ...flowData };
+    const leadUpdates = { lastInteraction: new Date(), capturedData: mergedCaptured };
+    for (const [key, val] of Object.entries(flowData)) {
+      if (['email', 'name', 'city', 'requirement', 'phone'].includes(String(key).toLowerCase())) {
+        leadUpdates[key.toLowerCase()] = val;
+      }
+      leadUpdates[`metadata.${key}`] = val;
+    }
+
+    const updatedLead = await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      {
+        $set: leadUpdates,
+        $addToSet: { tags: 'Flow Completed' },
+        $push: {
+          activityLog: {
+            action: 'whatsapp_flow_submitted',
+            details: `Submitted Meta Flow ID: ${flowResponse.flow_id || 'unknown'}`,
+          },
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    const FollowUpSequence = require('../../models/FollowUpSequence');
+    await FollowUpSequence.updateMany(
+      { clientId: client.clientId, leadId: updatedLead._id, status: 'active' },
+      { $set: { status: 'cancelled', cancellationReason: 'User replied to flow' } }
+    );
+
+    if (io) {
+      io.to(`client_${client.clientId}`).emit('flow_completed', { phone, flowData });
+    }
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      await DailyStat.findOneAndUpdate(
+        { clientId: client.clientId, date: today },
+        { $inc: { flowsCompleted: 1 } },
+        { upsert: true }
+      );
+    } catch (statErr) {
+      log.error('[Analytics] Flow completion error:', { error: statErr.message });
+    }
+
+    const freshConvo = convo?._id
+      ? await Conversation.findOne({ _id: convo._id, clientId: client.clientId })
+      : await Conversation.findOne({ phone, clientId: client.clientId });
+
+    if (freshConvo?.lastStepId) {
+      const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, freshConvo);
+      const autoEdge = flowEdges.find(
+        (e) =>
+          e.source === freshConvo.lastStepId &&
+          (!e.sourceHandle || e.sourceHandle === 'bottom' || e.sourceHandle === 'a')
+      );
+      if (autoEdge && flowNodes.length) {
+        log.info(`[FlowEngine] nfm_reply resume: ${freshConvo.lastStepId} → ${autoEdge.target}`);
+        await executeNode(
+          autoEdge.target,
+          flowNodes,
+          flowEdges,
+          client,
+          freshConvo,
+          updatedLead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+        return true;
+      }
+    }
+
+    await sendWhatsAppText(client, phone, "Thank you! I've received your information.");
+    if (freshConvo) analyzeConversationIntelligence(client, phone, freshConvo);
+    return true;
+  } catch (err) {
+    log.error('[DualBrain] nfm_reply processing error:', { error: err.message });
+    return false;
+  }
+}
+
 /** Load flow graph by flowId (published preferred; falls back to draft / visualFlows / legacy). */
 async function loadPublishedFlowByRef(clientId, flowRef) {
   if (!clientId || !flowRef) return null;
@@ -406,50 +513,6 @@ async function handleWhatsAppMessage(arg1, arg2, phoneNumberId, profileName = ''
       return;
     }
     log.info(`[DualBrain] Processing ${from}: "${(parsed.text?.body || parsed.interactive?.button_reply?.title || buildInboundBody(parsed)).substring(0, 50)}" type=${parsed.type || 'unknown'}`);
-
-    // --- PHASE 23: Track 5 - Meta Flow Response (nfm_reply) ---
-    if (parsed.interactive?.type === 'nfm_reply') {
-        const flowResponse = parsed.interactive.nfm_reply;
-        log.info(`🌊 Flow Submission detected from ${from}`, { response: flowResponse.response_json });
-        
-        try {
-            const data = JSON.parse(flowResponse.response_json || '{}');
-            const prevLead = await AdLead.findOne({ phoneNumber: from, clientId: client.clientId })
-              .select('capturedData')
-              .lean();
-            const mergedCaptured = { ...(prevLead?.capturedData || {}), ...data };
-            const lead = await AdLead.findOneAndUpdate(
-                { phoneNumber: from, clientId: client.clientId },
-                {
-                  $set: {
-                    lastInteraction: new Date(),
-                    capturedData: mergedCaptured
-                  },
-                  $push: { activityLog: { action: 'whatsapp_flow_submitted', details: `Submitted Meta Flow ID: ${flowResponse.flow_id}` } }
-                },
-                { upsert: true, new: true }
-            );
-
-            // Increment Analytics Completion
-            await DailyStat.findOneAndUpdate(
-                { clientId: client.clientId, date: new Date().toISOString().split('T')[0] },
-                { $inc: { flowsCompleted: 1 } },
-                { upsert: true }
-            );
-
-            const convo = await Conversation.findOne({ phone: from, clientId: client.clientId });
-            if (convo?.lastStepId) {
-                const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, convo);
-                const nextEdge = flowEdges.find((e) => e.source === convo.lastStepId);
-                if (nextEdge && flowNodes.length) {
-                    return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, from, global.io);
-                }
-            }
-        } catch (err) {
-            log.error('Flow processing error:', { error: err.message });
-        }
-        return;
-    }
 
     // Resolve Media IDs if present (Phase 28 Track 2)
     const mediaObj = parsed.image || parsed.audio || parsed.video || parsed.document || parsed.sticker;
@@ -715,6 +778,14 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     perf.checkpoint("session_upserted");
 
+    if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.type === 'nfm_reply') {
+      const nfmHandled = await handleNfmReply(parsedMessage, client, convo, lead, phone, io, channel);
+      if (nfmHandled) {
+        perf.finish('nfm_reply_handled');
+        return true;
+      }
+    }
+
     // If a user messages us again after opting out, treat that inbound as renewed consent.
     // This is tenant-scoped and applies only to WhatsApp inbound traffic.
     if (channel === "whatsapp") {
@@ -872,7 +943,7 @@ async function runDualBrainEngine(parsedMessage, client) {
             const freshConvo = await Conversation.findById(convo._id);
 
             if (!isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
-              const handled = await executeNode(
+              await executeNode(
                 match.startNodeId,
                 flowNodes,
                 flowEdges,
@@ -884,14 +955,13 @@ async function runDualBrainEngine(parsedMessage, client) {
                 channel,
                 parsedMessage
               );
-              if (handled !== false) {
-                perf.checkpoint("greeting_sent");
-                perf.finish();
-                setImmediate(() =>
-                  analyzeConversationIntelligence(client, phone, freshConvo)
-                );
-                return true;
-              }
+              parsedMessage._greetingHandled = true;
+              perf.checkpoint("greeting_sent");
+              perf.finish();
+              setImmediate(() =>
+                analyzeConversationIntelligence(client, phone, freshConvo)
+              );
+              return true;
             }
           } else {
             log.warn(
@@ -912,6 +982,7 @@ async function runDualBrainEngine(parsedMessage, client) {
               skipTranslation: true,
               skipConvoLookup: true,
             });
+            parsedMessage._greetingHandled = true;
             perf.checkpoint("greeting_instant_fallback");
             perf.finish();
             return true;
@@ -993,84 +1064,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         perf.log(`language detection skipped (ai=${tenantAiEnabled}, len=${inboundText?.length || 0})`);
     }
 
-  // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
-  if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.type === 'nfm_reply') {
-      const flowDataStr = parsedMessage.interactive.nfm_reply?.response_json;
-      if (flowDataStr) {
-          try {
-              const flowData = JSON.parse(flowDataStr);
-              log.info(`[DualBrain] 🌊 Flow Response Received from ${phone}:`, flowData);
-              
-              // 1. Sync flow data to AdLead attributes
-              const updates = {};
-              for (const [key, val] of Object.entries(flowData)) {
-                  if (['email', 'name', 'city', 'requirement', 'phone'].includes(key.toLowerCase())) {
-                      updates[key.toLowerCase()] = val;
-                  }
-                  updates[`metadata.${key}`] = val;
-              }
-              
-              const lead = await AdLead.findOneAndUpdate(
-                  { phoneNumber: phone, clientId: client.clientId },
-                  { $set: { ...updates, lastInteraction: new Date() } },
-                  { upsert: true, new: true }
-              );
-
-              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: 'Flow Completed' } });
-
-              // --- Phase 23: Track 1 & 2 - Sequence Cancellation on Reply ---
-              const FollowUpSequence = require('../../models/FollowUpSequence');
-              await FollowUpSequence.updateMany(
-                  { clientId: client.clientId, leadId: lead._id, status: 'active' },
-                  { $set: { status: 'cancelled', cancellationReason: 'User replied to flow' } }
-              );
-
-              if (io) io.to(`client_${client.clientId}`).emit('flow_completed', { phone, flowData });
-
-              // Increment Analytics
-              try {
-                  const today = new Date().toISOString().split('T')[0];
-                  await DailyStat.findOneAndUpdate(
-                      { clientId: client.clientId, date: today },
-                      { $inc: { flowsCompleted: 1 } },
-                      { upsert: true }
-                  );
-              } catch (err) { log.error('[Analytics] Flow completion error:', { error: err.message }); }
-
-              // 2. Transition to next node if in an active flow
-              const convo = await Conversation.findOne({ phone, clientId: client.clientId });
-              if (convo?.activeFlowId && convo?.lastStepId) {
-                  const WhatsAppFlow = require("../../models/WhatsAppFlow");
-                  const flow = await WhatsAppFlow.findOne({ _id: convo.activeFlowId });
-                  
-                  if (flow) {
-                      const flowNodes = flattenFlowNodes(flow.nodes || []);
-                      const flowEdges = flow.edges || [];
-                      
-                      const autoEdge = flowEdges.find(e => 
-                          e.source === convo.lastStepId && 
-                          (!e.sourceHandle || e.sourceHandle === 'bottom' || e.sourceHandle === 'a')
-                      );
-
-                      if (autoEdge) {
-                          log.info(`[FlowEngine] Flow logic resuming: ${convo.lastStepId} → ${autoEdge.target}`);
-                          return await executeNode(
-                              autoEdge.target, flowNodes, flowEdges,
-                              client, convo, lead, phone, io, channel, parsedMessage
-                          );
-                      }
-                  }
-              }
-              
-              // 3. Fallback confirmation
-              await sendWhatsAppText(client, phone, "Thank you! I've received your information.");
-              analyzeConversationIntelligence(client, phone, convo);
-              return true;
-          } catch (e) {
-              log.error('Flow Parse Error:', { error: e.message });
-          }
-      }
-  }
+  // ── PHASE 23: Track 5 — WhatsApp Flow Responses handled via handleNfmReply() above ──
 
   // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
   if (lead && lead._id) {
@@ -1133,51 +1127,58 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
 
-  // ── PHASE 30: Custom QR Scan Matching (Enterprise) ────────────────────────────────
-  const qrRefMatch = incomingText.match(/(\(Ref:\s*(QR_[a-zA-Z0-9_]+)\))/i);
-  if (qrRefMatch && qrRefMatch[2]) {
-    const qrRefId = qrRefMatch[2].toUpperCase();
+  // ── QR scan (wa.me Ref: QR_* or bare QR_XXXXXXXX) ────────────────────────────────
+  const {
+    recordQrScanStats,
+    applyQrLeadEffects,
+    extractQrShortCodeFromText,
+  } = require('./qrInboundHandler');
+  const qrShortCode = extractQrShortCodeFromText(incomingText);
+  if (qrShortCode) {
     const QRCodeModel = require('../../models/QRCode');
-    const scannedQr = await QRCodeModel.findOne({ shortCode: qrRefId, clientId: client._id });
-    
+    const { qrClientIdFilter } = require('../../utils/core/qrClientScope');
+    const scannedQr = await QRCodeModel.findOne({
+      shortCode: qrShortCode,
+      isActive: true,
+      ...qrClientIdFilter(client),
+    });
+
     if (scannedQr) {
       log.info(`[DualBrain] 📷 QR Scan Detected for lead ${lead.phoneNumber}: ${scannedQr.name}`);
-      
-      // Update analytics
-      await QRCodeModel.findByIdAndUpdate(scannedQr._id, { $inc: { scansTotal: 1 } });
-      
-      // CRM Integration: Tag the user
-      const tagsToAdd = scannedQr.config?.tags || [];
-      if (scannedQr.config?.utmSource) tagsToAdd.push(`Source: ${scannedQr.config.utmSource}`);
-      tagsToAdd.push(`Scanned_${qrRefId}`);
-      if (tagsToAdd.length > 0) {
-        await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: { $each: tagsToAdd } } });
-      }
 
-      // Fire webhook
-      const { fireWebhookEvent } = require('../core/webhookDelivery');
-      fireWebhookEvent(client.clientId, 'qr.scanned', { phone: lead.phoneNumber, qrCode: scannedQr.name, shortCode: scannedQr.shortCode });
+      const { isUnique } = await recordQrScanStats(scannedQr._id, phone);
+      await applyQrLeadEffects({
+        client,
+        phone,
+        lead,
+        qr: scannedQr,
+        shortCode: qrShortCode,
+        isUnique,
+      });
 
-      // Check for Direct-To-Flow logic
       if (scannedQr.config?.flowId && scannedQr.config.flowId !== '') {
         log.info(`[QR Logic] Redirecting ${lead.phoneNumber} to flow ${scannedQr.config.flowId}`);
         const targetFlow =
           (await loadPublishedFlowByRef(client.clientId, scannedQr.config.flowId)) ||
           (client.visualFlows || []).find((f) => f.id === scannedQr.config.flowId);
         if (targetFlow) {
-           const { findFlowStartNode } = require('../flow/triggerEngine');
-           const startNodeId = findFlowStartNode(targetFlow.nodes || []);
-           if (startNodeId) {
-              await sendWhatsAppText(client, phone, scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Loading ${scannedQr.name}...`);
-              // Run the target flow directly
-              return await runFlow(client, phone, targetFlow, startNodeId, { channel, triggerSource: `QR_${scannedQr.shortCode}` });
-           }
+          const { findFlowStartNode } = require('../flow/triggerEngine');
+          const startNodeId = findFlowStartNode(targetFlow.nodes || []);
+          if (startNodeId) {
+            const preMsg = scannedQr.config?.welcomeMessage;
+            if (preMsg) await sendWhatsAppText(client, phone, preMsg);
+            return await runFlow(client, phone, targetFlow, startNodeId, {
+              channel,
+              triggerSource: `QR_${scannedQr.shortCode}`,
+            });
+          }
         }
-      } 
-      
-      // Standard reply
-      const welcomeMsg = scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Type "WALLET" to check your balance.`;
-      await sendWhatsAppText(client, phone, welcomeMsg);
+      }
+
+      const welcomeMsg = scannedQr.config?.welcomeMessage;
+      if (welcomeMsg) {
+        await sendWhatsAppText(client, phone, welcomeMsg);
+      }
       return true;
     }
   }
@@ -1977,7 +1978,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   // MANUAL MODE: Only respond if an EXPLICIT trigger is matched
 
   if (handoffMode === 'MANUAL') {
-    const trigger = findMatchingFlow(userText, client.flowNodes, client.flowEdges);
+    const trigger = await findMatchingFlow(parsedMessage, client, convo);
     if (!trigger) {
       log.info(`🙊 Manual Mode: No trigger match for "${userText}". Bot silent.`);
       return true;
@@ -2184,83 +2185,9 @@ async function runDualBrainEngine(parsedMessage, client) {
   // ── PHASE 20: TRIGGER ENGINE — Route to correct visualFlow ───────────────
   // Only fires when user is NOT already mid-flow (no lastStepId)
   const isUserMidFlow = convo.lastStepId && convo.lastStepId.trim();
-  if (!isUserMidFlow) {
+  if (!isUserMidFlow && !parsedMessage._greetingHandled) {
 
-    // ── PHASE 24: QR CODE DETECTION (runs FIRST — highest priority on fresh conversations) ──
-    // Pattern: QR_[A-F0-9]{8} (e.g. "QR_A1B2C3D4")
-    const rawText = (parsedMessage.text?.body || '').trim();
-    const qrPattern = /^QR_[A-F0-9]{8}$/i;
-    if (qrPattern.test(rawText)) {
-      try {
-        const QRCode = require('../../models/QRCode');
-        const QRScan = require('../../models/QRScan');
-        const qr = await QRCode.findOne({ shortCode: rawText.toUpperCase(), isActive: true }).lean();
-        if (qr) {
-          log.info(`📱 QR code scanned by ${phone}: ${rawText}`);
-
-          // Track scan — compound index prevents duplicate unique scans
-          const isUnique = !(await QRScan.exists({ qrCodeId: qr._id, phone }));
-          await QRScan.findOneAndUpdate(
-            { qrCodeId: qr._id, phone },
-            { $setOnInsert: { qrCodeId: qr._id, phone, scannedAt: new Date() } },
-            { upsert: true }
-          );
-          await require('../../models/QRCode').findByIdAndUpdate(qr._id, {
-            $inc: { scansTotal: 1, ...(isUnique ? { scansUnique: 1 } : {}) }
-          });
-
-          // Tag the lead
-          await AdLead.findOneAndUpdate(
-            { phoneNumber: phone, clientId: client.clientId },
-            {
-              $addToSet: { tags: `qr:${qr.name}` },
-              $set: { 'meta.lastQRCode': rawText, 'meta.lastQRCodeName': qr.name }
-            }
-          );
-
-          // Fire webhook event (fire-and-forget)
-          try {
-            const { fireWebhookEvent } = require('../core/webhookDelivery');
-            const clientDoc = await Client.findOne({ clientId: client.clientId });
-            fireWebhookEvent(clientDoc._id, 'qr.scanned', {
-              phone, qrCode: qr.name, shortCode: rawText, isFirstScan: isUnique
-            });
-          } catch (_) {}
-
-          // Apply discount if configured
-          if (qr.config?.discountCode) {
-            await AdLead.findOneAndUpdate(
-              { phoneNumber: phone, clientId: client.clientId },
-              { $set: { activeDiscountCode: qr.config.discountCode } }
-            );
-          }
-
-          // Execute attached flow if present
-          if (qr.config?.flowId) {
-            const attachedFlow = (client.visualFlows || []).find(f => f.id === qr.config.flowId);
-            if (attachedFlow && attachedFlow.nodes?.length) {
-              const qrFlowNodes = flattenFlowNodes(attachedFlow.nodes);
-              const qrStartNode = findFlowStartNode(qrFlowNodes, attachedFlow.edges || []);
-              if (qrStartNode) {
-                await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: attachedFlow.id });
-                const freshConvo = await Conversation.findById(convo._id);
-                return await executeNode(qrStartNode, qrFlowNodes, attachedFlow.edges || [], client, freshConvo, lead, phone, io, channel);
-              }
-            }
-          }
-
-          // Send welcome message if no flow attached
-          if (qr.config?.welcomeMessage) {
-            await sendWhatsAppText(client, phone, qr.config.welcomeMessage);
-            return true;
-          }
-          // Fall through to normal flow processing if no flow/message configured
-        }
-      } catch (qrErr) {
-        log.error('QR detection error:', { error: qrErr.message });
-        // Non-fatal — fall through
-      }
-    }
+    // QR scans handled earlier in the inbound pipeline (unified qrInboundHandler).
 
     // ── PHASE 24: META ADS FLOW ROUTING (after QR, before triggerEngine) ──
     // If fresh conversation AND lead came from a Meta Ad, check for attached flow
@@ -2634,6 +2561,29 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     };
     await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
     convo.metadata = md;
+  }
+
+  const menuBid = normalizeHandleId(buttonId).toLowerCase();
+  if (menuBid && /^(menu|main_menu|mainmenu|start_over|restart)$/i.test(menuBid)) {
+    const menuNode = flowNodes.find((n) => {
+      const role = String(n.data?.role || '').toLowerCase();
+      return ['menu', 'welcome', 'main_menu', 'main'].includes(role);
+    });
+    if (menuNode) {
+      log.info(`[Graph] Menu button "${menuBid}" → node ${menuNode.id}`);
+      return await executeNode(
+        menuNode.id,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // Ecommerce webhook events should only be routed via the trigger engine, not graph traversal
@@ -3118,11 +3068,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // Targeted visit count tracking on WhatsAppFlow collection
   try {
     const WhatsAppFlow = require("../../models/WhatsAppFlow");
-    if (convo?.activeFlowId) {
-      await WhatsAppFlow.updateOne(
-        { _id: convo.activeFlowId, "nodes.id": nodeId },
-        { $inc: { "nodes.$.data.visitCount": 1 } }
-      ).catch(() => {});
+    const flowFilter = buildWhatsAppFlowRefFilter(client.clientId, convo?.activeFlowId);
+    if (flowFilter) {
+      const publishedHit = await WhatsAppFlow.updateOne(
+        { ...flowFilter, "publishedNodes.id": nodeId },
+        { $inc: { "publishedNodes.$.data.visitCount": 1 } }
+      ).catch(() => ({ modifiedCount: 0 }));
+      if (!publishedHit?.modifiedCount) {
+        await WhatsAppFlow.updateOne(
+          { ...flowFilter, "nodes.id": nodeId },
+          { $inc: { "nodes.$.data.visitCount": 1 } }
+        ).catch(() => {});
+      }
     }
     
     // Fallback/Legacy tracking on Client model
@@ -5933,6 +5890,10 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
     log.warn('sendWhatsAppFlow skipped: missing WhatsApp credentials', { clientId: client?.clientId });
     return false;
   }
+  if (!flowId) {
+    log.warn('sendWhatsAppFlow skipped: missing Meta flow_id on node', { clientId: client?.clientId });
+    return false;
+  }
 
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
@@ -5962,7 +5923,7 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
           parameters: {
             flow_message_version: '3',
             flow_token: `flow_${Date.now()}_${phone}`,
-            flow_id: flowId || '1244048577247022',
+            flow_id: flowId,
             flow_cta: finalCta || 'Get Started',
             flow_action: 'navigate',
             flow_action_payload: { screen: screen || 'MAIN_SCREEN' }

@@ -1,7 +1,6 @@
 'use strict';
 
 const express = require('express');
-const crypto = require('crypto');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { buildAbandonedCartWorkspace, buildAbandonHeatmap } = require('../utils/commerce/abandonedCartWorkspace');
@@ -16,7 +15,6 @@ const {
   buildConfigPayload,
   saveCartRecoveryConfig,
 } = require('../utils/commerce/cartRecoveryConfigService');
-const { handleThirdPartyWebhook } = require('../utils/audience/thirdPartyCheckoutHandler');
 const { logAction } = require('../middleware/audit');
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
@@ -275,6 +273,9 @@ router.put('/third-party/:clientId/:provider', protect, verifyClientAccess, asyn
       razorpay: 'razorpay_magic',
       'razorpay-magic': 'razorpay_magic',
       razorpay_magic: 'razorpay_magic',
+      cashfree: 'cashfree_checkout',
+      'cashfree-checkout': 'cashfree_checkout',
+      cashfree_checkout: 'cashfree_checkout',
       shiprocket: 'shiprocket_checkout',
       'shiprocket-checkout': 'shiprocket_checkout',
       shiprocket_checkout: 'shiprocket_checkout',
@@ -301,7 +302,7 @@ router.put('/third-party/:clientId/:provider', protect, verifyClientAccess, asyn
 
 /**
  * POST /api/abandoned-carts/third-party/:clientId/:provider/test
- * Fire a sample abandoned-cart webhook (updates lastWebhookAt on success).
+ * Verify live webhook events from the partner — does not simulate inbound traffic.
  */
 router.post(
   '/third-party/:clientId/:provider/test',
@@ -314,6 +315,8 @@ router.post(
         gokwik: 'gokwik',
         razorpay: 'razorpay_magic',
         'razorpay-magic': 'razorpay_magic',
+        cashfree: 'cashfree_checkout',
+        'cashfree-checkout': 'cashfree_checkout',
         shiprocket: 'shiprocket',
         'shiprocket-checkout': 'shiprocket',
       };
@@ -322,97 +325,42 @@ router.post(
         return res.status(400).json({ success: false, message: 'Unknown provider' });
       }
 
+      const integrationKey =
+        key === 'shiprocket' ? 'shiprocket_checkout' : key === 'cashfree_checkout' ? 'cashfree_checkout' : key;
+
       const Client = require('../models/Client');
       const client = await Client.findOne({ clientId }).select('audienceContext').lean();
-      const secret =
-        client?.audienceContext?.integrations?.[
-          key === 'shiprocket' ? 'shiprocket_checkout' : key
-        ]?.webhookSecret || '';
+      const cfg = client?.audienceContext?.integrations?.[integrationKey] || {};
+      const lastReceivedAt = cfg.partnerWebhookReceivedAt || null;
 
-      const testPhone = String(req.body?.phone || '9313045439').replace(/\D/g, '').slice(-10);
-
-      let body;
-      let headers = { 'content-type': 'application/json' };
-      if (key === 'gokwik') {
-        body = {
-          cartId: `test_${Date.now()}`,
-          custPhone: testPhone,
-          custName: 'Test Customer',
-          custEmail: 'test@example.com',
-          line_items: [
-            {
-              productName: 'Test Product',
-              productQuantity: 1,
-              productPrice: 999,
-            },
-          ],
-          cartTotal: 999,
-          abandonLink: 'https://example.com/cart/recover/test',
-          recoverStatus: 'NOT_RECOVERED',
-          checkoutStage: 'ORDER_SCREEN',
-        };
-        if (secret) headers['x-webhook-secret'] = secret;
-      } else if (key === 'razorpay_magic') {
-        body = {
-          event: 'cart.abandoned',
-          payload: {
-            contact: testPhone,
-            email: 'test@example.com',
-            customer_name: 'Test Customer',
-            cart_value: 999,
-            checkout_url: 'https://example.com/checkout/test',
-            cart_items: [{ name: 'Test Product', quantity: 1, price: 999 }],
-            timestamp: new Date().toISOString(),
-          },
-        };
-        const raw = JSON.stringify(body);
-        if (secret) {
-          headers['x-razorpay-signature'] = crypto
-            .createHmac('sha256', secret)
-            .update(raw)
-            .digest('hex');
-        }
-        req.rawBody = raw;
-      } else {
-        body = {
-          customer_phone: testPhone,
-          customer_email: 'test@example.com',
-          customer_name: 'Test Customer',
-          cart_total: 999,
-          checkout_link: 'https://example.com/checkout/test',
-          cart_items: [{ name: 'Test Product', quantity: 1, price: 999 }],
-        };
-        if (secret) headers['x-webhook-secret'] = secret;
+      if (!lastReceivedAt) {
+        const partnerLabel =
+          key === 'gokwik'
+            ? 'GoKwik'
+            : key === 'razorpay_magic'
+              ? 'Razorpay Magic'
+              : key === 'cashfree_checkout'
+                ? 'Cashfree'
+                : key === 'shiprocket_checkout'
+                  ? 'Shiprocket'
+                  : 'your checkout partner';
+        return res.status(422).json({
+          success: false,
+          linked: false,
+          lastReceivedAt: null,
+          message: `No live webhook events from ${partnerLabel} yet. Paste the URL in your partner panel and wait for an abandoned checkout event.`,
+        });
       }
 
-      const mockReq = {
-        body,
-        headers,
-        rawBody: req.rawBody || JSON.stringify(body),
-      };
-
-      const out = await handleThirdPartyWebhook(clientId, key, mockReq);
-      await Client.updateOne(
-        { clientId },
-        {
-          $set: {
-            [`audienceContext.integrations.${key === 'shiprocket' ? 'shiprocket_checkout' : key}.lastTestAt`]:
-              new Date(),
-          },
-        }
-      );
-
-      if (out.status >= 400) {
-        return res.status(out.status).json(out.body || { success: false, message: 'Test failed' });
-      }
       res.json({
         success: true,
-        message: 'Test webhook received successfully',
-        ...out.body,
+        linked: true,
+        lastReceivedAt,
+        message: 'Live webhook events detected from your checkout partner.',
       });
     } catch (err) {
       console.error('[AbandonedCarts] third-party test error:', err);
-      res.status(500).json({ success: false, message: err.message || 'Test webhook failed' });
+      res.status(500).json({ success: false, message: err.message || 'Webhook check failed' });
     }
   }
 );

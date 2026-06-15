@@ -6,6 +6,7 @@ const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { translateConditionsToQuery } = require('../services/SegmentQueryBuilder');
 const { apiCache, clearClientCache } = require('../middleware/apiCache');
+const { syncOrderBackedCustomersToAdLeads } = require('../utils/commerce/leadsAnalyticsFacet');
 
 /**
  * GET /api/segments
@@ -43,9 +44,10 @@ router.post('/', protect, async (req, res) => {
     }
 
     try {
-        // 1. Translate UI conditions to Mongo Query
         const generatedQuery = translateConditionsToQuery(conditions);
-        
+
+        await syncOrderBackedCustomersToAdLeads(clientId).catch(() => {});
+
         // 2. Perform live count for the segment
         const count = await AdLead.countDocuments({ ...generatedQuery, clientId });
         
@@ -74,6 +76,33 @@ router.post('/', protect, async (req, res) => {
 });
 
 /**
+ * POST /api/segments/refresh-counts
+ * Recomputes lastCount for all saved segments (Sync button in Audience hub).
+ */
+router.post('/refresh-counts', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        const segments = await Segment.find({ clientId }).select('_id query').lean();
+        await syncOrderBackedCustomersToAdLeads(clientId).catch(() => {});
+        const now = new Date();
+        let updated = 0;
+        for (const seg of segments) {
+            const count = await AdLead.countDocuments({ ...(seg.query || {}), clientId });
+            await Segment.updateOne(
+                { _id: seg._id, clientId },
+                { $set: { lastCount: count, lastCountAt: now } }
+            );
+            updated += 1;
+        }
+        await clearClientCache(clientId);
+        res.json({ success: true, updated });
+    } catch (err) {
+        console.error('[Segments] Refresh counts error:', err);
+        res.status(500).json({ success: false, error: 'Failed to refresh segment counts.' });
+    }
+});
+
+/**
  * GET /api/segments/:id/leads
  * Fetches leads matching the segment query for preview/processing
  */
@@ -89,6 +118,8 @@ router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
             timer.finish('404');
             return res.status(404).json({ error: 'Segment not found' });
         }
+
+        await syncOrderBackedCustomersToAdLeads(clientId).catch(() => {});
 
         const match = { ...segment.query, clientId };
         const limit = Math.min(200, parseInt(req.query.limit, 10) || 100);
@@ -137,6 +168,7 @@ router.post('/preview', protect, async (req, res) => {
 
     try {
         const generatedQuery = translateConditionsToQuery(conditions);
+        await syncOrderBackedCustomersToAdLeads(clientId).catch(() => {});
         const count = await AdLead.countDocuments({ ...generatedQuery, clientId });
         const leads = await AdLead.find({ ...generatedQuery, clientId })
             .limit(12)

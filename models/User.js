@@ -18,6 +18,11 @@ const UserSchema = new mongoose.Schema({
     enum: ['SUPER_ADMIN', 'CLIENT_ADMIN', 'AGENT', 'RECEPTIONIST', 'VIEWER'], 
     default: 'CLIENT_ADMIN' 
   },
+  /** Sidebar section ids this agent may access (CLIENT_ADMIN / SUPER_ADMIN bypass). */
+  hubAccess: {
+    type: [String],
+    default: undefined,
+  },
   // Phase 24: Reseller Portal
   userType: {
     type: String,
@@ -46,6 +51,7 @@ const UserSchema = new mongoose.Schema({
     assignedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     assignedAt:  { type: Date, default: Date.now },
     dueAt:       { type: Date },
+    priority:    { type: String, enum: ['low', 'medium', 'high', 'critical'], default: 'medium' },
     status:      { type: String, enum: ['pending', 'in_progress', 'completed'], default: 'pending' },
     completedAt: { type: Date },
     linkedEntity: {

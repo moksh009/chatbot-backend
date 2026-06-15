@@ -21,6 +21,12 @@ const {
 const { isDuplicateInbound } = require('../utils/meta/webhookDedup');
 const { getMetaWebhookVerifyQuery } = require('../utils/meta/metaHubQuery');
 const { metaPayloadReplayGuard } = require('../middleware/webhookReplayGuard');
+const {
+  verifyClientPixelWebhook,
+  pixelWebhookRateLimiter,
+} = require('../middleware/verifyClientPixelWebhook');
+
+const shopifyExtensionWebhook = [pixelWebhookRateLimiter, verifyClientPixelWebhook];
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -617,7 +623,7 @@ router.post('/webhook/flow-endpoint', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
-router.post('/webhook/shopify/link-opened', async (req, res) => {
+router.post('/webhook/shopify/link-opened', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -629,7 +635,7 @@ router.post('/webhook/shopify/link-opened', async (req, res) => {
   }
 });
 
-router.post('/webhook/shopify/cart-update', async (req, res) => {
+router.post('/webhook/shopify/cart-update', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -641,7 +647,7 @@ router.post('/webhook/shopify/cart-update', async (req, res) => {
   }
 });
 
-router.post('/webhook/shopify/checkout-initiated', async (req, res) => {
+router.post('/webhook/shopify/checkout-initiated', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -653,7 +659,7 @@ router.post('/webhook/shopify/checkout-initiated', async (req, res) => {
   }
 });
 
-router.post('/webhook/shopify/order-complete', async (req, res) => {
+router.post('/webhook/shopify/order-complete', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -665,7 +671,7 @@ router.post('/webhook/shopify/order-complete', async (req, res) => {
   }
 });
 
-router.post('/webhook/shopify/order-fulfilled', async (req, res) => {
+router.post('/webhook/shopify/order-fulfilled', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
@@ -677,7 +683,7 @@ router.post('/webhook/shopify/order-fulfilled', async (req, res) => {
   }
 });
 
-router.post('/webhook/shopify/log-restore-event', async (req, res) => {
+router.post('/webhook/shopify/log-restore-event', ...shopifyExtensionWebhook, async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {
