@@ -30,72 +30,71 @@ const {
   buildPriorCommercePeriodKpis,
   mergeRealtimeWithPeriodKpis,
 } = require('../utils/core/commercePeriodKpis');
+const {
+  isWorkspaceConnected,
+  buildCampaignPulse,
+  buildCartRecoveryMetricsCohort,
+  buildRecentOrders,
+} = require('../utils/hub/dashboardWorkspaceBundle');
 
+const noopTimer = {
+  checkpoint: () => {},
+  time: (_label, fn) => (typeof fn === 'function' ? fn() : fn),
+  finish: () => {},
+};
 
 /**
- * Phase 2: Single consolidated dashboard payload (replaces 4–5 parallel frontend calls).
+ * Core GET /dashboard/summary payload (shared with /dashboard/workspace bundle).
  */
-exports.getSummary = async (req, res) => {
-  const timer = createTimer('GET /api/dashboard/summary', req.user?.clientId || '');
-  timer.checkpoint('START');
+async function buildDashboardSummaryPayload(clientId, query = {}, user = {}, { timer = noopTimer } = {}) {
+  const startQuery = typeof query.start === 'string' ? query.start.slice(0, 10) : null;
+  const endQuery = typeof query.end === 'string' ? query.end.slice(0, 10) : null;
+  const hasCustomRange = Boolean(startQuery && endQuery);
 
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      timer.finish('403 unauthorized');
-      return res.status(403).json({ success: false, error: 'Unauthorized' });
-    }
+  let requestedDays;
+  let timelineRange = {};
+  let topProductsOpts = {};
+  let dedupeRangeKey;
 
-    const startQuery = typeof req.query.start === 'string' ? req.query.start.slice(0, 10) : null;
-    const endQuery = typeof req.query.end === 'string' ? req.query.end.slice(0, 10) : null;
-    const hasCustomRange = Boolean(startQuery && endQuery);
-
-    let requestedDays;
-    let timelineRange = {};
-    let topProductsOpts = {};
-    let dedupeRangeKey;
-
-    if (hasCustomRange) {
-      timelineRange = { start: startQuery, end: endQuery };
-      const startMs = startOfDayForDateStrIST(startQuery).getTime();
-      const endMs = startOfDayForDateStrIST(endQuery).getTime();
-      requestedDays = Math.min(
-        Math.max(Math.floor((endMs - startMs) / 86400000) + 1, 1),
-        MAX_LIVE_ANALYTICS_DAYS
-      );
-      topProductsOpts = {
-        startDate: startOfDayForDateStrIST(startQuery),
-        endDate: endOfDayForDateStrIST(endQuery),
-      };
-      dedupeRangeKey = `${startQuery}:${endQuery}`;
-    } else {
-      requestedDays = Math.min(
-        parseInt(req.query.days, 10) || 30,
-        MAX_LIVE_ANALYTICS_DAYS
-      );
-      timelineRange = { days: requestedDays };
-      topProductsOpts = { days: requestedDays };
-      dedupeRangeKey = String(requestedDays);
-    }
-
-    const client = await timer.time('getCachedClient', () =>
-      getCachedClient(clientId, 'businessName name googleCalendarId config.calendars')
+  if (hasCustomRange) {
+    timelineRange = { start: startQuery, end: endQuery };
+    const startMs = startOfDayForDateStrIST(startQuery).getTime();
+    const endMs = startOfDayForDateStrIST(endQuery).getTime();
+    requestedDays = Math.min(
+      Math.max(Math.floor((endMs - startMs) / 86400000) + 1, 1),
+      MAX_LIVE_ANALYTICS_DAYS
     );
-    timer.checkpoint('client loaded');
+    topProductsOpts = {
+      startDate: startOfDayForDateStrIST(startQuery),
+      endDate: endOfDayForDateStrIST(endQuery),
+    };
+    dedupeRangeKey = `${startQuery}:${endQuery}`;
+  } else {
+    requestedDays = Math.min(parseInt(query.days, 10) || 30, MAX_LIVE_ANALYTICS_DAYS);
+    timelineRange = { days: requestedDays };
+    topProductsOpts = { days: requestedDays };
+    dedupeRangeKey = String(requestedDays);
+  }
 
-    if (!client) {
-      timer.finish('404');
-      return res.status(404).json({ success: false, error: 'Client not found' });
-    }
+  const client = await timer.time('getCachedClient', () =>
+    getCachedClient(clientId, 'businessName name googleCalendarId config.calendars')
+  );
+  timer.checkpoint('client loaded');
 
-    const userRole = String(req.user.role || '').toUpperCase();
-    const includeFullOperators = ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(userRole);
-    const includeSelfOperator = userRole === 'AGENT';
-    const includeOperators = includeFullOperators || includeSelfOperator;
-    const agentIdFilter = includeSelfOperator ? String(req.user._id || req.user.id || '') : '';
-    const dedupeKey = `dashboard-summary:${clientId}:${dedupeRangeKey}:${includeOperators}:${agentIdFilter || 'all'}`;
+  if (!client) {
+    const err = new Error('Client not found');
+    err.statusCode = 404;
+    throw err;
+  }
 
-    const payload = await dedupeAsync(dedupeKey, async () => {
+  const userRole = String(user?.role || '').toUpperCase();
+  const includeFullOperators = ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(userRole);
+  const includeSelfOperator = userRole === 'AGENT';
+  const includeOperators = includeFullOperators || includeSelfOperator;
+  const agentIdFilter = includeSelfOperator ? String(user._id || user.id || '') : '';
+  const dedupeKey = `dashboard-summary:${clientId}:${dedupeRangeKey}:${includeOperators}:${agentIdFilter || 'all'}`;
+
+  return dedupeAsync(dedupeKey, async () => {
     const summaryTasks = [
       { key: 'realtime', run: () => getRealtimeStats(clientId, client, requestedDays, { timer }) },
       { key: 'topProducts', run: () => getTopProducts(clientId, { timer, ...topProductsOpts }) },
@@ -175,13 +174,116 @@ exports.getSummary = async (req, res) => {
         ...(failedSections.length ? { failedSections, partial: true } : {}),
       },
     };
-    });
+  });
+}
+
+/**
+ * Phase 2: Single consolidated dashboard payload (replaces 4–5 parallel frontend calls).
+ */
+exports.getSummary = async (req, res) => {
+  const timer = createTimer('GET /api/dashboard/summary', req.user?.clientId || '');
+  timer.checkpoint('START');
+
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      timer.finish('403 unauthorized');
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const payload = await buildDashboardSummaryPayload(clientId, req.query, req.user, { timer });
 
     timer.finish('200 ok');
     res.json(payload);
   } catch (err) {
     timer.finish(`error: ${err.message}`);
+    if (err.statusCode === 404) {
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
     logger.error('[Dashboard Summary] fatal', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/dashboard/workspace — home cold-start bundle (feature-flagged).
+ */
+exports.getWorkspace = async (req, res) => {
+  const timer = createTimer('GET /api/dashboard/workspace', req.user?.clientId || '');
+  timer.checkpoint('START');
+
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      timer.finish('403 unauthorized');
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const days = Math.min(parseInt(req.query.days, 10) || 30, MAX_LIVE_ANALYTICS_DAYS);
+    const connected = await isWorkspaceConnected(clientId);
+
+    if (!connected) {
+      timer.finish('200 disconnected_preview');
+      return res.json({
+        success: true,
+        summary: null,
+        cartRecoveryMetrics: null,
+        campaignPulse: null,
+        recentOrders: [],
+        meta: {
+          partial: false,
+          disconnected: true,
+          days,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+    }
+
+    const sectionKeys = ['summary', 'cartMetrics', 'pulse', 'orders'];
+    const [summaryResult, cartMetricsResult, campaignPulseResult, recentOrdersResult] =
+      await Promise.allSettled([
+        buildDashboardSummaryPayload(clientId, { days }, req.user, { timer }),
+        buildCartRecoveryMetricsCohort(clientId, days),
+        buildCampaignPulse(clientId),
+        buildRecentOrders(clientId),
+      ]);
+
+    const failedSections = sectionKeys.filter((_, i) => {
+      const results = [summaryResult, cartMetricsResult, campaignPulseResult, recentOrdersResult];
+      return results[i].status === 'rejected';
+    });
+
+    sectionKeys.forEach((key, i) => {
+      const results = [summaryResult, cartMetricsResult, campaignPulseResult, recentOrdersResult];
+      if (results[i].status === 'rejected') {
+        logger.warn(
+          `[Dashboard Workspace] ${key} failed:`,
+          results[i].reason?.message || results[i].reason
+        );
+      }
+    });
+
+    const recentOrdersPayload =
+      recentOrdersResult.status === 'fulfilled' ? recentOrdersResult.value : { orders: [] };
+
+    timer.finish('200 ok');
+    return res.json({
+      success: true,
+      summary: summaryResult.status === 'fulfilled' ? summaryResult.value : null,
+      cartRecoveryMetrics:
+        cartMetricsResult.status === 'fulfilled' ? cartMetricsResult.value : null,
+      campaignPulse: campaignPulseResult.status === 'fulfilled' ? campaignPulseResult.value : null,
+      recentOrders: Array.isArray(recentOrdersPayload.orders) ? recentOrdersPayload.orders : [],
+      meta: {
+        partial: failedSections.length > 0,
+        failedSections,
+        days,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    timer.finish(`error: ${err.message}`);
+    logger.error('[Dashboard Workspace] fatal', err);
     res.status(500).json({ success: false, error: err.message });
   }
 };

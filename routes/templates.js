@@ -43,25 +43,16 @@ const {
 const { normalizePurpose } = require('../utils/meta/templateEligibility');
 const { META_TEMPLATE_LIST_FIELDS } = require('../utils/meta/metaTemplateSyncUtils');
 const { apiCache } = require('../middleware/apiCache');
+const {
+  templateListMemKey,
+  readTemplateListMemCache,
+  writeTemplateListMemCache,
+  invalidateTemplateListMemCache,
+  resolveTemplateListMemTtl,
+} = require('../utils/meta/templateListMemCache');
 
-/** In-process list cache — avoids 40s+ stalls when Redis/Mongo is contended. */
-const templateListMemCache = new Map();
-const TEMPLATE_LIST_MEM_TTL_MS = 45_000;
-
-function templateListMemKey(clientId, contextPurpose) {
-  return `${clientId || ''}:${contextPurpose || '*'}`;
-}
-
-function readTemplateListMemCache(key) {
-  const row = templateListMemCache.get(key);
-  if (!row || row.exp < Date.now()) return null;
-  return row.body;
-}
-
-function writeTemplateListMemCache(key, body, ttlMs) {
-  const ttl = Number(ttlMs) > 0 ? ttlMs : TEMPLATE_LIST_MEM_TTL_MS;
-  templateListMemCache.set(key, { exp: Date.now() + ttl, body });
-}
+// Re-export for tests / lifecycle hooks
+router.invalidateTemplateListMemCache = invalidateTemplateListMemCache;
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -150,6 +141,7 @@ router.get('/sync', protect, async (req, res) => {
                 { clientId },
                 { $set: { syncedMetaTemplates: templates, templatesSyncedAt: new Date() } }
             );
+            invalidateTemplateListMemCache(clientId);
 
             try {
               await reconcileSyncedTemplatesWithCatalog(clientId, templates);
@@ -484,7 +476,7 @@ async function handleGetTemplateList(req, res) {
           syncedAt: client.templatesSyncedAt,
           ...(meta ? { meta } : {}),
         };
-        const memTtlMs = skipCanonical ? 120_000 : TEMPLATE_LIST_MEM_TTL_MS;
+        const memTtlMs = resolveTemplateListMemTtl({ skipCanonical, contextPurpose });
         writeTemplateListMemCache(memKey, payload, memTtlMs);
         timer.finish(`200 ok | count=${responseData.length}`);
         res.json(payload);
@@ -493,6 +485,28 @@ async function handleGetTemplateList(req, res) {
         res.status(500).json({ success: false, message: error.message });
     }
 }
+
+const { invokeRouteJson } = require('../utils/hub/invokeRouteJson');
+
+async function buildTemplateListForClient(clientId, user = {}) {
+  const { status, body } = await invokeRouteJson(handleGetTemplateList, {
+    query: { clientId, contextPurpose: 'manager' },
+    user: {
+      clientId,
+      role: user.role || 'ADMIN',
+      id: user.id || user._id || user.clientId,
+    },
+    headers: {},
+  });
+  if (status >= 400) {
+    const err = new Error(body?.message || 'Template list failed');
+    err.status = status;
+    throw err;
+  }
+  return body;
+}
+
+router.buildTemplateListForClient = buildTemplateListForClient;
 
 router.get('/list', protect, apiCache(60), handleGetTemplateList);
 
@@ -653,6 +667,7 @@ router.put('/purpose', protect, async (req, res) => {
         client.messageTemplates = mutateByName(client.messageTemplates);
         client.syncedMetaTemplates = mutateByName(client.syncedMetaTemplates);
         await client.save();
+        invalidateTemplateListMemCache(clientId);
 
         // Persist in canonical templates too for durable routing.
         await MetaTemplate.updateMany(

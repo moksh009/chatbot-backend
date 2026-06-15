@@ -6,7 +6,7 @@ const { decryptToken } = require('../core/connectionStatus');
 const { auditLog } = require('../../services/audit/auditWriter');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 
-const CACHE_TTL = 300;
+const CACHE_TTL = 30;
 const graphUrl = () =>
   `https://graph.facebook.com/${process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v21.0'}`;
 

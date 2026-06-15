@@ -82,6 +82,11 @@ async function syncClientTemplates(client) {
     );
 
     try {
+      const { invalidateTemplateListMemCache } = require('../utils/meta/templateListMemCache');
+      invalidateTemplateListMemCache(client.clientId);
+    } catch (_) { /* noop */ }
+
+    try {
       const {
         reconcileSyncedTemplatesWithCatalog,
         pollPendingMetaTemplatesForClient,

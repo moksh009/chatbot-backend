@@ -1,3 +1,7 @@
+// UNMOUNTED — no routes registered in index.js (see ~L383)
+// AmazonConnectFlow.jsx (frontend) removed June 2026 — zero imports
+// Cron amazon workers still run (amazonSync.js, inventoryCrons.js)
+// Delete this file only after Amazon feature formally retired
 'use strict';
 
 const express = require('express');

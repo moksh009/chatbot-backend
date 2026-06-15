@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
 const AmazonSPAPI = require('../utils/commerce/amazonSPAPI');
+const { decrypt } = require('../utils/core/encryption');
 const log = require('../utils/core/logger')('AmazonSync');
 const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
 const { applyAdjustment, autoMatchSkuMapping } = require('../utils/inventory/ledger');
@@ -9,6 +10,19 @@ const { applyAdjustment, autoMatchSkuMapping } = require('../utils/inventory/led
 const PENDING_STATUSES = new Set(['Pending', 'Unshipped']);
 const SHIPPED_STATUSES = new Set(['Shipped', 'PartiallyShipped']);
 const CANCELLED_STATUSES = new Set(['Canceled', 'Cancelled']);
+
+/** Same credential mapping as inventoryCrons.js / amazonInventorySync.js */
+function buildAmazonApi(client) {
+  const cfg = client.amazonConfig || {};
+  return new AmazonSPAPI({
+    refreshToken: decrypt(cfg.refreshToken),
+    clientId: cfg.lwaClientId || process.env.AMAZON_CLIENT_ID,
+    clientSecret: cfg.lwaClientSecret
+      ? decrypt(cfg.lwaClientSecret)
+      : process.env.AMAZON_CLIENT_SECRET,
+    region: cfg.region || 'eu-west-1',
+  });
+}
 
 /**
  * Amazon Order Sync — enabled when client has amazonConfig.refreshToken.
@@ -18,16 +32,22 @@ const scheduleAmazonSync = () => {
   if (process.env.CRON_ENABLE_INVENTORY === 'false') return;
 
   cron.schedule('*/15 * * * *', async () => {
-    log.info('Running Amazon SP-API Order Sync...');
-
     try {
+      const tenantCount = await Client.countDocuments({
+        'amazonConfig.refreshToken': { $exists: true, $ne: '' },
+        isActive: true,
+      });
+      if (tenantCount === 0) return;
+
+      log.info('Running Amazon SP-API Order Sync...');
+
       const clients = await Client.find({
-        'amazonConfig.refreshToken': { $exists: true },
+        'amazonConfig.refreshToken': { $exists: true, $ne: '' },
         isActive: true,
       });
 
       for (const client of clients) {
-        const amazon = new AmazonSPAPI(client.amazonConfig);
+        const amazon = buildAmazonApi(client);
         const marketplaceId = client.amazonConfig.marketplaceId || 'A21TJ7DG3Y56XX';
 
         const amazonOrders = await amazon.getOrders(marketplaceId);

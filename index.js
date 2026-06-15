@@ -200,6 +200,8 @@ app.use(
 );
 
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
+app.use(require('./middleware/slowRequestLogger')());
+app.use(require('./middleware/sentryPerformanceMiddleware'));
 
 // ── CRITICAL: IG Webhook — must be mounted BEFORE global express.json() ──
 // Meta's HMAC-SHA256 signature verification requires the unparsed raw body.
@@ -287,6 +289,7 @@ const settingsRoutes = require('./routes/settings');
 app.use('/api/settings', settingsRoutes);
 const flowRoutes = require('./routes/flow');
 app.use('/api/flow', flowRoutes);
+// DUPLICATE MOUNT — frontend uses /api/flow only (not /api/flows)
 app.use('/api/flows', flowRoutes);
 
 const aiRoutes = require('./routes/ai');
@@ -326,7 +329,7 @@ const commerceHealthRoutes = require('./routes/commerceHealth');
 app.use('/api/commerce', commerceHealthRoutes);
 app.use('/api/hub-health', require('./routes/hubHealth'));
 app.use('/api/email-hub', require('./routes/emailHub'));
-app.use('/api/email', require('./routes/emailTracking'));
+app.use('/api/email', require('./routes/emailTracking')); // tracking routes
 app.use('/api/merchant-playbook', require('./routes/merchantPlaybook'));
 const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);
@@ -365,6 +368,7 @@ const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
 app.use('/api/campaigns', bulkLimiter, campaignsRoutes); // ✅ Phase R3: Bulk send protection
 const emailWebhookRoutes = require('./routes/emailWebhook');
+// DUPLICATE MOUNT — same /api/email prefix; emailTracking (above) + emailWebhook (below)
 app.use('/api/email', emailWebhookRoutes);
 app.use('/api/payment', require('./routes/payment'));
 app.use('/api/billing', require('./routes/billing'));
@@ -386,6 +390,7 @@ const storeEconomicsRoutes = require('./routes/storeEconomics');
 app.use('/api/store-economics', storeEconomicsRoutes);
 
 const supportRoutes = require('./routes/support');
+// DUPLICATE MOUNT — same router; /api/support (dashboard) + /api/support-chat (website widget alias)
 app.use('/api/support', supportRoutes);
 app.use('/api/support-chat', supportRoutes); // Public alias for website chat widget
 
@@ -482,7 +487,8 @@ app.use('/api/qrcodes', require('./routes/qrcodes'));
 app.use('/api/catalog', require('./routes/catalog'));
 app.use('/api/meta/workspace', require('./routes/metaWorkspace'));
 // app.use('/api/payout', protect, require('./routes/payout')); // REMOVED: File doesn't exist
-app.use('/api/training', require('./routes/training'));
+// UNMOUNTED 2026-06-15 (Phase 3.1) — routes/training.js is empty Router(); UI retired; zero HTTP callers
+// app.use('/api/training', require('./routes/training'));
 // app.use('/api/ig-automation', protect, require('./routes/igAutomation')); // REMOVED: Redundant and points to missing igAutomation.js (use /api/instagram-automations instead)
 app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));

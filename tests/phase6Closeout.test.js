@@ -35,7 +35,10 @@ function main() {
   assert.ok(fs.existsSync(path.join(ROOT, 'models/ProductWatch.js')));
   assert.ok(fs.existsSync(path.join(ROOT, 'services/training/trainingOutcomeTracker.js')));
   assert.ok(fs.existsSync(path.join(ROOT, 'services/productWatch/triggerRestockNotifications.js')));
-  assert.ok(read('routes/training.js').includes('/cases/:id/approve'));
+  assert.ok(
+    read('routes/training.js').includes('UNMOUNTED'),
+    'training route retired — empty stub, unmounted from index.js'
+  );
   assert.ok(read('utils/commerce/dualBrainEngine.js').includes('trainingContext'));
   assert.ok(read('utils/commerce/dualBrainEngine.js').includes('pendingProductWatch'));
   assert.ok(!fs.existsSync(path.join(ROOT, 'models/OnboardingWizard.js')));

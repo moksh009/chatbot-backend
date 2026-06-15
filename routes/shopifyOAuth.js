@@ -870,11 +870,8 @@ router.get('/callback', async (req, res) => {
 
     // Invalidate Redis connection-status cache so frontend immediately sees connected state
     try {
-      const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
-      const redis = getAppRedis();
-      if (redis && isRedisReady(redis)) {
-        await redis.del(`workspace:connection:${clientId}`);
-      }
+      const { invalidateWorkspaceConnectionCache } = require('../utils/core/workspaceConnectionCache');
+      await invalidateWorkspaceConnectionCache(clientId);
     } catch (_) {}
 
     const { seedPlaybooksForClient } = require('../services/postPurchaseJourneys/seedPlaybooks');

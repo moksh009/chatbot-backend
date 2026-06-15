@@ -444,6 +444,23 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
   const reconcileFirst = options.reconcileFirst !== false;
   const persistOrderMap = options.persistOrderMap !== false;
 
+  const {
+    buildRecoveryMetricsCacheKey,
+    readRecoveryMetricsCache,
+    writeRecoveryMetricsCache,
+    shouldBypassRecoveryMetricsCache,
+  } = require('../utils/commerce/cartRecoveryMetricsCache');
+
+  const cacheKey = buildRecoveryMetricsCacheKey(clientId, options, { from, to, timezone });
+  const bypassCache = shouldBypassRecoveryMetricsCache(options);
+
+  if (!bypassCache) {
+    const cached = readRecoveryMetricsCache(cacheKey);
+    if (cached) {
+      return JSON.parse(JSON.stringify(cached));
+    }
+  }
+
   if (reconcileFirst) {
     const reconcileSince = new Date(Math.min(from.getTime(), Date.now() - 90 * 86400000));
     await reconcileOpenCartLeadsForClient(clientId, {
@@ -610,6 +627,10 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
     result.rows = rows;
   }
 
+  if (!bypassCache) {
+    writeRecoveryMetricsCache(cacheKey, result);
+  }
+
   return result;
 }
 
@@ -622,4 +643,6 @@ module.exports = {
   abandonDate,
   isRecoveredLead,
   dedupeLeadsForWorkspace,
+  invalidateRecoveryMetricsCache: require('../utils/commerce/cartRecoveryMetricsCache')
+    .invalidateRecoveryMetricsCache,
 };

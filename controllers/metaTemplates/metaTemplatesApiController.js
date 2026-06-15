@@ -158,143 +158,149 @@ async function saveDraft(req, res) {
   }
 }
 
+async function buildMetaTemplatesListPayload(clientId, query = {}) {
+  const status = (query.status || 'all').toLowerCase();
+  const statusesRaw = String(query.statuses || '')
+    .split(',')
+    .map((v) => String(v || '').trim().toLowerCase())
+    .filter(Boolean);
+  const usageTagFilters = String(query.usageTags || '')
+    .split(',')
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
+  const search = String(query.search || '').trim();
+  const page = Math.max(parseInt(query.page, 10) || 1, 1);
+  const limit = 100;
+
+  const q = { clientId };
+  const statusMap = {
+    approved: 'approved',
+    in_review: 'pending_meta_review',
+    pending: 'pending_meta_review',
+    rejected: 'rejected',
+    draft: 'draft',
+    failed: 'submission_failed',
+    not_on_meta: '__NOT_ON_META__',
+  };
+  const mappedStatuses = statusesRaw
+    .map((s) => statusMap[s] || s)
+    .filter(Boolean);
+
+  if (mappedStatuses.length > 0) {
+    if (mappedStatuses.includes('__NOT_ON_META__')) {
+      const nonMissing = mappedStatuses.filter((s) => s !== '__NOT_ON_META__');
+      q.$or = [
+        ...(q.$or || []),
+        { metaTemplateId: { $in: [null, ''] } },
+        ...(nonMissing.length ? [{ submissionStatus: { $in: nonMissing } }] : []),
+      ];
+    } else {
+      q.submissionStatus = { $in: mappedStatuses };
+    }
+  } else if (status && status !== 'all') {
+    q.submissionStatus = status;
+  }
+  if (usageTagFilters.length > 0) {
+    const {
+      isCatalogUsageTag,
+      getCatalogMetaNamesForUsageTags,
+    } = require('../../utils/meta/templateCatalogUsageTags');
+    const catalogFilters = usageTagFilters.filter(isCatalogUsageTag);
+    const customFilters = usageTagFilters.filter((t) => !isCatalogUsageTag(t));
+    const catalogNames = getCatalogMetaNamesForUsageTags(catalogFilters);
+    const tagOr = [];
+    if (customFilters.length) tagOr.push({ usageTags: { $in: customFilters } });
+    if (catalogNames.length) tagOr.push({ name: { $in: catalogNames } });
+    if (tagOr.length === 1) {
+      Object.assign(q, tagOr[0]);
+    } else if (tagOr.length > 1) {
+      if (Array.isArray(q.$and)) {
+        q.$and.push({ $or: tagOr });
+      } else if (q.$or) {
+        q.$and = [{ $or: q.$or }, { $or: tagOr }];
+        delete q.$or;
+      } else {
+        q.$or = tagOr;
+      }
+    }
+  }
+  if (search) {
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex = new RegExp(escaped, 'i');
+    const searchOr = [{ internalName: searchRegex }, { name: searchRegex }];
+    if (Array.isArray(q.$or) && q.$or.length > 0) {
+      q.$and = [{ $or: q.$or }, { $or: searchOr }];
+      delete q.$or;
+    } else {
+      q.$or = searchOr;
+    }
+  }
+
+  const [total, rows, workspaceTagRows, clientRow] = await Promise.all([
+    MetaTemplate.countDocuments(q),
+    MetaTemplate.find(q)
+      .sort({ metaLastEditedAt: -1, updatedAt: -1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    CustomUsageTag.find({ clientId }).sort({ name: 1 }).lean(),
+    Client.findOne({ clientId }).select('syncedMetaTemplates').lean(),
+  ]);
+
+  const syncedByName = new Map(
+    (Array.isArray(clientRow?.syncedMetaTemplates) ? clientRow.syncedMetaTemplates : [])
+      .filter((t) => t?.name)
+      .map((t) => [String(t.name).toLowerCase(), t])
+  );
+
+  const normalized = rows.map((row) => {
+    const fallback = formatInternalNameFromMetaName(row?.name);
+    const synced = syncedByName.get(String(row?.name || '').toLowerCase());
+    const syncedCategory = normalizeMetaCategory(synced?.category);
+    const syncedEdited = parseMetaLastEdited(synced?.last_updated_time);
+    const rowEdited = row?.metaLastEditedAt ? new Date(row.metaLastEditedAt) : null;
+    const metaLastEditedAt =
+      rowEdited && !Number.isNaN(rowEdited.getTime())
+        ? rowEdited
+        : syncedEdited;
+
+    return {
+      ...row,
+      category: syncedCategory || normalizeMetaCategory(row?.category) || row?.category || null,
+      metaLastEditedAt: metaLastEditedAt || row?.metaLastEditedAt || null,
+      internalName: String(row?.internalName || '').trim() || fallback || null,
+    };
+  });
+
+  return {
+    success: true,
+    data: normalized,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(Math.ceil(total / limit), 1),
+    },
+    availableUsageTags: [
+      ...new Set([
+        ...require('../../utils/meta/templateCatalogUsageTags').getAllCatalogUsageTags(),
+        ...workspaceTagRows.map((tag) => tag.name),
+      ]),
+    ].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 async function listTemplates(req, res) {
   try {
     const tenantId = tenantClientId(req);
     const clientId = req.query.clientId || tenantId;
-    const status = (req.query.status || 'all').toLowerCase();
-    const statusesRaw = String(req.query.statuses || '')
-      .split(',')
-      .map((v) => String(v || '').trim().toLowerCase())
-      .filter(Boolean);
-    const usageTagFilters = String(req.query.usageTags || '')
-      .split(',')
-      .map((v) => String(v || '').trim())
-      .filter(Boolean);
-    const search = String(req.query.search || '').trim();
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = 100;
 
     if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    const q = { clientId };
-    const statusMap = {
-      approved: 'approved',
-      in_review: 'pending_meta_review',
-      pending: 'pending_meta_review',
-      rejected: 'rejected',
-      draft: 'draft',
-      failed: 'submission_failed',
-      not_on_meta: '__NOT_ON_META__',
-    };
-    const mappedStatuses = statusesRaw
-      .map((s) => statusMap[s] || s)
-      .filter(Boolean);
-
-    if (mappedStatuses.length > 0) {
-      if (mappedStatuses.includes('__NOT_ON_META__')) {
-        const nonMissing = mappedStatuses.filter((s) => s !== '__NOT_ON_META__');
-        q.$or = [
-          ...(q.$or || []),
-          { metaTemplateId: { $in: [null, ''] } },
-          ...(nonMissing.length ? [{ submissionStatus: { $in: nonMissing } }] : []),
-        ];
-      } else {
-        q.submissionStatus = { $in: mappedStatuses };
-      }
-    } else if (status && status !== 'all') {
-      q.submissionStatus = status;
-    }
-    if (usageTagFilters.length > 0) {
-      const {
-        isCatalogUsageTag,
-        getCatalogMetaNamesForUsageTags,
-      } = require('../../utils/meta/templateCatalogUsageTags');
-      const catalogFilters = usageTagFilters.filter(isCatalogUsageTag);
-      const customFilters = usageTagFilters.filter((t) => !isCatalogUsageTag(t));
-      const catalogNames = getCatalogMetaNamesForUsageTags(catalogFilters);
-      const tagOr = [];
-      if (customFilters.length) tagOr.push({ usageTags: { $in: customFilters } });
-      if (catalogNames.length) tagOr.push({ name: { $in: catalogNames } });
-      if (tagOr.length === 1) {
-        Object.assign(q, tagOr[0]);
-      } else if (tagOr.length > 1) {
-        if (Array.isArray(q.$and)) {
-          q.$and.push({ $or: tagOr });
-        } else if (q.$or) {
-          q.$and = [{ $or: q.$or }, { $or: tagOr }];
-          delete q.$or;
-        } else {
-          q.$or = tagOr;
-        }
-      }
-    }
-    if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const searchRegex = new RegExp(escaped, 'i');
-      const searchOr = [{ internalName: searchRegex }, { name: searchRegex }];
-      if (Array.isArray(q.$or) && q.$or.length > 0) {
-        q.$and = [{ $or: q.$or }, { $or: searchOr }];
-        delete q.$or;
-      } else {
-        q.$or = searchOr;
-      }
-    }
-
-    const [total, rows, workspaceTagRows, clientRow] = await Promise.all([
-      MetaTemplate.countDocuments(q),
-      MetaTemplate.find(q)
-        .sort({ metaLastEditedAt: -1, updatedAt: -1, createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-      CustomUsageTag.find({ clientId }).sort({ name: 1 }).lean(),
-      Client.findOne({ clientId }).select('syncedMetaTemplates').lean(),
-    ]);
-
-    const syncedByName = new Map(
-      (Array.isArray(clientRow?.syncedMetaTemplates) ? clientRow.syncedMetaTemplates : [])
-        .filter((t) => t?.name)
-        .map((t) => [String(t.name).toLowerCase(), t])
-    );
-
-    const normalized = rows.map((row) => {
-      const fallback = formatInternalNameFromMetaName(row?.name);
-      const synced = syncedByName.get(String(row?.name || '').toLowerCase());
-      const syncedCategory = normalizeMetaCategory(synced?.category);
-      const syncedEdited = parseMetaLastEdited(synced?.last_updated_time);
-      const rowEdited = row?.metaLastEditedAt ? new Date(row.metaLastEditedAt) : null;
-      const metaLastEditedAt =
-        rowEdited && !Number.isNaN(rowEdited.getTime())
-          ? rowEdited
-          : syncedEdited;
-
-      return {
-        ...row,
-        category: syncedCategory || normalizeMetaCategory(row?.category) || row?.category || null,
-        metaLastEditedAt: metaLastEditedAt || row?.metaLastEditedAt || null,
-        internalName: String(row?.internalName || '').trim() || fallback || null,
-      };
-    });
-
-    return res.json({
-      success: true,
-      data: normalized,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.max(Math.ceil(total / limit), 1),
-      },
-      availableUsageTags: [
-        ...new Set([
-          ...require('../../utils/meta/templateCatalogUsageTags').getAllCatalogUsageTags(),
-          ...workspaceTagRows.map((tag) => tag.name),
-        ]),
-      ].sort((a, b) => a.localeCompare(b)),
-    });
+    const payload = await buildMetaTemplatesListPayload(clientId, req.query);
+    return res.json(payload);
   } catch (err) {
     console.error('[meta-templates list]', err);
     return res.status(500).json({ error: 'Failed to list templates.' });
@@ -538,6 +544,7 @@ async function deleteTemplate(req, res) {
 module.exports = {
   saveDraft,
   listTemplates,
+  buildMetaTemplatesListPayload,
   getOne,
   patchTemplate,
   deleteTemplate,

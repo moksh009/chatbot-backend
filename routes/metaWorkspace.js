@@ -4,8 +4,11 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
+const loadClientConfig = require('../middleware/clientConfig');
+const { apiCache } = require('../middleware/apiCache');
 const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
 const { decrypt } = require('../utils/core/encryption');
+const { buildMetaWorkspaceShell } = require('../utils/hub/metaWorkspaceBundle');
 
 function maskSecret(val) {
   if (!val || val === '••••••••') return null;
@@ -25,6 +28,37 @@ function hasToken(client, paths) {
   }
   return false;
 }
+
+/**
+ * GET /api/meta/workspace/:clientId/shell
+ * Meta Manager library bundle: templates/list + meta-templates page 1 + slots + readiness + health.
+ * Gate: FEATURE_META_WORKSPACE_SHELL=true (frontend: VITE_FEATURE_META_WORKSPACE_SHELL)
+ */
+router.get('/:clientId/shell', protect, verifyClientAccess, loadClientConfig, apiCache(30), async (req, res) => {
+  if (process.env.FEATURE_META_WORKSPACE_SHELL !== 'true') {
+    return res.status(404).json({ success: false, error: 'Meta workspace shell not enabled' });
+  }
+
+  try {
+    const { clientId } = req.params;
+    const tab = String(req.query.tab || 'library').toLowerCase();
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const sections = req.query.sections || 'templates,health';
+
+    const payload = await buildMetaWorkspaceShell(clientId, {
+      user: req.user,
+      clientConfig: req.clientConfig,
+      tab,
+      page,
+      sections,
+    });
+
+    return res.json({ success: true, clientId, ...payload });
+  } catch (err) {
+    console.error('[meta/workspace/shell]', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 /**
  * GET /api/meta/workspace/:clientId

@@ -1,3 +1,9 @@
+// Phase 3.1 external consumer audit (June 2026):
+// - Frontend: ZERO callers (grep entire chatbot-dashboard-frontend-main for /api/bi)
+// - Backend tests: tests/phase9/biSandbox.test.js tests services/bi/* directly, NOT HTTP routes
+// - Scripts: scripts/probeBackendModules.js loads module only (no HTTP)
+// - KEEP MOUNTED until product confirms BI sandbox retirement (services still used internally)
+// Candidates for unmount — verify no Postman/admin scripts hit /api/bi/:clientId/*
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');

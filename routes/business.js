@@ -1,3 +1,8 @@
+// Phase 3.1 external consumer audit (June 2026):
+// - Frontend: ZERO callers (grep entire monorepo for /api/business — only index.js mount)
+// - Scripts: scripts/probeBackendModules.js loads module only (no HTTP)
+// - Legacy Provider/Service CRUD — no dashboard UI; may have been early marketplace prototype
+// - KEEP MOUNTED — business routes lack protect middleware; unmount only after DB audit for Provider/Service docs
 const express = require('express');
 const router = express.Router();
 const Provider = require('../models/Provider');

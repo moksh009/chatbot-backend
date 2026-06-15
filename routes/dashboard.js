@@ -16,6 +16,14 @@ router.post('/batch-data', protect, apiCache(60), dashboardController.getBatchDa
 
 // GET /api/dashboard/summary — consolidated ecommerce dashboard payload (Phase 2)
 router.get('/summary', protect, apiCache(60), dashboardController.getSummary);
+// GET /api/dashboard/workspace — home bundle (summary + cart metrics + campaign pulse + recent orders)
+// Enabled when FEATURE_DASHBOARD_BUNDLE=true (frontend: VITE_FEATURE_DASHBOARD_BUNDLE)
+router.get('/workspace', protect, apiCache(60), (req, res, next) => {
+  if (process.env.FEATURE_DASHBOARD_BUNDLE !== 'true') {
+    return res.status(404).json({ success: false, error: 'Dashboard workspace bundle not enabled' });
+  }
+  return dashboardController.getWorkspace(req, res, next);
+});
 router.get('/recovered-summary', protect, apiCache(45), dashboardController.getRecoveredSummary);
 router.get('/analytics-chart', protect, apiCache(45), dashboardController.getAnalyticsChart);
 router.get('/cart-recovery-chart', protect, apiCache(45), dashboardController.getCartRecoveryChart);

@@ -2,35 +2,67 @@
 
 const express = require('express');
 const router = express.Router();
+const Client = require('../models/Client');
+const Notification = require('../models/Notification');
+const ActivityLog = require('../models/ActivityLog');
 const { protect } = require('../middleware/auth');
 const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const { apiCache } = require('../middleware/apiCache');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
-const { buildConnectionStatusContract } = require('../utils/core/connectionStatusV2');
+const { buildConnectionStatusContract, applyLiveProbesToContract } = require('../utils/core/connectionStatusV2');
 const { getCachedClient, CONNECTION_STATUS_SELECT, invalidateClientCache } = require('../utils/core/clientCache');
+const {
+  readFullCache,
+  readFlagsCache,
+  writeFullCache,
+  writeFlagsCache,
+  invalidateWorkspaceConnectionCache,
+  stripVolatileConnectionLayers,
+} = require('../utils/core/workspaceConnectionCache');
 const {
   isSmartRulesEngineEnabled,
   isWebsiteChatWidgetSettingsEnabled,
   isDeliveryRtoInsightsEnabled,
 } = require('../utils/core/featureFlags');
-const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
 
-const CACHE_TTL_SEC = 30;
-
-function cacheKey(clientId) {
-  return `workspace:connection:${clientId}`;
+async function fetchWorkerHealthSnapshot() {
+  try {
+    const { buildWorkerHealthSnapshot } = require('../utils/hub/workerHealth');
+    return await buildWorkerHealthSnapshot();
+  } catch (workerErr) {
+    console.warn('[workspace] workerHealth:', workerErr.message);
+    return { workerHealthy: false, error: workerErr.message };
+  }
 }
 
 /**
- * GET /api/workspace/:clientId/connection-status
- * Canonical connection contract (Phase 4). ?refresh=1 bypasses cache.
+ * Merge cached flags (5m) with fresh probes (30s) + worker health.
  */
-router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (req, res) => {
-  const { clientId } = req.params;
-  const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
+async function buildFromFlagsCache(clientId, flagsCached) {
+  const client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
+  const merged = { ...flagsCached };
+  if (client) {
+    await applyLiveProbesToContract(client, merged);
+  }
+  merged.workerHealth = await fetchWorkerHealthSnapshot();
+  return merged;
+}
 
+function buildFeatureRollout() {
+  return {
+    smartRulesEngine: isSmartRulesEngineEnabled(),
+    websiteChatWidgetSettings: isWebsiteChatWidgetSettingsEnabled(),
+    deliveryRtoInsights: isDeliveryRtoInsightsEnabled(),
+  };
+}
+
+/**
+ * Shared connection-status payload (connection-status route + workspace shell).
+ */
+async function buildWorkspaceConnectionPayload(clientId, { forceRefresh = false } = {}) {
   let client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
 
-  // Heal false "expired" states for embedded Shopify installs (expiring offline tokens + refresh)
   if (client?.shopDomain && client?.shopifyAccessToken) {
     const shopifySt = String(client.shopifyConnectionStatus || '').toLowerCase();
     const shouldHeal =
@@ -56,10 +88,8 @@ router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (
 
   let workerHealth = null;
   try {
-    const { buildWorkerHealthSnapshot } = require('../utils/hub/workerHealth');
-    workerHealth = await buildWorkerHealthSnapshot();
+    workerHealth = await fetchWorkerHealthSnapshot();
   } catch (workerErr) {
-    console.warn('[workspace] workerHealth:', workerErr.message);
     workerHealth = { workerHealthy: false, error: workerErr.message };
   }
 
@@ -73,54 +103,152 @@ router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (
     }
   }
 
-  const payload = {
+  const featureRollout = buildFeatureRollout();
+
+  return {
     ...contract,
     shopify_connected: legacy.shopify_connected,
     whatsapp_connected: legacy.whatsapp_connected,
     meta_connected: legacy.meta_connected,
     instagram_connected: legacy.instagram_connected,
     workerHealth,
-    featureRollout: {
-      smartRulesEngine: isSmartRulesEngineEnabled(),
-      websiteChatWidgetSettings: isWebsiteChatWidgetSettingsEnabled(),
-      deliveryRtoInsights: isDeliveryRtoInsightsEnabled(),
-    },
+    featureRollout,
   };
+}
+
+async function fetchUnreadNotificationCount(clientId) {
+  return Notification.countDocuments({ clientId, status: 'unread' });
+}
+
+async function fetchRecentActivities(clientId, limit = 3) {
+  return ActivityLog.find({ clientId })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+}
+
+async function fetchCustomVariables(clientId) {
+  const client = await Client.findOne({ clientId }).select('customVariables').lean();
+  return client?.customVariables || [];
+}
+
+/**
+ * GET /api/workspace/:clientId/shell
+ * Cold-start bundle: connection + notification count + pulse preview + custom variables.
+ * Gate: FEATURE_WORKSPACE_SHELL=true (frontend: VITE_FEATURE_WORKSPACE_SHELL)
+ */
+router.get('/:clientId/shell', protect, verifyTenantScope(), apiCache(30), async (req, res) => {
+  if (process.env.FEATURE_WORKSPACE_SHELL !== 'true') {
+    return res.status(404).json({ success: false, error: 'Workspace shell not enabled' });
+  }
+
+  const clientId = tenantClientId(req);
+  if (!clientId || clientId !== req.params.clientId) {
+    return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const sections = ['connection', 'notifications', 'pulse', 'customVariables'];
+  const [connResult, notifResult, activitiesResult, variablesResult] = await Promise.allSettled([
+    buildWorkspaceConnectionPayload(clientId, { forceRefresh: false }),
+    fetchUnreadNotificationCount(clientId),
+    fetchRecentActivities(clientId, 3),
+    fetchCustomVariables(clientId),
+  ]);
+
+  const failedSections = sections.filter((_, i) => {
+    const results = [connResult, notifResult, activitiesResult, variablesResult];
+    return results[i].status === 'rejected';
+  });
+
+  if (connResult.status === 'rejected') {
+    console.warn('[workspace] shell connection:', connResult.reason?.message || connResult.reason);
+  }
+  if (notifResult.status === 'rejected') {
+    console.warn('[workspace] shell notifications:', notifResult.reason?.message || notifResult.reason);
+  }
+  if (activitiesResult.status === 'rejected') {
+    console.warn('[workspace] shell pulse:', activitiesResult.reason?.message || activitiesResult.reason);
+  }
+  if (variablesResult.status === 'rejected') {
+    console.warn('[workspace] shell variables:', variablesResult.reason?.message || variablesResult.reason);
+  }
+
+  const connection = connResult.status === 'fulfilled' ? connResult.value : {};
+  const featureRollout = connection.featureRollout || buildFeatureRollout();
+
+  return res.json({
+    success: true,
+    clientId,
+    connection,
+    notifications: {
+      unreadCount: notifResult.status === 'fulfilled' ? notifResult.value : 0,
+    },
+    pulse: {
+      recentActivities: activitiesResult.status === 'fulfilled' ? activitiesResult.value : [],
+    },
+    customVariables: variablesResult.status === 'fulfilled' ? variablesResult.value : [],
+    featureRollout,
+    capabilities: featureRollout,
+    meta: {
+      partial: failedSections.length > 0,
+      failedSections,
+    },
+  });
+});
+
+/**
+ * GET /api/workspace/:clientId/connection-status
+ * Canonical connection contract (Phase 4). ?refresh=1 bypasses cache.
+ * Cache layers: full 30s | flags 5m + fresh probes 30s (Phase 4.1).
+ */
+router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (req, res) => {
+  const { clientId } = req.params;
+  const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
 
   try {
-    const redis = getAppRedis();
-    if (redis && isRedisReady(redis) && !forceRefresh) {
-      try {
-        const cached = await redis.get(cacheKey(clientId));
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          return res.json({ success: true, clientId, cached: true, ...parsed });
-        }
-      } catch (cacheReadErr) {
-        console.warn('[workspace] connection-status cache read:', cacheReadErr.message);
+    if (!forceRefresh) {
+      const fullCached = await readFullCache(clientId);
+      if (fullCached) {
+        return res.json({ success: true, clientId, cached: true, cacheLayer: 'full', ...fullCached });
+      }
+
+      const flagsCached = await readFlagsCache(clientId);
+      if (flagsCached) {
+        const merged = await buildFromFlagsCache(clientId, { ...flagsCached });
+        await writeFullCache(clientId, merged);
+        return res.json({
+          success: true,
+          clientId,
+          cached: true,
+          cacheLayer: 'flags+probes',
+          ...merged,
+        });
       }
     }
 
-    if (redis && isRedisReady(redis)) {
-      try {
-        await redis.setex(cacheKey(clientId), CACHE_TTL_SEC, JSON.stringify(payload));
-      } catch (cacheWriteErr) {
-        console.warn('[workspace] connection-status cache write:', cacheWriteErr.message);
-      }
-    }
+    const payload = await buildWorkspaceConnectionPayload(clientId, { forceRefresh });
+
+    await Promise.all([
+      writeFullCache(clientId, payload),
+      writeFlagsCache(clientId, stripVolatileConnectionLayers(payload)),
+    ]);
 
     return res.json({ success: true, clientId, cached: false, ...payload });
   } catch (err) {
     console.warn('[workspace] connection-status:', err.message);
-    return res.json({ success: true, clientId, cached: false, ...payload });
+    try {
+      const payload = await buildWorkspaceConnectionPayload(clientId, { forceRefresh });
+      return res.json({ success: true, clientId, cached: false, ...payload });
+    } catch (innerErr) {
+      return res.status(500).json({ success: false, message: innerErr.message });
+    }
   }
 });
 
 router.post('/:clientId/connection-status/invalidate', protect, verifyTenantScope(), async (req, res) => {
   const { clientId } = req.params;
   invalidateClientCache(clientId);
-  const redis = getAppRedis();
-  if (redis) await redis.del(cacheKey(clientId));
+  await invalidateWorkspaceConnectionCache(clientId);
   return res.json({ success: true });
 });
 

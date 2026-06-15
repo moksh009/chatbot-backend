@@ -4,15 +4,10 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopify/shopifyHelper');
-const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
 const { syncShopifyOrdersToMongo } = require('../utils/shopify/shopifyOrderSync');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 const { SHOPIFY_WEBHOOK_TOPICS_WITH_SCOPES } = require('../constants/shopifyWebhookTopics');
 const { expandImpliedScopes, parseShopifyScopes } = require('../utils/shopify/shopifyScopeUtils');
-
-/** In-process cache so dashboard polls do not block the event loop on slow Shopify APIs */
-const recentOrdersCache = new Map();
-const RECENT_ORDERS_TTL_MS = 90_000;
 
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
 const internalOrProtect = (req, res, next) => {
@@ -207,78 +202,18 @@ router.post('/:clientId/reconnect-store', internalOrProtect, async (req, res) =>
 // GET /api/shopify/:clientId/recent-orders
 router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');
+  const { getShopifyRecentOrders } = require('../utils/shopify/shopifyRecentOrders');
   const timer = createTimer('GET /api/shopify/:clientId/recent-orders', req.params.clientId || '');
   timer.checkpoint('START');
 
   try {
     const { clientId } = req.params;
-    const { getCachedClient } = require('../utils/core/clientCache');
-    const client = await timer.time('getCachedClient', () =>
-      getCachedClient(clientId, 'shopDomain shopifyAccessToken commerce')
-    );
-
-    const { shopify_connected: connected } = buildConnectionStatusPayload(client);
-    if (!connected) {
-      timer.finish('200 not_connected');
-      return res.status(200).json({
-        success: true,
-        connected: false,
-        orders: [],
-      });
-    }
-
-    const cacheKey = clientId;
-    const cached = recentOrdersCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < RECENT_ORDERS_TTL_MS) {
-      timer.finish(`200 memory_cache_hit | orders=${cached.orders?.length || 0}`);
-      return res.json({ success: true, connected: true, orders: cached.orders, cached: true });
-    }
-
-    const result = await timer.time('shopify_api.orders_fetch', () =>
-      withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/orders.json?limit=10&status=any');
-        const orders = response.data.orders || [];
-
-        return orders.map((order) => ({
-          orderId: order.id ? order.id.toString() : 'N/A',
-          orderNumber: order.name || order.order_number || 'Unknown',
-          createdAt: order.created_at,
-          customerName: order.customer
-            ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() ||
-              'Shopify Customer'
-            : 'Guest',
-          totalPrice: parseFloat(order.total_price || 0),
-          financialStatus: order.financial_status || 'unknown',
-          fulfillmentStatus: order.fulfillment_status || 'unfulfilled',
-          itemsCount: (order.line_items || []).reduce(
-            (acc, item) => acc + (item.quantity || 0),
-            0
-          ),
-        }));
-      })
-    );
-
-    recentOrdersCache.set(cacheKey, { at: Date.now(), orders: result });
-    res.json({ success: true, connected: true, orders: result });
-    timer.finish(`200 ok | orders=${result.length}`);
+    const payload = await timer.time('getShopifyRecentOrders', () => getShopifyRecentOrders(clientId));
+    res.json(payload);
+    timer.finish(`200 ok | orders=${payload.orders?.length || 0}`);
   } catch (err) {
     timer.finish(`error=${err.message}`);
     console.warn(`[Shopify Recent Orders] soft-fail for ${req.params.clientId}:`, err.message);
-    const stale = recentOrdersCache.get(req.params.clientId);
-    if (stale?.orders?.length) {
-      return res.json({ success: true, connected: true, orders: stale.orders, cached: true, stale: true });
-    }
-    const softAuthError =
-      err.response?.status === 401 ||
-      err.response?.status === 403 ||
-      /incomplete|invalid|credentials/i.test(err.message || '');
-    if (softAuthError || err.response?.status === 402) {
-      return res.status(200).json({
-        success: true,
-        connected: false,
-        orders: [],
-      });
-    }
     res.status(500).json({
       success: false,
       connected: false,

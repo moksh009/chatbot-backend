@@ -167,6 +167,10 @@ async function patchClientSyncedTemplate(clientId, { name, id, status, component
   else list.push(entry);
 
   await Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: list, templatesSyncedAt: new Date() } });
+  try {
+    const { invalidateTemplateListMemCache } = require('../utils/meta/templateListMemCache');
+    invalidateTemplateListMemCache(clientId);
+  } catch (_) { /* noop */ }
   return entry;
 }
 

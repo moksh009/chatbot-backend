@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Fix api.topedgeai.com CORS failures caused by RUN_API=false on the main PM2 app.
 # Run on the server: bash scripts/fix-production-api-env.sh
+#
+# WARNING: This script sets RUN_API+RUN_CRONS+RUN_WORKERS all true (single-process).
+# For split deploy (recommended), use patch-env-split-deploy.sh + start-api-prod.sh /
+# start-worker-prod.sh instead — see .env.example and docs/audits SYSTEM-MASTER-AUDIT Phase 2.
 
 set -euo pipefail
 ENV_FILE="${1:-$HOME/chatbot-backend/.env}"

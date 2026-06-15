@@ -39,11 +39,8 @@ async function bustGmailConnectionCaches(clientId) {
         }
     } catch (_) { /* noop */ }
     try {
-        const { getAppRedis, isRedisReady } = require('./redisFactory');
-        const redis = getAppRedis();
-        if (redis && isRedisReady(redis)) {
-            await redis.del(`workspace:connection:${clientId}`);
-        }
+        const { invalidateWorkspaceConnectionCache } = require('./workspaceConnectionCache');
+        await invalidateWorkspaceConnectionCache(clientId);
     } catch (_) { /* noop */ }
 }
 

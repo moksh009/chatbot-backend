@@ -171,9 +171,8 @@ async function flagShopifyReconnectRequired(clientId, message) {
   invalidateClientCache(clientId);
   // Also bust the workspace connection-status Redis cache so UI sees error immediately
   try {
-    const { getAppRedis, isRedisReady } = require('../core/redisFactory');
-    const redis = getAppRedis();
-    if (redis && isRedisReady(redis)) await redis.del(`workspace:connection:${clientId}`);
+    const { invalidateWorkspaceConnectionCache } = require('../core/workspaceConnectionCache');
+    await invalidateWorkspaceConnectionCache(clientId);
   } catch (_) {}
 }
 

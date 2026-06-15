@@ -763,6 +763,34 @@ router.get('/messaging-activity/summary', ...secure, apiCache(45), async (req, r
   }
 });
 
+/**
+ * GET /api/client/:clientId/order-messages/workspace
+ * SAC + Audience cart gate bundle (automations + overview + readiness + platform + logistics).
+ * Gate: FEATURE_ORDER_MESSAGES_WORKSPACE_BUNDLE=true (frontend: VITE_FEATURE_ORDER_MESSAGES_WORKSPACE_BUNDLE)
+ */
+router.get('/order-messages/workspace', ...secure, apiCache(60), async (req, res) => {
+  if (process.env.FEATURE_ORDER_MESSAGES_WORKSPACE_BUNDLE !== 'true') {
+    return res.status(404).json({ success: false, error: 'Order messages workspace bundle not enabled' });
+  }
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType !== 'ecommerce') {
+      return res.status(400).json({ error: 'Order messages not supported for this business type' });
+    }
+    const rawDays = req.query.days;
+    const days = rawDays === 'all' ? 0 : parseInt(rawDays, 10) || 7;
+    const { buildOrderMessagesWorkspace } = require('../utils/hub/orderMessagesWorkspaceBundle');
+    const payload = await buildOrderMessagesWorkspace(req.params.clientId, {
+      clientConfig: req.clientConfig,
+      days,
+    });
+    return res.json({ success: true, clientId: req.params.clientId, ...payload });
+  } catch (err) {
+    console.error('[order-messages/workspace]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to load order messages workspace' });
+  }
+});
+
 router.get('/order-messages/overview', ...secure, apiCache(60), async (req, res) => {
   try {
     const { businessType } = req.clientConfig;

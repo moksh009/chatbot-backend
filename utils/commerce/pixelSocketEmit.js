@@ -1,10 +1,13 @@
 'use strict';
 
+const { invalidateRecoveryMetricsCache } = require('./cartRecoveryMetricsCache');
+
 /**
  * Real-time cart capture events for dashboard invalidation (Phase 2 sync contract).
  */
 function emitCartContactCaptured(clientId, payload = {}) {
   if (!global.io || !clientId) return;
+  invalidateRecoveryMetricsCache(clientId);
   global.io.to(`client_${clientId}`).emit('cart:contact-captured', {
     clientId,
     ...payload,
@@ -14,6 +17,7 @@ function emitCartContactCaptured(clientId, payload = {}) {
 
 function emitCartPromoted(clientId, payload = {}) {
   if (!global.io || !clientId) return;
+  invalidateRecoveryMetricsCache(clientId);
   global.io.to(`client_${clientId}`).emit('cart:promoted', {
     clientId,
     ...payload,
@@ -23,6 +27,7 @@ function emitCartPromoted(clientId, payload = {}) {
 
 function emitCartRecovered(clientId, payload = {}) {
   if (!global.io || !clientId) return;
+  invalidateRecoveryMetricsCache(clientId);
   global.io.to(`client_${clientId}`).emit('cart:recovered', {
     clientId,
     ...payload,
@@ -32,6 +37,7 @@ function emitCartRecovered(clientId, payload = {}) {
 
 function emitCartRecoverySent(clientId, payload = {}) {
   if (!global.io || !clientId) return;
+  invalidateRecoveryMetricsCache(clientId);
   global.io.to(`client_${clientId}`).emit('cart:recovery-sent', {
     clientId,
     ...payload,

@@ -258,4 +258,58 @@ function buildSetupHealth({ whatsapp, shopify, approvedTemplateCount, overall })
   };
 }
 
-module.exports = { buildConnectionStatusContract, buildSetupHealth };
+/**
+ * Re-apply live token probes + setupHealth on a cached flags payload (Phase 4.1).
+ * Does not re-query MetaTemplate count or Shopify heal.
+ */
+async function applyLiveProbesToContract(client, contract) {
+  if (!client || !contract) return contract;
+  const { getCachedOrProbe } = require('../security/connectionTokenProbe');
+
+  const waTok = getEffectiveWhatsAppAccessToken(client);
+  const shopifyTok = decryptToken(client.shopifyAccessToken || client.commerce?.shopify?.accessToken || '');
+  const shopifyStatusOverride = String(client.shopifyConnectionStatus || '').toLowerCase();
+  const igTok = decryptToken(client.instagramAccessToken || client.social?.instagram?.accessToken || '');
+
+  const [waProbe, shopifyProbe, igProbe, razProbe, gmailProbe] = await Promise.all([
+    getCachedOrProbe(client, 'whatsapp').catch(() => null),
+    getCachedOrProbe(client, 'shopify').catch(() => null),
+    getCachedOrProbe(client, 'instagram').catch(() => null),
+    getCachedOrProbe(client, 'razorpay').catch(() => null),
+    getCachedOrProbe(client, 'gmail').catch(() => null),
+  ]);
+
+  if (contract.whatsapp) {
+    contract.whatsapp.tokenStatus = tokenStatusFrom(waTok, waProbe);
+  }
+  if (contract.shopify) {
+    contract.shopify.tokenStatus = tokenStatusFrom(shopifyTok, shopifyProbe, shopifyStatusOverride);
+  }
+  if (contract.instagram) {
+    contract.instagram.tokenStatus = tokenStatusFrom(igTok, igProbe);
+  }
+  if (contract.razorpay) {
+    contract.razorpay.tokenStatus = tokenStatusFrom(client.razorpayKeyId, razProbe);
+  }
+  if (contract.email) {
+    contract.email.tokenStatus = tokenStatusFrom(
+      client.gmailRefreshToken || client.gmailAccessToken,
+      gmailProbe
+    );
+    contract.email.connected =
+      isWorkspaceEmailReady(client) &&
+      (client.emailMethod !== 'gmail_oauth' || gmailProbe?.ok !== false);
+  }
+
+  const approvedTemplateCount = contract.overall?.approvedTemplateCount ?? 0;
+  contract.setupHealth = buildSetupHealth({
+    whatsapp: contract.whatsapp || { connected: false, tokenStatus: 'missing' },
+    shopify: contract.shopify || { connected: false, tokenStatus: 'missing', isFullyAuthorized: false, shopDomain: null },
+    approvedTemplateCount,
+    overall: contract.overall || {},
+  });
+
+  return contract;
+}
+
+module.exports = { buildConnectionStatusContract, buildSetupHealth, applyLiveProbesToContract, tokenStatusFrom };

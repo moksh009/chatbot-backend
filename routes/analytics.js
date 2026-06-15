@@ -23,6 +23,7 @@ const leadByIdScope = verifyTenantScope({ lookupBy: 'lead', param: 'id' });
 const ActivityLog = require('../models/ActivityLog');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { apiCache } = require('../middleware/apiCache');
+const loadClientConfig = require('../middleware/clientConfig');
 const { getCachedClient } = require('../utils/core/clientCache');
 const {
   MAX_LIVE_ANALYTICS_DAYS,
@@ -1096,6 +1097,32 @@ router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => 
   } catch (error) {
     console.error('Receptionist Overview Error:', error);
     res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// GET /api/analytics/workspace — Insights hub analytics tab bundle (Phase 1.4)
+// Enabled when FEATURE_ANALYTICS_WORKSPACE_BUNDLE=true (frontend: VITE_FEATURE_ANALYTICS_WORKSPACE_BUNDLE)
+router.get('/workspace', protect, loadClientConfig, apiCache(60), async (req, res) => {
+  if (process.env.FEATURE_ANALYTICS_WORKSPACE_BUNDLE !== 'true') {
+    return res.status(404).json({ success: false, error: 'Analytics workspace bundle not enabled' });
+  }
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { buildAnalyticsWorkspace } = require('../utils/hub/analyticsWorkspaceBundle');
+    const days = req.query.days ?? 30;
+    const phoneNumberId = req.query.phoneNumberId || '';
+    const payload = await buildAnalyticsWorkspace(clientId, {
+      clientConfig: req.clientConfig,
+      days,
+      phoneNumberId,
+    });
+    return res.json({ success: true, clientId, ...payload });
+  } catch (error) {
+    console.error('[Analytics] workspace error:', error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
