@@ -674,6 +674,41 @@ async function buildCheckoutFunnelMetrics(clientId, since) {
   };
 }
 
+async function buildCartCaptureLeads(clientId, since) {
+  const leads = await AdLead.find({
+    clientId,
+    phoneNumber: { $exists: true, $nin: [null, ''], $not: /^unknown_checkout_/ },
+    $or: [
+      { contactCapturedAt: { $gte: since } },
+      { cartAbandonedAt: { $gte: since } },
+      { abandonedCartRecoveredAt: { $gte: since } },
+      { lastCartEventAt: { $gte: since } },
+      { updatedAt: { $gte: since } },
+    ],
+  })
+    .sort({ updatedAt: -1 })
+    .limit(24)
+    .select(
+      '_id phoneNumber email name contactCapturedAt cartValue cartStatus cartAbandonedAt abandonedCartRecoveredAt recoveredViaWhatsApp recoveryStep lastCartEventAt updatedAt'
+    )
+    .lean();
+
+  return (leads || []).map((lead) => ({
+    leadId: String(lead._id),
+    name: lead.name || 'Checkout contact',
+    phone: lead.phoneNumber || null,
+    email: lead.email || null,
+    cartValue: lead.cartValue || 0,
+    cartStatus: lead.cartStatus || null,
+    recoveredViaWhatsApp: lead.recoveredViaWhatsApp === true,
+    contactCapturedAt: lead.contactCapturedAt || null,
+    cartAbandonedAt: lead.cartAbandonedAt || null,
+    abandonedCartRecoveredAt: lead.abandonedCartRecoveredAt || null,
+    lastCartEventAt: lead.lastCartEventAt || lead.updatedAt || null,
+    recoveryStep: lead.recoveryStep ?? null,
+  }));
+}
+
 function buildCaptureLayers({
   themeReady,
   checkoutPixelReady,
@@ -803,6 +838,7 @@ async function buildPixelStatusPayload(clientId, req) {
       checkoutFunnel: null,
       activeVisitorCount: 0,
       identifiedLeads24h: [],
+      cartCaptureLeads: [],
       statusHint: 'Tracking disconnected. Click one-click install to reconnect storefront + checkout capture.',
     };
   }
@@ -941,7 +977,7 @@ async function buildPixelStatusPayload(clientId, req) {
 
   const twentyFourHoursAgo = moment().subtract(24, 'hours').toDate();
 
-  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent, lastCheckoutContactEvent, checkoutFunnel, activeVisitorCount, identifiedLeadDocs] =
+  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent, lastCheckoutContactEvent, checkoutFunnel, activeVisitorCount, identifiedLeadDocs, cartCaptureLeads] =
     await Promise.all([
       AdLead.findOne({ clientId, checkoutInitiatedCount: { $gt: 0 } })
         .sort({ lastCartEventAt: -1 })
@@ -983,6 +1019,7 @@ async function buildPixelStatusPayload(clientId, req) {
         .limit(16)
         .select('_id phoneNumber email name contactCapturedAt cartValue cartStatus')
         .lean(),
+      buildCartCaptureLeads(clientId, thirtyDaysAgo),
     ]);
 
   const identifiedLeads24h = (identifiedLeadDocs || []).map((lead) => ({
@@ -1118,6 +1155,7 @@ async function buildPixelStatusPayload(clientId, req) {
     checkoutFunnel,
     activeVisitorCount: activeVisitorCount || 0,
     identifiedLeads24h,
+    cartCaptureLeads,
     liveTypingCapture,
     statusHint: storefrontHint,
   };
