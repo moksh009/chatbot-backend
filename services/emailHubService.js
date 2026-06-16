@@ -1029,7 +1029,18 @@ async function exportEmailHubAudienceCsv(clientId, { filter = 'valid', search = 
 }
 
 async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
-  const { toEmail, toName, subject, content, leadId, format, scheduleAt, templateId, templateName } = body;
+  const {
+    toEmail,
+    toName,
+    subject,
+    content,
+    leadId,
+    format,
+    scheduleAt,
+    templateId,
+    templateName,
+    mergeContext,
+  } = body;
   const email = String(toEmail || '').trim().toLowerCase();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     const err = new Error('A valid recipient email is required.');
@@ -1072,7 +1083,26 @@ async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
 
   await assertLeadCanReceiveMarketingEmail(clientId, lead, email);
 
-  const merged = mergeEmailForLead(subject, content, mergeLead, client);
+  const flatContext =
+    mergeContext && typeof mergeContext === 'object' && !Array.isArray(mergeContext) ? mergeContext : {};
+
+  let mergeSubject = subject;
+  let mergeContent = content;
+  if (body.testMode === true) {
+    const {
+      buildOrderEmailTestSampleContext,
+      applyMergeContext,
+    } = require('../utils/core/orderEmailMergeFields');
+    const sampleCtx = {
+      ...buildOrderEmailTestSampleContext(client, email),
+      ...flatContext,
+    };
+    const premerged = applyMergeContext(subject, content, sampleCtx);
+    mergeSubject = premerged.subject;
+    mergeContent = premerged.html;
+  }
+
+  const merged = mergeEmailForLead(mergeSubject, mergeContent, mergeLead, client, flatContext);
   if (merged.unknownTokens.length) {
     const err = new Error(`Unsupported merge fields: ${merged.unknownTokens.join(', ')}`);
     err.status = 400;

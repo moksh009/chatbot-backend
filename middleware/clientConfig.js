@@ -89,10 +89,16 @@ const loadClientConfig = async (req, res, next) => {
     if (!finalToken) {
       if (envToken) {
         finalToken = envToken;
-        console.log(`⚠️ Using ENV token for ${clientId} (DB token missing)`);
+        warnOncePerClient(
+          `${clientId}:env_wa_token`,
+          `⚠️ Using ENV token for ${clientId} (DB token missing)`
+        );
       } else if (globalToken) {
         finalToken = globalToken;
-        console.log(`⚠️ Using GLOBAL token for ${clientId} (DB & Specific Env missing)`);
+        warnOncePerClient(
+          `${clientId}:global_wa_token`,
+          `⚠️ Using GLOBAL token for ${clientId} (DB & Specific Env missing) — save WhatsApp credentials in Settings → Connections`
+        );
       }
     }
 

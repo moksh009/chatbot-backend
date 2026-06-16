@@ -76,16 +76,16 @@ async function buildWorkerHealthSnapshot() {
   const queuesAccessible =
     !campaignDispatch.unavailable && !sequenceDispatch.unavailable;
 
-  const workerHealthy =
-    cronRunning &&
-    workersRunning &&
-    redisConnected &&
-    cronFresh &&
-    queuesAccessible;
+  // Split deploy: API tier has RUN_CRONS/RUN_WORKERS=false while a separate worker
+  // process runs crons. Do not require local env flags — infer from Redis signals.
+  const localWorkerProcess = cronRunning && workersRunning;
+  const workerHealthy = redisConnected && cronFresh && queuesAccessible;
 
   return {
     cronRunning,
     workersRunning,
+    localWorkerProcess,
+    healthSource: localWorkerProcess ? 'local_process' : 'redis_signals',
     redisConnected,
     queues: {
       campaignDispatch: {

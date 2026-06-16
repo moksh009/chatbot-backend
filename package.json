@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "type": "commonjs",
   "main": "index.js",
+  "engines": {
+    "node": ">=20 <23"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "flow-regression": "node scripts/flowRegressionSmoke.js",
     "integration-probe": "node scripts/probeBackendModules.js",
+    "repair:deps": "bash scripts/repair-prod-deps.sh --no-restart",
     "smoke:template-eligibility": "node scripts/templateEligibilitySmokePass.js",
     "smoke:flow-preflight-guards": "node scripts/flowPreflightNodeGuardsSmoke.js",
     "dry-run:review-pipeline": "node scripts/reviewPipelineDryRun.js",

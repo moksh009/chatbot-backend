@@ -301,6 +301,15 @@ router.post("/test-template", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId }).select(CLIENT_META_ADS_SELECT).lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
+    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
+    const normalizedPhone = normalizePhoneWithCountry(phone, client);
+    if (!normalizedPhone || normalizedPhone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter a valid WhatsApp number with country code (e.g. 919876543210).',
+      });
+    }
+
     const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
     const { getEffectiveWhatsAppAccessToken, getEffectiveWhatsAppPhoneNumberId } = require('../utils/meta/clientWhatsAppCreds');
     const { buildTestTemplatePayload } = require('../utils/meta/buildTestTemplatePayload');
@@ -342,7 +351,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
       attemptedLanguages.push(langCode);
       result = await sendWhatsAppTemplate({
         phoneNumberId,
-        to: phone,
+        to: normalizedPhone,
         templateName,
         languageCode: langCode,
         components: components || [],
@@ -355,9 +364,21 @@ router.post("/test-template", verifyToken, async (req, res) => {
     }
 
     if (result.success) {
+      const waMessageId = result.data?.messages?.[0]?.id || null;
+      if (!waMessageId) {
+        return res.status(502).json({
+          success: false,
+          message: 'Meta did not return a message ID — template may not have been queued. Check template approval in Meta Manager.',
+          attemptedLanguages,
+          componentMode: mode,
+          metaResponse: result.data || null,
+        });
+      }
       res.json({
         success: true,
-        message: "Test template dispatched",
+        message: 'Test template dispatched',
+        waMessageId,
+        normalizedPhone,
         languageUsed: attemptedLanguages[attemptedLanguages.length - 1] || primaryLanguage,
         componentMode: mode,
       });

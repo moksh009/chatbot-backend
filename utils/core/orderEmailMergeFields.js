@@ -212,9 +212,42 @@ function normalizeRuleChannels(rule) {
   return out.length ? out : ['whatsapp'];
 }
 
+/** Sample order context for dashboard test sends (Order messages / email hub). */
+function buildOrderEmailTestSampleContext(client = null, recipientEmail = '') {
+  return buildOrderEmailContext(
+    {
+      name: '#TE-1042',
+      id: '6104293847291',
+      total_price: '6499.00',
+      currency: 'INR',
+      financial_status: 'paid',
+      fulfillment_status: 'unfulfilled',
+      customer: {
+        first_name: 'Rahul',
+        last_name: 'Kumar',
+        email: recipientEmail || 'customer@example.com',
+      },
+      line_items: [
+        { title: 'Classic Cotton Hoodie', quantity: 1, price: '1499.00' },
+        { title: 'Everyday Joggers', quantity: 1, price: '999.00' },
+      ],
+      fulfillments: [
+        {
+          tracking_number: 'DLV8829104567',
+          tracking_url: 'https://track.example.com/p/ABC123',
+          tracking_company: 'Delhivery',
+        },
+      ],
+    },
+    recipientEmail ? { name: 'Rahul Kumar', email: recipientEmail } : null,
+    client
+  );
+}
+
 module.exports = {
   buildOrderEmailContext,
   buildCartEmailContext,
+  buildOrderEmailTestSampleContext,
   applyMergeContext,
   resolveOrderEmailTemplate,
   ruleHasEmailConfig,

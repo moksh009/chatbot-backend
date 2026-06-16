@@ -16,6 +16,7 @@ function extractTokens(text) {
   return [...out];
 }
 
+/** Keep in sync with chatbot-dashboard-frontend-main/src/utils/emailTemplateMerge.js */
 const KNOWN = new Set([
   'first_name',
   'name',
@@ -23,8 +24,23 @@ const KNOWN = new Set([
   'phone',
   'phone_number',
   'store_name',
+  'store_url',
+  'order_id',
+  'order_number',
+  'order_total',
+  'order_currency',
+  'tracking_number',
+  'tracking_url',
+  'carrier',
+  'estimated_delivery',
+  'fulfillment_status',
+  'financial_status',
+  'refund_amount',
+  'line_items_html',
+  'cart_items',
   'cart_items_html',
   'cart_url',
+  'cart_recovery_url',
   'cart_total',
   'unsubscribe_link',
   'unsubscribe_url',
@@ -102,8 +118,22 @@ function cartTotalDisplay(lead) {
   return sum.toLocaleString('en-IN');
 }
 
-function valueForNormKey(nk, lead, client) {
+function sampleLineItemsHtml() {
+  return `<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;color:#0f172a;">
+<tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;">Classic Cotton Hoodie × 1</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;text-align:right;">₹1,499</td></tr>
+<tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;">Everyday Joggers × 1</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;text-align:right;">₹999</td></tr>
+</table>`;
+}
+
+function valueForNormKey(nk, lead, client, flatContext = {}) {
+  if (flatContext[nk] != null && flatContext[nk] !== '') {
+    return flatContext[nk];
+  }
   const storeName = client?.name || client?.brand?.businessName || 'Our store';
+  const shopDomain = client?.shopDomain || client?.shopifyDomain || '';
+  const storeUrl = shopDomain
+    ? `https://${String(shopDomain).replace(/^https?:\/\//, '').split('/')[0]}`
+    : '';
   switch (nk) {
     case 'first_name':
       return firstToken(lead?.name) || 'Customer';
@@ -116,12 +146,41 @@ function valueForNormKey(nk, lead, client) {
       return lead?.phoneNumber || '';
     case 'store_name':
       return storeName;
+    case 'store_url':
+      return storeUrl || 'https://store.example.com';
+    case 'order_id':
+      return '6104293847291';
+    case 'order_number':
+      return '#1042';
+    case 'order_total':
+      return '₹6,499';
+    case 'order_currency':
+      return 'INR';
+    case 'tracking_number':
+      return 'DLV8829104567';
+    case 'tracking_url':
+      return 'https://track.example.com/p/ABC123';
+    case 'carrier':
+      return 'Delhivery';
+    case 'estimated_delivery':
+      return 'Tomorrow by 8 PM';
+    case 'fulfillment_status':
+      return 'fulfilled';
+    case 'financial_status':
+      return 'paid';
+    case 'refund_amount':
+      return '₹6,499';
+    case 'line_items_html':
+      return sampleLineItemsHtml();
+    case 'cart_items':
+      return 'Classic Cotton Hoodie × 1, Everyday Joggers × 1';
     case 'cart_items_html':
       return buildCartItemsHtml(lead);
     case 'cart_url':
+    case 'cart_recovery_url':
       return lead?.abandonedCheckoutUrl || lead?.checkoutUrl || '#';
     case 'cart_total':
-      return cartTotalDisplay(lead) || '—';
+      return cartTotalDisplay(lead) ? `₹${cartTotalDisplay(lead)}` : '₹5,499';
     case 'unsubscribe_link':
     case 'unsubscribe_url':
       return '{{unsubscribe_link}}';
@@ -133,7 +192,7 @@ function valueForNormKey(nk, lead, client) {
 /**
  * @returns {{ subject: string, html: string, unknownTokens: string[], missingDataHints: string[] }}
  */
-function mergeEmailForLead(subject, html, lead, client) {
+function mergeEmailForLead(subject, html, lead, client, flatContext = {}) {
   const combined = `${subject || ''}\n${html || ''}`;
   const rawTokens = extractTokens(combined);
   const unknownTokens = [];
@@ -160,7 +219,7 @@ function mergeEmailForLead(subject, html, lead, client) {
       const raw = String(inner || '').trim();
       const nk = normalizeKey(raw);
       if (!KNOWN.has(nk)) return '';
-      const val = valueForNormKey(nk, lead, client);
+      const val = valueForNormKey(nk, lead, client, flatContext);
       return val == null ? '' : String(val);
     });
     return out;

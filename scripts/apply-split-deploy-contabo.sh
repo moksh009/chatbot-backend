@@ -26,6 +26,16 @@ bash "$SCRIPT_DIR/patch-env-split-deploy.sh" "$ROLE" "$ENV_FILE"
 
 cd "$BACKEND_ROOT"
 
+# Clean install when lockfile present — prevents MODULE_NOT_FOUND crash loops after partial pulls.
+if [[ -f package-lock.json ]]; then
+  echo "==> npm ci --omit=dev (lockfile install)"
+  npm ci --omit=dev
+  echo "==> integration probe"
+  npm run integration-probe
+else
+  echo "WARN: no package-lock.json — skipping npm ci"
+fi
+
 if [[ "$ROLE" == "api" ]]; then
   if pm2 describe topedge-api >/dev/null 2>&1; then
     pm2 restart topedge-api --update-env
