@@ -41,8 +41,11 @@ assert.match(envExample, /start-api-/);
 assert.ok(fs.existsSync(path.join(root, 'scripts/start-api-prod.sh')));
 assert.ok(fs.existsSync(path.join(root, 'scripts/start-worker-prod.sh')));
 assert.ok(fs.existsSync(path.join(root, 'scripts/apply-split-deploy-contabo.sh')));
+assert.ok(fs.existsSync(path.join(root, 'scripts/repair-prod-deps.sh')));
 
-const indexJs = read('index.js');
+const repairSh = read('scripts/repair-prod-deps.sh');
+assert.match(repairSh, /npm ci --omit=dev/);
+assert.match(repairSh, /integration-probe/);
 assert.match(indexJs, /RUN_API/);
 assert.match(indexJs, /RUN_CRONS/);
 assert.match(indexJs, /RUN_WORKERS/);
