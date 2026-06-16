@@ -29,7 +29,15 @@ function translateWhatsAppError(errorData) {
 
     // 4. Invalid token / OAuth Exception
     if (code === 190 || errorObj.type === "OAuthException" || message.includes("Error validating access token")) {
-        return "Authentication Error: Your WhatsApp token has expired or is invalid. Please reconnect your Meta account in Configurations.";
+        return "Authentication Error: Your WhatsApp token has expired or is invalid. Generate a new permanent system-user token with whatsapp_business_messaging and whatsapp_business_management.";
+    }
+
+    // 4b. Wrong ID type (WABA/App ID pasted as Phone number ID) or missing scopes
+    if (
+        message.includes("Unsupported get request") ||
+        (message.includes("does not exist") && message.includes("cannot be loaded"))
+    ) {
+        return "Meta could not load that Phone number ID. In Meta → WhatsApp → API setup, copy Phone number ID from under your number — not the WABA ID or App ID. Ensure the token has whatsapp_business_messaging and whatsapp_business_management.";
     }
 
     // 5. Invalid Phone Number

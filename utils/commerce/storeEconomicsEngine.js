@@ -9,8 +9,29 @@ const {
 const { detectCodFromShopify } = require('../shopify/shopifyOrderMapper');
 
 /**
+ * Per-line economics for dashboard aggregation (order-level CAC/shipping applied separately).
+ */
+function lineItemEconomicsContribution(lineItem, product, config) {
+  const qty = Number(lineItem.quantity) || 1;
+  const unitPrice = Number(lineItem.price ?? product.sellingPrice ?? 0);
+  const itemRevenue = unitPrice * qty;
+  const cogs = (product.cogs || 0) * qty;
+
+  const effectivePackagingCost = config.packagingMode === 'uniform'
+    ? (config.uniformPackagingCost || 0)
+    : (product.packagingCost || 0);
+  const packaging = effectivePackagingCost * qty;
+  const gatewayAndShopify = itemRevenue * (
+    (config.gatewayFeeRate || 0) + (config.shopifyTransactionFeeRate || 0)
+  );
+
+  return { itemRevenue, cogs, packaging, gatewayAndShopify };
+}
+
+/**
  * Calculates net profit for a single product based on configured costs.
- * Formula must match exactly: Net Profit = Gross Margin - CAC - Packaging - Delivery - Gateway - Shopify
+ * Includes CAC + delivery for per-product wizard display; order dashboard uses lineItemEconomicsContribution.
+ * Formula: Net Profit = Gross Margin - CAC - Packaging - Delivery - Gateway - Shopify
  */
 function calculateNetProfitPerProduct(product, config) {
   const effectivePackagingCost = config.packagingMode === 'uniform'
@@ -120,7 +141,6 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
 
   let totalGrossRevenue = 0;
   let totalCogs = 0;
-  let totalNetProfit = 0;
   let totalPackagingCost = 0;
   let totalShippingCost = 0;
   let totalGatewayAndShopifyFees = 0;
@@ -130,28 +150,33 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
   const prepaidOrderCount = paymentMethodSplit?.prepaidOrders ?? 0;
 
   for (const order of orders) {
-    totalGrossRevenue += Number(order.totalPrice ?? order.amount ?? 0);
     totalOrderCount++;
     totalShippingCost += (config.deliveryCostPerOrder || 0);
     totalCac += (config.cacPerCustomer || 0);
 
-    for (const lineItem of orderLineItems(order)) {
+    const lineItems = orderLineItems(order);
+    let matchedLineRevenue = 0;
+
+    for (const lineItem of lineItems) {
       const product = productMap.get(String(lineItem.productId));
       if (!product) continue;
 
-      const qty = Number(lineItem.quantity) || 1;
+      const { itemRevenue, cogs, packaging, gatewayAndShopify } = lineItemEconomicsContribution(
+        lineItem,
+        product,
+        config
+      );
 
-      const effectivePackagingCost = config.packagingMode === 'uniform'
-        ? (config.uniformPackagingCost || 0)
-        : (product.packagingCost || 0);
-
-      totalPackagingCost += effectivePackagingCost * qty;
-      totalCogs += (product.cogs || 0) * qty;
-      totalNetProfit += (product.netProfit || 0) * qty;
-
-      const itemRevenue = Number(lineItem.price || 0) * qty;
-      totalGatewayAndShopifyFees += itemRevenue * ((config.gatewayFeeRate || 0) + (config.shopifyTransactionFeeRate || 0));
+      matchedLineRevenue += itemRevenue;
+      totalPackagingCost += packaging;
+      totalCogs += cogs;
+      totalGatewayAndShopifyFees += gatewayAndShopify;
     }
+
+    // Use matched line revenue when available; fall back to order total for legacy/unmapped rows.
+    totalGrossRevenue += matchedLineRevenue > 0
+      ? matchedLineRevenue
+      : Number(order.totalPrice ?? order.amount ?? 0);
   }
 
   // RTO losses calculation
@@ -167,7 +192,13 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
   }
 
   const totalFixedOverheads = totalOrderCount * (config.fixedOverheadsPerOrder || 0);
-  const trueNetProfit = totalNetProfit - totalRtoLoss - totalFixedOverheads;
+  const operatingProfitBeforeRto = totalGrossRevenue
+    - totalCogs
+    - totalCac
+    - totalPackagingCost
+    - totalShippingCost
+    - totalGatewayAndShopifyFees;
+  const trueNetProfit = operatingProfitBeforeRto - totalRtoLoss - totalFixedOverheads;
 
   const actualRtoRate = await computeActualRtoRate(clientId, startDate, endDate, totalOrderCount, config);
 
@@ -198,14 +229,7 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
     type: trueNetProfit >= 0 ? 'result_positive' : 'result_negative',
   });
 
-  const waterfallSum = totalGrossRevenue
-    - totalCogs
-    - totalCac
-    - totalPackagingCost
-    - totalShippingCost
-    - totalRtoLoss
-    - totalGatewayAndShopifyFees
-    - totalFixedOverheads;
+  const waterfallSum = operatingProfitBeforeRto - totalRtoLoss - totalFixedOverheads;
 
   if (Math.abs(waterfallSum - trueNetProfit) > 0.01) {
     console.error(`[StoreEconomics] Waterfall integrity check failed for clientId: ${clientId}. Waterfall sum: ${waterfallSum}, True Net Profit: ${trueNetProfit}`);
@@ -228,7 +252,7 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
   else if (healthScore >= 40) healthStatus = 'Needs Attention';
 
   // Break-even: how many orders needed to cover total fixed overheads from net profit
-  const avgNetProfitPerOrder = totalOrderCount > 0 ? (totalNetProfit / totalOrderCount) : 0;
+  const avgNetProfitPerOrder = totalOrderCount > 0 ? (operatingProfitBeforeRto / totalOrderCount) : 0;
   let breakEven = null;
   if (config.fixedOverheadsPerOrder && avgNetProfitPerOrder > 0 && totalOrderCount > 0) {
     const breakEvenOrders = Math.ceil(totalFixedOverheads / avgNetProfitPerOrder);
@@ -496,6 +520,7 @@ async function fetchShopifyReturnedOrdersInRange(clientId, startDate, endDate) {
 
 module.exports = {
   calculateNetProfitPerProduct,
+  lineItemEconomicsContribution,
   calculateAndStoreAllProducts,
   buildDashboardMetrics,
   getOrdersByState,

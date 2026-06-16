@@ -1369,6 +1369,8 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     // ── SaaS: server-side WhatsApp validation (do not trust UI-only checks) ─────────
     let _waVerifySnapshot = null;
+    let _waResolvedPid = null;
+    let _waResolvedWaba = null;
     const waPatchRequested =
       wabaId !== undefined ||
       phoneNumberId !== undefined ||
@@ -1377,6 +1379,7 @@ router.patch('/my-settings', protect, async (req, res) => {
         String(whatsappToken).trim() !== '');
 
     if (waPatchRequested) {
+      const { normalizeMetaId } = require('../utils/meta/whatsappMetaValidate');
       const existing = await Client.findOne({ clientId: targetClientId })
         .select('phoneNumberId wabaId whatsappToken clientId name platformVars')
         .lean();
@@ -1387,8 +1390,8 @@ router.patch('/my-settings', protect, async (req, res) => {
 
       const effPid =
         phoneNumberId !== undefined
-          ? String(phoneNumberId).trim()
-          : String(existing.phoneNumberId || '').trim();
+          ? normalizeMetaId(phoneNumberId)
+          : normalizeMetaId(existing.phoneNumberId);
 
       let effTok = '';
       if (
@@ -1406,7 +1409,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       }
 
       const effWaba =
-        wabaId !== undefined ? String(wabaId).trim() : String(existing.wabaId || '').trim();
+        wabaId !== undefined ? normalizeMetaId(wabaId) : normalizeMetaId(existing.wabaId);
 
       if (!effPid || !effTok) {
         return res.status(400).json({
@@ -1438,8 +1441,11 @@ router.patch('/my-settings', protect, async (req, res) => {
         });
       }
 
+      _waResolvedPid = v.phoneNumberId || effPid;
+      _waResolvedWaba = v.wabaId || effWaba;
+
       const dup = await Client.findOne({
-        phoneNumberId: effPid,
+        phoneNumberId: _waResolvedPid,
         clientId: { $ne: targetClientId },
       })
         .select('clientId name')
@@ -1573,14 +1579,16 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     // Commercial & Meta Fields
     if (wabaId !== undefined) {
-      updateFields.wabaId = wabaId;
-      updateFields['whatsapp.wabaId'] = wabaId;
-      updateFields['config.wabaId'] = wabaId;
+      const saveWaba = _waResolvedWaba != null ? _waResolvedWaba : wabaId;
+      updateFields.wabaId = saveWaba;
+      updateFields['whatsapp.wabaId'] = saveWaba;
+      updateFields['config.wabaId'] = saveWaba;
     }
     if (phoneNumberId !== undefined) {
-      updateFields.phoneNumberId = phoneNumberId;
-      updateFields['whatsapp.phoneNumberId'] = phoneNumberId;
-      updateFields['config.phoneNumberId'] = phoneNumberId;
+      const savePid = _waResolvedPid != null ? _waResolvedPid : phoneNumberId;
+      updateFields.phoneNumberId = savePid;
+      updateFields['whatsapp.phoneNumberId'] = savePid;
+      updateFields['config.phoneNumberId'] = savePid;
     }
     if (verifyToken !== undefined) {
       const v = String(verifyToken || '').trim();
@@ -2804,20 +2812,21 @@ router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), asy
 router.post('/test-whatsapp', protect, async (req, res) => {
   try {
     let { phoneNumberId, whatsappToken, wabaId, clientId: bodyClientId } = req.body;
+    const { normalizeMetaId } = require('../utils/meta/whatsappMetaValidate');
     const targetClientId =
       req.user.role === 'SUPER_ADMIN' && bodyClientId ? String(bodyClientId).trim() : req.user.clientId;
 
-    let effPid = String(phoneNumberId || '').trim();
+    let effPid = normalizeMetaId(phoneNumberId);
     let effTok = String(whatsappToken || '').trim();
-    let effWaba = String(wabaId || '').trim();
+    let effWaba = normalizeMetaId(wabaId);
 
     if ((!effTok || effTok === '••••••••') && targetClientId) {
       const existing = await Client.findOne({ clientId: targetClientId })
         .select('phoneNumberId wabaId whatsappToken')
         .lean();
       if (existing) {
-        if (!effPid) effPid = String(existing.phoneNumberId || '').trim();
-        if (!effWaba) effWaba = String(existing.wabaId || '').trim();
+        if (!effPid) effPid = normalizeMetaId(existing.phoneNumberId);
+        if (!effWaba) effWaba = normalizeMetaId(existing.wabaId);
         try {
           const { decrypt } = require('../utils/core/encryption');
           effTok = decrypt(existing.whatsappToken || '') || '';
@@ -2846,6 +2855,7 @@ router.post('/test-whatsapp', protect, async (req, res) => {
         success: false,
         message: v.message,
         code: v.code,
+        availablePhoneNumbers: v.availablePhoneNumbers || undefined,
       });
     }
 
@@ -2854,7 +2864,12 @@ router.post('/test-whatsapp', protect, async (req, res) => {
       phone: v.display_phone_number,
       name: v.verified_name || null,
       qualityRating: v.quality_rating || null,
-      message: `Connected to ${v.display_phone_number}`,
+      phoneNumberId: v.phoneNumberId || effPid,
+      wabaId: v.wabaId || effWaba || null,
+      autoCorrected: v.autoCorrected || null,
+      message: v.autoCorrected
+        ? `Connected to ${v.display_phone_number} (corrected ${v.autoCorrected.replace(/_/g, ' ').toLowerCase()})`
+        : `Connected to ${v.display_phone_number}`,
     });
   } catch (err) {
     const metaError = err.response?.data?.error;
