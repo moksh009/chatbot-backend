@@ -5,6 +5,7 @@ const router = express.Router();
 const TaskQueueService = require('../services/TaskQueueService');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
+const CampaignRevenueAttribution = require('../models/CampaignRevenueAttribution');
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
@@ -408,7 +409,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
   const { leadId, leadIds, templateName, channel, strictValidation = true } = req.body;
   const clientId = tenantClientId(req);
   if (!clientId) {
-    return res.status(403).json({ success: false, message: 'Unauthorized' });
+    return res.status(403).json({ success: false, message: 'Unauthorized', code: 'unauthorized' });
   }
   if (!req.body.templateCategory) {
     return res.status(400).json({
@@ -424,7 +425,11 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
   const finalLeadIds = leadIds || (leadId ? [leadId] : []);
 
   if (finalLeadIds.length === 0 || !templateName) {
-    return res.status(400).json({ success: false, message: 'leadIds and templateName are required' });
+    return res.status(400).json({
+      success: false,
+      message: 'leadIds and templateName are required',
+      code: 'quick_send_payload_invalid',
+    });
   }
 
   if (finalLeadIds.length > 250) {
@@ -440,6 +445,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'WhatsApp is not connected. Connect Cloud API in Settings → Integrations.',
+        code: 'whatsapp_not_connected',
       });
     }
 
@@ -452,6 +458,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       return res.status(400).json({
         success: false,
         message: `Template "${templateName}" was not found. Open Meta Manager and sync approved templates.`,
+        code: 'template_missing',
       });
     }
 
@@ -467,6 +474,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
         message:
           'Quick broadcast supports templates with 0 or 1 variable (customer name). Create a simpler marketing template.',
         requiredVariableCount: preflight.requiredVariableCount,
+        code: 'quick_send_variable_limit',
       });
     }
 
@@ -484,6 +492,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
         message: preflight.reasons.join(' '),
         missingVariables: preflight.missingVariables,
         requiredVariableCount: preflight.requiredVariableCount,
+        code: 'template_preflight_failed',
       });
     }
 
@@ -493,6 +502,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       return res.status(403).json({
         success: false,
         message: 'Marketing broadcasting is locked for CX Agent (V1). Please upgrade to V2.',
+        code: 'plan_locked_v1',
       });
     }
 
@@ -522,6 +532,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
           'No messages queued — selected contacts opted out of marketing or could not be reached.',
         enqueued: 0,
         skippedMarketingOptIn: skippedOptIn,
+        code: 'no_deliverable_contacts',
       });
     }
 
@@ -555,6 +566,7 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Could not queue broadcast. Ensure campaign workers are running (RUN_WORKERS=true).',
+        code: 'queue_enqueue_failed',
       });
     }
 
@@ -571,7 +583,11 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
     });
   } catch (err) {
     log.error('[QuickSend] Error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to process quick broadcast: ' + err.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process quick broadcast: ' + err.message,
+      code: 'quick_send_failed',
+    });
   }
 });
 
@@ -598,7 +614,7 @@ router.get('/', protect, async (req, res) => {
     const statsMap = campaignStats.reduce((acc, curr) => {
       const cId = curr._id.campaignId.toString();
       if (!acc[cId]) {
-        acc[cId] = { sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, cancelled: 0 };
+        acc[cId] = { sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, cancelled: 0, clicked: 0 };
       }
 
       const status = curr._id.status;
@@ -606,6 +622,9 @@ router.get('/', protect, async (req, res) => {
       if (status === 'delivered') acc[cId].delivered += curr.count;
       if (status === 'read') acc[cId].read += curr.count;
       if (status === 'replied') acc[cId].replied += curr.count;
+      if (status === 'clicked') {
+        acc[cId].clicked = (acc[cId].clicked || 0) + curr.count;
+      }
       if (status === 'failed') acc[cId].failed += curr.count;
       if (status === 'cancelled') acc[cId].cancelled += curr.count;
 
@@ -620,6 +639,7 @@ router.get('/', protect, async (req, res) => {
         replied: 0,
         failed: 0,
         cancelled: 0,
+        clicked: 0,
       };
       const totalDelivered = stats.delivered + stats.read + stats.replied;
       const totalRead = stats.read + stats.replied;
@@ -633,6 +653,7 @@ router.get('/', protect, async (req, res) => {
         repliedCount: stats.replied,
         failedCount: stats.failed,
         cancelledCount: stats.cancelled,
+        clickedCount: stats.clicked || 0,
         stats: {
           sent: totalSent,
           delivered: totalDelivered,
@@ -640,6 +661,7 @@ router.get('/', protect, async (req, res) => {
           replied: stats.replied,
           failed: stats.failed,
           cancelled: stats.cancelled,
+          clicked: stats.clicked || 0,
         },
       };
     });
@@ -1234,19 +1256,22 @@ router.post('/estimate-cost', protect, async (req, res) => {
 router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (req, res) => {
   const { campaignId, templateType } = req.body;
   if (!campaignId) {
-    return res.status(400).json({ message: 'campaignId is required' });
+    return res.status(400).json({ message: 'campaignId is required', code: 'campaign_id_required' });
   }
   const bodyChannel = String(req.body.channel || '').toLowerCase();
   if (bodyChannel !== 'email' && !templateType) {
-    return res.status(400).json({ message: 'campaignId and templateType are required' });
+    return res.status(400).json({
+      message: 'campaignId and templateType are required',
+      code: 'campaign_start_payload_invalid',
+    });
   }
   try {
     const tenantId = tenantClientId(req);
     if (!tenantId) {
-      return res.status(403).json({ message: 'Unauthorized' });
+      return res.status(403).json({ message: 'Unauthorized', code: 'unauthorized' });
     }
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: tenantId });
-    if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
+    if (!campaign) return res.status(404).json({ message: 'Campaign not found', code: 'campaign_not_found' });
 
     const startChannel = bodyChannel || String(campaign.channel || 'whatsapp').toLowerCase();
     campaign.channel = startChannel === 'email' ? 'email' : 'whatsapp';
@@ -1285,7 +1310,7 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
         !hasInlineAudience &&
         !campaign.isSmartSend
     ) {
-        return res.status(400).json({ message: 'No audience attached to this campaign' });
+        return res.status(400).json({ message: 'No audience attached to this campaign', code: 'campaign_audience_missing' });
     }
 
     log.info(`Campaign START: campaignId=${campaignId} | clientId=${tenantId} | templateType=${templateType}`);
@@ -1298,17 +1323,20 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
     // Fetch client configuration
     const client = await Client.findOne({ clientId: tenantClientId(req) }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) {
-        return res.status(404).json({ message: 'Client configuration not found' });
+        return res.status(404).json({ message: 'Client configuration not found', code: 'client_not_found' });
     }
 
     const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
     if (isV1) {
-      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade to V2.' });
+      return res.status(403).json({
+        message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade to V2.',
+        code: 'plan_locked_v1',
+      });
     }
 
     const limits = await checkLimit(client._id, 'messages'); // Check if messages allowed
     if (!limits.allowed) {
-      return res.status(403).json({ message: limits.reason });
+      return res.status(403).json({ message: limits.reason, code: 'message_limit_exceeded' });
     }
 
     // Determine actual template name from client config
@@ -1376,7 +1404,10 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
             if (!resolvedBatchId) {
                 campaign.status = 'FAILED';
                 await campaign.save();
-                return res.status(400).json({ message: 'Imported list could not be resolved. The batch may have been deleted.' });
+                return res.status(400).json({
+                  message: 'Imported list could not be resolved. The batch may have been deleted.',
+                  code: 'import_batch_not_found',
+                });
             }
             const leads = await AdLead.find({
                   importBatchId: resolvedBatchId,
@@ -1406,7 +1437,10 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
       if (filteredAudience.length === 0) {
         campaign.status = 'FAILED';
         await campaign.save();
-        return res.status(400).json({ message: 'No contacts with a valid email were found in this audience.' });
+        return res.status(400).json({
+          message: 'No contacts with a valid email were found in this audience.',
+          code: 'campaign_no_valid_email_contacts',
+        });
       }
     } else {
       filteredAudience = rawAudience.filter((row) => {
@@ -1422,7 +1456,10 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
       if (filteredAudience.length === 0) {
         campaign.status = 'FAILED';
         await campaign.save();
-        return res.status(400).json({ message: 'No contacts with a valid phone number were found in this audience.' });
+        return res.status(400).json({
+          message: 'No contacts with a valid phone number were found in this audience.',
+          code: 'campaign_no_valid_phone_contacts',
+        });
       }
     }
 
@@ -1437,6 +1474,7 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
         return res.status(400).json({
           message: 'No unknown/pending contacts available for re-permission campaign.',
           excluded: rpFiltered.excluded || 0,
+          code: 'campaign_repermission_no_eligible_contacts',
         });
       }
     }
@@ -1620,6 +1658,51 @@ router.get('/:campaignId/repermission-funnel', protect, async (req, res) => {
       success: true,
       funnel: { sent, delivered, opened, confirmedYes, declinedNo, noResponse },
       netNewOptedIn: confirmedYes,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   GET /api/campaigns/:campaignId/attribution-summary
+// @desc    Last-touch attribution summary (7d window)
+// @access  Private
+router.get('/:campaignId/attribution-summary', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const campaign = await Campaign.findOne({ _id: req.params.campaignId, clientId })
+      .select('_id name revenueAttributed attributedOrders createdAt')
+      .lean();
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found', code: 'campaign_not_found' });
+    }
+
+    const rows = await CampaignRevenueAttribution.find({
+      clientId,
+      campaignId: campaign._id,
+    })
+      .sort({ attributedAt: -1 })
+      .limit(5)
+      .select('orderId amount phone attributedAt')
+      .lean();
+
+    return res.json({
+      success: true,
+      summary: {
+        campaignId: campaign._id,
+        campaignName: campaign.name || 'Campaign',
+        windowDays: 7,
+        revenueAttributed: Number(campaign.revenueAttributed || 0),
+        attributedOrders: Number(campaign.attributedOrders || 0),
+        lastAttributionAt: rows[0]?.attributedAt || null,
+      },
+      recentOrders: rows.map((r) => ({
+        orderId: r.orderId || '',
+        amount: Number(r.amount || 0),
+        phone: r.phone || '',
+        attributedAt: r.attributedAt || null,
+      })),
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });

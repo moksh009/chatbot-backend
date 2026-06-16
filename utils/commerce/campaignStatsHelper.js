@@ -3,6 +3,7 @@
 const Message = require('../../models/Message');
 const Campaign = require('../../models/Campaign');
 const CampaignMessage = require('../../models/CampaignMessage');
+const CampaignRevenueAttribution = require('../../models/CampaignRevenueAttribution');
 const { normalizePhone } = require('../core/helpers');
 const log = require('../core/logger')('CampaignStats');
 const { BILLABLE_STATUSES } = require('./campaignOverviewMetrics');
@@ -98,12 +99,68 @@ async function attributeRevenueToCampaign(order, lead) {
 
     if (!recentMsg?.campaignId) return null;
 
+    const orderKeyRaw =
+      order?.shopifyOrderId ||
+      order?.orderId ||
+      order?.id ||
+      order?._id;
+    const orderKey = String(orderKeyRaw || '').trim();
+    if (!orderKey) return null;
+
+    const existing = await CampaignRevenueAttribution.findOne({
+      clientId,
+      orderKey,
+    }).lean();
+
+    if (
+      existing &&
+      String(existing.campaignId) === String(recentMsg.campaignId) &&
+      Number(existing.amount || 0) === amount
+    ) {
+      return recentMsg.campaignId;
+    }
+
+    const campaignChanged =
+      !!existing && String(existing.campaignId) !== String(recentMsg.campaignId);
+
+    if (campaignChanged) {
+      await Campaign.findByIdAndUpdate(existing.campaignId, {
+        $inc: {
+          revenueAttributed: -Math.max(0, Number(existing.amount || 0)),
+          attributedOrders: -1,
+        },
+      });
+    }
+
+    const orderDelta = !existing ? 1 : campaignChanged ? 1 : 0;
+    const revenueDelta = !existing
+      ? amount
+      : campaignChanged
+        ? amount
+        : amount - Number(existing.amount || 0);
+
     await Campaign.findByIdAndUpdate(recentMsg.campaignId, {
       $inc: {
-        revenueAttributed: amount,
-        attributedOrders: 1,
+        revenueAttributed: revenueDelta,
+        attributedOrders: orderDelta,
       },
     });
+
+    await CampaignRevenueAttribution.findOneAndUpdate(
+      { clientId, orderKey },
+      {
+        $set: {
+          orderId: String(order?.orderId || order?.shopifyOrderId || orderKey),
+          campaignId: recentMsg.campaignId,
+          phone: variants[0] || '',
+          amount,
+          attributedAt: orderDate,
+          lastMessageSentAt: recentMsg.sentAt || null,
+          source: 'shopify_webhook',
+        },
+      },
+      { upsert: true }
+    );
 
     log.info(
       `Attributed ₹${amount} to Campaign ${recentMsg.campaignId} for order ${order?.orderId || order?.shopifyOrderId || 'unknown'}`

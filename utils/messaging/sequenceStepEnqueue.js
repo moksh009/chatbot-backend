@@ -22,8 +22,12 @@ async function enqueueDueStepsForSequence(sequenceOrId, { now = new Date() } = {
   for (let idx = 0; idx < steps.length; idx++) {
     const step = steps[idx];
     if (!step.sendAt || new Date(step.sendAt) > now) continue;
-    if (!['pending', 'queued', 'retrying'].includes(step.status)) continue;
+    if (!['pending', 'retrying'].includes(step.status)) continue;
+    if (step.status === 'retrying' && step.nextAttemptAt && new Date(step.nextAttemptAt) > now) {
+      continue;
+    }
 
+    const previousStatus = step.status;
     if (step.status === 'pending') {
       step.status = 'queued';
       dirty = true;
@@ -45,6 +49,12 @@ async function enqueueDueStepsForSequence(sequenceOrId, { now = new Date() } = {
       );
       enqueued += 1;
     } catch (e) {
+      // Preserve deterministic retry behavior: if queue add failed after pending->queued
+      // transition, roll back to pending so scheduler can pick it up next tick.
+      if (previousStatus === 'pending' && step.status === 'queued') {
+        step.status = 'pending';
+        dirty = true;
+      }
       log.warn(`Enqueue failed ${seq._id}:${idx}: ${e.message}`);
     }
   }
