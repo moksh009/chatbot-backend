@@ -42,6 +42,11 @@ start_or_reload_ecosystem() {
     exit 1
   fi
 
+  if [[ -x scripts/check-prod-boot-env.sh ]]; then
+    echo "==> boot env check"
+    ENV_FILE="$ENV_FILE" bash scripts/check-prod-boot-env.sh
+  fi
+
   if pm2 describe topedge-api >/dev/null 2>&1 || pm2 describe topedge-worker >/dev/null 2>&1; then
     echo "==> pm2 reload ecosystem (update env + cwd)"
     pm2 delete topedge-api topedge-worker 2>/dev/null || true

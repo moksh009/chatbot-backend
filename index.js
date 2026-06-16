@@ -715,7 +715,7 @@ connectDB()
     });
   })
   .catch((err) => {
-    log.error("MongoDB connection failed", { error: err.message });
+    log.error('Post-connect boot failed', { error: err.message });
     process.exit(1);
   });
 
