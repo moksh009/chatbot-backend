@@ -400,11 +400,10 @@ async function upsertAbandonedCartLeadCore(client, data = {}, clientId) {
   const $setOnInsert = {
     clientId,
     createdAt: now,
-    name:
-      resolvedCustomerName && !isPlaceholderCustomerName(resolvedCustomerName)
-        ? resolvedCustomerName
-        : 'Checkout Customer',
   };
+  if (!resolvedCustomerName && !existing) {
+    $setOnInsert.name = 'Checkout Customer';
+  }
   if (!phoneE164) {
     $setOnInsert.phoneNumber = `unknown_checkout_${checkoutToken || Date.now()}`;
   }

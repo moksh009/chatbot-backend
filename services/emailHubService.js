@@ -16,6 +16,7 @@ const { checkConsent } = require('../utils/messaging/checks/checkConsent');
 const { checkSuppression } = require('../utils/messaging/checks/checkSuppression');
 const { emailIdempotencyKey } = require('../utils/messaging/customerEmailSend');
 const { emitToClient } = require('../utils/core/socket');
+const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 
 function hubEnvelopeIdempotencyKey(clientId, email, subject, suffix = '') {
   const base = emailIdempotencyKey(clientId, email, subject);
@@ -1186,6 +1187,14 @@ async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
     await bumpTemplateSentStats(clientId, templateId);
   }
 
+  logDispatchEvent('EmailHub', 'email_hub_sent', {
+    clientId,
+    leadId: lead?._id ? String(lead._id) : null,
+    testMode: !!body.testMode,
+    outcome: 'sent',
+    envelopeId: sendOut.envelopeId || null,
+  });
+
   return { success: true, status: 'sent', message: `Email sent to ${email}.`, envelopeId: sendOut.envelopeId };
 }
 
@@ -1445,6 +1454,18 @@ async function sendEmailHubBulk(clientId, body = {}, actorUserId = null) {
     percent: 100,
     message,
   });
+
+  logDispatchEvent('EmailHub', 'email_hub_bulk_complete', {
+    clientId,
+    bulkJobId,
+    sent: sent.length,
+    failed: failed.length,
+    skipped: skipped.length,
+    scheduled: scheduled.length,
+    total,
+    testMode: !!body.testMode,
+    outcome: sent.length > 0 || scheduled.length > 0 ? 'sent' : 'failed',
+  }, sent.length > 0 || scheduled.length > 0 ? 'info' : 'warn');
 
   if (authRevoked && sent.length === 0 && scheduled.length === 0) {
     const { GMAIL_RECONNECT_MESSAGE } = require('../utils/core/emailService');

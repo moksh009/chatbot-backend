@@ -317,6 +317,9 @@ async function processPixelEvent(clientId, eventData) {
     eventName === "checkout_contact_identified" ||
     eventName === "checkout_contact_info_submitted"
   ) {
+    if (!phone && !email) {
+      return { success: true, skipped: true, status: "no_contact" };
+    }
     if (isLiveCapture && !email) {
       const phoneCandidate = rawPhone || data.phone || meta.phone || null;
       if (!isValidIndianMobileInput(phoneCandidate)) {

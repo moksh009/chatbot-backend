@@ -8,6 +8,7 @@ const {
   indianPhoneDigits,
 } = require('../core/normalizeIndianPhone');
 const log = require('../core/logger')('CartRecoveryAttempt');
+const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 const { normalizeEmail } = require('./marketingConsent');
 const { CART_RECOVERY_DEFAULTS } = require('../../constants/cartRecoveryDefaults');
 
@@ -358,7 +359,19 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     patch.recoveredViaWhatsapp = false;
   }
 
-  return CartRecoveryAttempt.findByIdAndUpdate(attempt._id, { $set: patch }, { new: true });
+  const updated = await CartRecoveryAttempt.findByIdAndUpdate(attempt._id, { $set: patch }, { new: true });
+  logDispatchEvent('CartRecoveryAttempt', 'cart_recovery_attributed', {
+    clientId,
+    orderId,
+    attemptId: String(attempt._id),
+    leadId: attempt.leadId ? String(attempt.leadId) : null,
+    recoveredViaWhatsapp: !!patch.recoveredViaWhatsapp,
+    organicRecovery: !!patch.organicRecovery,
+    attributedRevenue: patch.attributedRevenue || 0,
+    withinWindow: !!patch.recoveredViaWhatsapp,
+    outcome: 'recovered',
+  });
+  return updated;
 }
 
 /**

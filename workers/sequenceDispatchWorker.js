@@ -18,6 +18,7 @@ const {
 } = require('../utils/meta/clientWhatsAppCreds');
 const { buildMappedBodyComponent } = require('../utils/meta/templateParams');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
+const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { emitToClient } = require('../utils/core/socket');
 
 async function emitSequenceProgress(clientId, sequenceId) {
@@ -269,6 +270,14 @@ async function processSequenceDispatchJob(job) {
         lockedAt: null,
       });
       await maybeFinalizeSequence(sequenceId, clientId);
+      logDispatchEvent('SequenceDispatch', 'sequence_step_sent', {
+        clientId,
+        sequenceId: String(sequenceId),
+        stepIdx,
+        channel: stepChannel,
+        outcome: 'sent',
+        messageId: result?.messageId || null,
+      });
     } else if (outcome.action === 'skipped') {
       await markStepSkipped(sequenceId, stepIdx, 'processing', outcome.reason || 'skipped');
       await maybeFinalizeSequence(sequenceId, clientId);
@@ -287,6 +296,14 @@ async function processSequenceDispatchJob(job) {
         errorLog: outcome.reason,
       });
       await maybeFinalizeSequence(sequenceId, clientId);
+      logDispatchEvent('SequenceDispatch', 'sequence_step_failed', {
+        clientId,
+        sequenceId: String(sequenceId),
+        stepIdx,
+        channel: stepChannel,
+        outcome: 'failed',
+        reason: outcome.reason || 'failed',
+      }, 'warn');
     }
   } catch (err) {
     log.warn(`Sequence job ${sequenceId}:${stepIdx}: ${err.message}`);

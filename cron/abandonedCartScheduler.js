@@ -4,6 +4,7 @@ const DailyStat = require('../models/DailyStat');
 const Conversation = require('../models/Conversation');
 const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
 const log = require('../utils/core/logger')('AbandonedCart');
+const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { createMessage } = require('../utils/core/createMessage');
 const cron = require('node-cron');
 const axios = require('axios');
@@ -458,6 +459,16 @@ async function runAbandonedCartTick() {
         }
 
         log.info('🚀 Abandoned cart cron tick — processing dynamic recovery steps...');
+        const tickStarted = Date.now();
+        const tickSummary = {
+          clientsProcessed: 0,
+          promoted: 0,
+          step1Sent: 0,
+          step2Sent: 0,
+          step3Sent: 0,
+          stepSkipped: 0,
+          gated: 0,
+        };
         try {
             const now = new Date();
             const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
@@ -476,6 +487,7 @@ async function runAbandonedCartTick() {
             }
 
             for (const client of clients) {
+                tickSummary.clientsProcessed += 1;
                 await new Promise((r) => setImmediate(r));
                 const niche = client.nicheData || {};
                 const { promotionDelayMin, delay1Min, delay2Min, delay3Min, config } =
@@ -615,6 +627,7 @@ async function runAbandonedCartTick() {
                     const gate = await gateCartSend(client, lead, config, now);
                     if (!gate.ok) {
                       log.debug(`[CartRecovery] step 1 gated ${client.clientId} — ${gate.reason}`);
+                      tickSummary.gated += 1;
                       continue;
                     }
                     const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_1', config, lead);
@@ -634,8 +647,18 @@ async function runAbandonedCartTick() {
 
                     if (!outcome?.sent) {
                         log.warn(`[CartRecovery] step 1 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        tickSummary.stepSkipped += 1;
                         continue;
                     }
+
+                    tickSummary.step1Sent += 1;
+                    logDispatchEvent('AbandonedCart', 'cart_recovery_sent', {
+                      clientId: client.clientId,
+                      leadId: String(lead._id),
+                      step: 1,
+                      template: resolved.templateName || null,
+                      outcome: 'sent',
+                    });
 
                     await markCartRecoverySent(client.clientId, dedupeKey, 1);
                     await AdLead.findByIdAndUpdate(lead._id, {
@@ -826,7 +849,13 @@ async function runAbandonedCartTick() {
             } // End for client
         } catch (e) {
             log.error('Abandoned Cart Cron Error:', e);
+            tickSummary.errors = 1;
         } finally {
+            logDispatchEvent('AbandonedCart', 'cart_recovery_tick_complete', {
+              ...tickSummary,
+              durationMs: Date.now() - tickStarted,
+              outcome: tickSummary.step1Sent + tickSummary.step2Sent + tickSummary.step3Sent > 0 ? 'sent' : 'idle',
+            });
             if (redis && redis.status === 'ready') {
                 await redis.set(heartbeatKey, String(Date.now()), 'EX', 86400).catch(() => null);
                 await redis.del(lockKey).catch(() => null);

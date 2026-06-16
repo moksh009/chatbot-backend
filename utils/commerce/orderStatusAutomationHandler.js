@@ -33,6 +33,7 @@ const {
   normalizeRuleChannels,
 } = require('../core/orderEmailMergeFields');
 const log = require('../core/logger')('OrderStatusAutomation');
+const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const Order = require('../../models/Order');
@@ -495,6 +496,21 @@ async function dispatchRule({ client, rule, statusKey, type, status, payload, ph
       ? null
       : emailOutcome?.reason || waOutcome?.reason || 'no_channel_sent',
   });
+
+  const skipReason = anySent
+    ? null
+    : emailOutcome?.reason || waOutcome?.reason || 'no_channel_sent';
+  logDispatchEvent('OrderStatusAutomation', anySent ? 'order_message_sent' : 'order_message_skipped', {
+    clientId: client.clientId,
+    orderId,
+    ruleId: rule.id,
+    statusKey,
+    channel: sendWa && waOutcome?.sent ? 'whatsapp' : sendEmail && emailOutcome?.sent ? 'email' : sendWa ? 'whatsapp' : 'email',
+    outcome: anySent ? 'sent' : (waOutcome?.skipped || emailOutcome?.skipped ? 'skipped' : 'failed'),
+    skipReason,
+    delayMinutes: Number(rule.delayMinutes || 0),
+    source,
+  }, anySent ? 'info' : 'warn');
 
   if (anySent) {
     return {

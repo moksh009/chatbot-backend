@@ -33,6 +33,7 @@ const WhatsApp = require('../utils/meta/whatsapp');
 const { createMessage } = require('../utils/core/createMessage');
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const log = require('../utils/core/logger')('Campaigns');
+const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { apiCache } = require('../middleware/apiCache');
 const { incrementStat } = require('../utils/core/statCacheEngine');
 const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
@@ -49,6 +50,11 @@ const {
 } = require('../utils/commerce/marketingConsent');
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 const { isWorkspaceEmailReady } = require('../utils/core/emailService');
+const {
+  CAMPAIGN_DRAFT_STATUSES,
+  cloneCampaignDocument,
+  applyCampaignPatch,
+} = require('../utils/messaging/campaignDraftUtils');
 
 async function resolveCampaignTemplateForPreflight(clientId, templateName, synced = []) {
   const fromSync = (synced || []).find((t) => t?.name === templateName);
@@ -581,6 +587,14 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       successCount: enqueued,
       failCount: 0,
     });
+    logDispatchEvent('Campaigns', 'quick_send_queued', {
+      clientId,
+      campaignId: String(campaign._id),
+      templateName,
+      enqueued,
+      skippedMarketingOptIn: skippedOptIn,
+      outcome: 'queued',
+    });
   } catch (err) {
     log.error('[QuickSend] Error:', err.message);
     res.status(500).json({
@@ -831,6 +845,65 @@ router.get('/audience-preview', protect, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @route   PATCH /api/campaigns/:id
+// @desc    Save draft campaign fields (builder mid-flight)
+// @access  Private
+router.patch('/:id', ...campaignMutate, async (req, res) => {
+  try {
+    const tenantId = tenantClientId(req);
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: tenantId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    if (!CAMPAIGN_DRAFT_STATUSES.has(String(campaign.status || '').toUpperCase())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only draft, paused, or scheduled campaigns can be edited',
+        code: 'campaign_not_editable',
+      });
+    }
+
+    applyCampaignPatch(campaign, req.body);
+
+    await campaign.save();
+    log.info(`Campaign DRAFT saved: ${campaign._id} | clientId: ${tenantId}`);
+    return res.json({ success: true, campaign });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/duplicate
+// @desc    Clone campaign as a new DRAFT (any source status)
+// @access  Private
+router.post('/:id/duplicate', ...campaignMutate, async (req, res) => {
+  try {
+    const tenantId = tenantClientId(req);
+    const source = await Campaign.findOne({ _id: req.params.id, clientId: tenantId });
+    if (!source) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    const client = await Client.findOne({ clientId: tenantId }).select('_id plan subscriptionPlan').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const limits = await checkLimit(client._id, 'campaigns');
+    if (!limits.allowed) {
+      return res.status(403).json({ success: false, message: limits.reason, code: 'campaign_limit' });
+    }
+
+    await incrementUsage(client._id, 'campaigns', 1);
+
+    const copyName =
+      String(req.body?.name || '').trim() || `${source.name || 'Campaign'} (copy)`;
+    const payload = cloneCampaignDocument(source, { name: copyName });
+    payload.clientId = tenantId;
+
+    const campaign = await Campaign.create(payload);
+    log.info(`Campaign DUPLICATED: ${source._id} → ${campaign._id} | clientId: ${tenantId}`);
+    return res.status(201).json({ success: true, campaign });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
   }
 });
 

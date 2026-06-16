@@ -531,33 +531,34 @@ function resolveCustomerTags(lead, { recovered, nonRecoverable }) {
 
 async function ensureCartRecoveryTagsForLeads(leads = []) {
   if (!leads.length) return;
-  const bulk = [];
+  /** One update per lead — duplicate rows caused Mongo "conflict at tags". */
+  const byId = new Map();
   for (const lead of leads) {
+    if (!lead?._id) continue;
+    const id = String(lead._id);
     const tags = Array.isArray(lead.tags) ? lead.tags : [];
     if (isRecoveredLead(lead)) {
       if (!tags.some((t) => String(t).trim().toLowerCase() === RECOVERED_CART_TAG.toLowerCase())) {
-        bulk.push({
-          updateOne: {
-            filter: { _id: lead._id },
-            update: { $pull: { tags: ABANDONED_CART_TAG }, $addToSet: { tags: RECOVERED_CART_TAG } },
-          },
+        byId.set(id, {
+          filter: { _id: lead._id },
+          update: { $set: { tags: resolveCustomerTags(lead, { recovered: true, nonRecoverable: false }) } },
         });
       }
       continue;
     }
+    if (byId.has(id)) continue;
     if (
       lead.cartStatus === 'abandoned' &&
       !isPlaceholderPhone(lead.phoneNumber) &&
       !tags.some((t) => String(t).trim().toLowerCase() === ABANDONED_CART_TAG.toLowerCase())
     ) {
-      bulk.push({
-        updateOne: {
-          filter: { _id: lead._id },
-          update: { $addToSet: { tags: ABANDONED_CART_TAG } },
-        },
+      byId.set(id, {
+        filter: { _id: lead._id },
+        update: { $addToSet: { tags: ABANDONED_CART_TAG } },
       });
     }
   }
+  const bulk = [...byId.values()].map((op) => ({ updateOne: op }));
   if (!bulk.length) return;
   await AdLead.bulkWrite(bulk, { ordered: false }).catch((err) => {
     log.warn(`[AbandonedCartWorkspace] tag backfill skipped: ${err.message}`);

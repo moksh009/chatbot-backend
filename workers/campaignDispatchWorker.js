@@ -18,6 +18,7 @@ const { enqueueCampaignMessageJob } = require('../utils/messaging/queues/campaig
 const { getConnection } = require('../utils/messaging/queues/queueConnection');
 const { applyRateLimitThrottle } = require('../utils/messaging/channelRateLimits');
 const log = require('../utils/core/logger')('CampaignDispatchWorker');
+const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 
 const WORKER_ID = `${os.hostname()}:${process.pid}`;
 const CONCURRENCY = Number(process.env.PHASE3_CAMPAIGN_CONCURRENCY || 100);
@@ -174,6 +175,14 @@ async function processCampaignDispatchJob(job) {
       await incrCampaignProgress(campaignId, 'processing', -1);
       await incrCampaignProgress(campaignId, 'sent', 1);
       await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: 1 } });
+      logDispatchEvent('CampaignDispatch', 'campaign_message_sent', {
+        clientId,
+        campaignId: String(campaignId),
+        campaignMessageId: String(campaignMessageId),
+        channel: isEmail ? 'email' : channel,
+        outcome: 'sent',
+        messageId: outcome.messageId || result.messageId || null,
+      });
     } else if (outcome.action === 'cancelled') {
       await transitionCampaignMessage(campaignMessageId, 'processing', 'cancelled', {
         cancelledReason: outcome.cancelledReason || outcome.reason,
@@ -204,6 +213,14 @@ async function processCampaignDispatchJob(job) {
       await incrCampaignProgress(campaignId, 'processing', -1);
       await incrCampaignProgress(campaignId, 'failed', 1);
       await Campaign.updateOne({ _id: campaignId }, { $inc: { failedCount: 1 } });
+      logDispatchEvent('CampaignDispatch', 'campaign_message_failed', {
+        clientId,
+        campaignId: String(campaignId),
+        campaignMessageId: String(campaignMessageId),
+        channel: isEmail ? 'email' : channel,
+        outcome: 'failed',
+        reason: outcome.reason || 'failed',
+      }, 'warn');
     }
 
     if (result?.blockedBy === 'rate_limit' || result?.status === 'blocked') {

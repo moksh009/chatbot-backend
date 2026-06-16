@@ -180,10 +180,15 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
       userAgent: req.headers['user-agent'],
       ip: req.ip,
     });
-    if (clientId === 'delitech_smarthomes') {
-      console.log(
-        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'} captureMode=${eventData.captureMode || eventData.source || 'n/a'}`
-      );
+    if (process.env.PIXEL_EVENT_LOG === 'verbose') {
+      const pixelLog = require('../utils/core/logger')('PixelEvent');
+      pixelLog.info('pixel_event_processed', {
+        clientId,
+        event: String(eventName || 'unknown'),
+        status: result?.status || result?.skipped ? 'skipped' : 'ok',
+        leadId: result?.leadId || null,
+        captureMode: eventData.captureMode || eventData.source || null,
+      });
     }
     if (result.error) return res.status(404).json(result);
     res.status(200).json(result);
