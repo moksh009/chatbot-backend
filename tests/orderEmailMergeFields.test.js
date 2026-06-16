@@ -35,39 +35,39 @@ function testOrderContextMerge() {
 }
 
 function testRuleEmailConfigDefaults() {
-  const ec = defaultEmailConfigForRule('sys_financial_paid');
+  const ec = defaultEmailConfigForRule('sys_fulfillment_unfulfilled');
   assert.strictEqual(ec.templateId, 'order_confirmed');
-  const rule = { id: 'sys_financial_paid', emailConfig: ec };
+  const rule = { id: 'sys_fulfillment_unfulfilled', emailConfig: ec };
   assert.strictEqual(ruleHasEmailConfig(rule), true);
 }
 
 function testDualChannelRuleMatch() {
   const waRule = {
     isActive: true,
-    triggerStatusType: 'financial',
-    triggerStatus: 'paid',
+    triggerStatusType: 'fulfillment',
+    triggerStatus: 'unfulfilled',
     templateName: 'order_confirmation_v1',
     channels: ['whatsapp'],
-    emailConfig: defaultEmailConfigForRule('sys_financial_paid'),
+    emailConfig: defaultEmailConfigForRule('sys_fulfillment_unfulfilled'),
   };
-  assert.strictEqual(ruleMatchesStatus(waRule, 'financial', 'paid'), true);
+  assert.strictEqual(ruleMatchesStatus(waRule, 'fulfillment', 'unfulfilled'), true);
 
   const emailOnly = {
     isActive: true,
-    triggerStatusType: 'financial',
-    triggerStatus: 'paid',
+    triggerStatusType: 'fulfillment',
+    triggerStatus: 'unfulfilled',
     templateName: '',
     channels: ['email'],
-    emailConfig: defaultEmailConfigForRule('sys_financial_paid'),
+    emailConfig: defaultEmailConfigForRule('sys_fulfillment_unfulfilled'),
   };
-  assert.strictEqual(ruleMatchesStatus(emailOnly, 'financial', 'paid'), true);
+  assert.strictEqual(ruleMatchesStatus(emailOnly, 'fulfillment', 'unfulfilled'), true);
 }
 
 async function testResolvePrebuiltTemplate() {
   const tpl = await resolveOrderEmailTemplate({
     rule: {
-      id: 'sys_financial_paid',
-      emailConfig: defaultEmailConfigForRule('sys_financial_paid'),
+      id: 'sys_fulfillment_unfulfilled',
+      emailConfig: defaultEmailConfigForRule('sys_fulfillment_unfulfilled'),
     },
     clientId: 'demo',
     context: {

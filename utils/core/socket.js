@@ -20,6 +20,8 @@ const init = (server) => {
     process.env.FRONTEND_URL,
     'https://dash.topedgeai.com',
     'https://www.dash.topedgeai.com',
+    'https://topedgeai.com',
+    'https://www.topedgeai.com',
     'http://localhost:5173',
   ].filter(Boolean);
 

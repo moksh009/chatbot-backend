@@ -103,18 +103,20 @@ function labelSource(source = '') {
 }
 
 const ORDER_RULE_LABELS = {
-  sys_financial_paid: 'Paid',
-  sys_financial_pending: 'Pending',
-  sys_financial_refunded: 'Refunded',
-  sys_financial_partially_paid: 'Partially paid',
-  sys_financial_voided: 'Voided',
-  sys_fulfillment_fulfilled: 'Fulfilled',
-  sys_fulfillment_partial: 'Partially fulfilled',
-  sys_fulfillment_unfulfilled: 'Unfulfilled',
+  sys_fulfillment_unfulfilled: 'Order placed',
   sys_shipment_in_transit: 'In transit',
   sys_shipment_out_for_delivery: 'Out for delivery',
   sys_shipment_delivered: 'Delivered',
-  sys_shipment_attempted_delivery: 'Delivery attempted',
+  sys_shipment_attempted_delivery: 'Attempted delivery',
+  sys_shipment_failure: 'Failed delivery (RTO)',
+  /** Legacy ids — historical email log rows */
+  sys_financial_paid: 'Order placed (legacy)',
+  sys_financial_pending: 'Pending (legacy)',
+  sys_financial_refunded: 'Refunded (legacy)',
+  sys_financial_partially_paid: 'Partially paid (legacy)',
+  sys_financial_voided: 'Voided (legacy)',
+  sys_fulfillment_fulfilled: 'Shipped (legacy)',
+  sys_fulfillment_partial: 'Partially fulfilled (legacy)',
   sys_shipment_ready_for_pickup: 'Ready for pickup',
 };
 

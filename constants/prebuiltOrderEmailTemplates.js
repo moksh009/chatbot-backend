@@ -90,17 +90,12 @@ const PREBUILT_ORDER_EMAIL_TEMPLATES = {
 
 /** Default prebuilt key per system commerce rule id. */
 const RULE_EMAIL_TEMPLATE_MAP = {
-  sys_financial_paid: 'order_confirmed',
-  sys_fulfillment_partial: 'order_partial_fulfillment',
-  sys_fulfillment_fulfilled: 'order_shipped',
+  sys_fulfillment_unfulfilled: 'order_confirmed',
   sys_shipment_in_transit: 'order_in_transit',
   sys_shipment_out_for_delivery: 'order_out_for_delivery',
   sys_shipment_delivered: 'order_delivered',
   sys_shipment_attempted_delivery: 'order_delivery_failed',
   sys_shipment_failure: 'order_delivery_failed',
-  sys_financial_voided: 'order_cancelled',
-  sys_financial_refunded: 'order_refunded',
-  sys_financial_partially_refunded: 'order_partial_refund',
   sys_cart_followup_1: 'cart_recovery_email_1',
   sys_cart_followup_2: 'cart_recovery_email_2',
   sys_cart_followup_3: 'cart_recovery_email_3',

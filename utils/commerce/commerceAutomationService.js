@@ -13,7 +13,7 @@ const {
   CART_FOLLOWUP_MIN_MINUTES,
 } = require('./commerceAutomationPresets');
 
-const COMMERCE_AUTOMATION_VERSION = 2;
+const COMMERCE_AUTOMATION_VERSION = 3;
 const ORDER_STATUS_EVENTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
 
 function normalizeEvent(eventName) {
@@ -95,6 +95,13 @@ function normalizeAutomationMappings(raw) {
  */
 const ECO_TEMPLATE_BODY_MAPPINGS = {
   eco_order_confirmed: { 1: 'first_name', 2: 'order_id', 3: 'order_total', 4: 'payment_method' },
+  order_confirmation_v1: {
+    1: 'first_name',
+    2: 'order_id',
+    3: 'order_items',
+    4: 'order_total',
+    5: 'shipping_address',
+  },
   eco_shipping_update: { 1: 'first_name', 2: 'order_id', 3: 'tracking_url' },
   eco_delivered: { 1: 'first_name', 2: 'order_id' },
   /** Delivery tracking prebuilts (routes/templateGate.js blueprints). */
@@ -353,11 +360,27 @@ function syncSystemOrderRulesFromNicheMap(automations = [], nicheData = {}) {
   const map = nicheData?.orderStatusTemplates || {};
   if (!map || typeof map !== 'object') return automations;
 
+  const nicheKeysForRule = (rule) => {
+    const event = normalizeEvent(rule.event);
+    const keys = [event];
+    if (event === 'unfulfilled') keys.push('paid', 'pending');
+    if (event === 'in_transit') keys.push('shipped', 'fulfilled');
+    if (event === 'delivered') keys.push('delivered');
+    return keys;
+  };
+
   return (automations || []).map((rule) => {
     if (rule?.meta?.category !== 'order_notification') return rule;
-    const status = normalizeEvent(rule.event);
-    const mappedTemplate = String(map[status] || '').trim();
+    let mappedTemplate = '';
+    for (const key of nicheKeysForRule(rule)) {
+      const tpl = String(map[key] || '').trim();
+      if (tpl) {
+        mappedTemplate = tpl;
+        break;
+      }
+    }
     if (!mappedTemplate) return rule;
+    if (String(rule.templateName || '').trim()) return rule;
     return {
       ...rule,
       templateName: mappedTemplate,
@@ -1173,6 +1196,7 @@ module.exports = {
   getOrderStatusTemplateMap,
   getActiveCartFollowupRules,
   syncOrderStatusFromNicheMap,
+  syncSystemOrderRulesFromNicheMap,
   runAutomationsForEvent,
   simulateAutomation,
   isSystemAutomation,

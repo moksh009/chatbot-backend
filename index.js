@@ -178,6 +178,11 @@ const corsBaseOptions = {
     'Accept',
     'Origin',
     'X-Admin-Impersonating',
+    'selectedclientid',
+    'selectedClientId',
+    'X-Client-Id',
+    'baggage',
+    'sentry-trace',
   ],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
 };

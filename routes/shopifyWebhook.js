@@ -487,9 +487,8 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 break;
             }
             case 'orders/fulfilled': {
-                /** WS-2: drive new `sys_fulfillment_fulfilled` rule first
-                 *  (await so the ledger is written before any downstream
-                 *  reconciler-triggered legacy paths can race). */
+                /** Courier delivery rules fire from fulfillments/* webhooks
+                 *  (shipment_status). orders/fulfilled still reconciles local order state. */
                 await processOrderStatusAutomations({
                     client,
                     payload: data,

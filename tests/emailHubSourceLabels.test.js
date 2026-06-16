@@ -9,8 +9,13 @@ assert.strictEqual(
 );
 
 assert.strictEqual(
+  formatEmailLogSource({ source: 'orderStatusAutomationHandler', ruleId: 'sys_fulfillment_unfulfilled' }),
+  'Order: Order placed'
+);
+
+assert.strictEqual(
   formatEmailLogSource({ source: 'orderStatusAutomationHandler', ruleId: 'sys_financial_paid' }),
-  'Order: Paid'
+  'Order: Order placed (legacy)'
 );
 
 assert.strictEqual(

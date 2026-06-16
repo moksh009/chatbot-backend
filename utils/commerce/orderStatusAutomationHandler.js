@@ -1,19 +1,14 @@
 'use strict';
 
 /**
- * Fulfillment + Payment status automations.
+ * Order-status message automations (Jun 2026 — six rules on Order updates).
  *
- * Drives the new 12 system rules surfaced on /shopify-automation-center:
- *
- *   FULFILLMENT STATUS
- *     - unfulfilled  / partial  / fulfilled  / on_hold  / scheduled
- *
- *   PAYMENT STATUS
- *     - pending  / authorized  / paid  / partially_paid
- *     - refunded / partially_refunded / voided
+ *   ORDER PLACED — fulfillment `unfulfilled` on `orders/create` (thank-you / confirmation)
+ *   DELIVERY STATUS — courier `shipment_status` on fulfillments webhooks:
+ *     in_transit | out_for_delivery | delivered | attempted_delivery | failure
  *
  * Trigger source: Shopify webhooks `orders/create`, `orders/updated`,
- * `refunds/create`. The handler:
+ * `fulfillments/create`, `fulfillments/update`, plus logistics inbound. The handler:
  *
  *   1. Normalises financial_status + fulfillment_status from the payload
  *      (null fulfillment_status → 'unfulfilled').
@@ -568,17 +563,13 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
   if (fulfillment) checks.push({ type: 'fulfillment', status: fulfillment });
 
   for (const { type, status } of checks) {
-    if (type === 'financial' && status === 'pending') {
-      const { detectCodFromShopify } = require('../shopify/shopifyOrderMapper');
-      const rp = client.rtoProtection || {};
-      const requireCod =
-        rp.requireCodConfirmation === true || client.requireCodConfirmation === true;
-      if (requireCod && detectCodFromShopify(payload)) {
-        log.info(
-          `[${source}] Skipping financial pending — COD confirmation handles order ${payload.id || payload.order_id}`
-        );
-        continue;
-      }
+    /** Order placed — only on new-order webhooks (not every orders/updated while still unfulfilled). */
+    if (type === 'fulfillment' && status === 'unfulfilled') {
+      if (payload.cancelled_at) continue;
+      const src = String(source || '');
+      const isNewOrder =
+        src.includes('orders/create') || src.includes('order_status_reconcile');
+      if (!isNewOrder) continue;
     }
     const statusKey = buildStatusKey(type, status);
     const matching = rules.filter((r) => ruleMatchesStatus(r, type, status));

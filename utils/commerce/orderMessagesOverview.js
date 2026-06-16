@@ -48,6 +48,14 @@ const CART_SLOT_LOOKUP_BY_RULE = {
   sys_cart_followup_3: ['followup_3', 'cart_recovery_3'],
 };
 
+/** Jun 2026 — historical TemplateSendLog rows keyed by retired rule ids. */
+const RETIRED_RULE_STATS_ALIASES = {
+  sys_financial_paid: 'sys_fulfillment_unfulfilled',
+  sys_financial_pending: 'sys_fulfillment_unfulfilled',
+  sys_fulfillment_fulfilled: 'sys_shipment_in_transit',
+  sys_fulfillment_partial: 'sys_shipment_in_transit',
+};
+
 function buildRuleLookupIds(automations = []) {
   const ruleIdByLookup = {};
   const lookupIds = new Set();
@@ -73,6 +81,12 @@ function buildRuleLookupIds(automations = []) {
       ruleIdByLookup[cartSlot] = ruleId;
       lookupIds.add(cartSlot);
     }
+  }
+
+  for (const [legacyId, canonicalId] of Object.entries(RETIRED_RULE_STATS_ALIASES)) {
+    if (!ruleIdByLookup[canonicalId]) continue;
+    ruleIdByLookup[legacyId] = canonicalId;
+    lookupIds.add(legacyId);
   }
 
   return { ruleIdByLookup, lookupIds: [...lookupIds] };

@@ -1,113 +1,69 @@
 'use strict';
 
 /** Legacy order-notification slots (pending/paid/shipped/delivered/cancelled/cod). Retired in
- *  May 2026 in favour of the new fulfillment + payment status rule sets below. We keep the slot
- *  list around for the migration / cleanup helpers (they detect and drop these from existing
- *  client documents on the next list call). */
+ *  May 2026 in favour of fulfillment + payment status rules, then narrowed again in Jun 2026
+ *  to six delivery-journey rules (order placed + five courier events). */
 const LEGACY_ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'cod'];
 
 const ABANDONED_CART_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
-/** Fulfillment status rules surfaced in the Order Updates tab. Mirror frontend
- *  src/utils/commerceAutomationCatalog.js for tooltip + label parity. */
-const FULFILLMENT_STATUS_RULES = [
+/**
+ * The six order-status message rules on Order messages → Order updates.
+ * Mirror frontend src/utils/commerceAutomationCatalog.js for label + tooltip parity.
+ */
+const ORDER_MESSAGE_STATUS_RULES = [
   {
+    kind: 'fulfillment',
     status: 'unfulfilled',
-    label: 'Unfulfilled',
-    tooltip: 'The order has been placed, but no items have been packed or shipped yet',
+    label: 'Order placed',
+    tooltip:
+      'Triggers immediately when a customer finishes checkout. Use this to send an instant order confirmation and a thank you message while their order status is "Unfulfilled."',
   },
   {
-    status: 'partial',
-    label: 'Partially Fulfilled',
-    tooltip: 'Only some items in the order have been shipped',
-  },
-  {
-    status: 'fulfilled',
-    label: 'Fulfilled',
-    tooltip: 'All items in the order have been packed, assigned a tracking number, and shipped',
-  },
-  {
-    status: 'on_hold',
-    label: 'On Hold',
-    tooltip: 'Fulfillment is temporarily paused by an app or by the merchant',
-  },
-  {
-    status: 'scheduled',
-    label: 'Scheduled',
-    tooltip: 'The fulfillment is set for a specific future date, typical for subscriptions',
-  },
-];
-
-/** Delivery tracking rules — driven by courier updates on Shopify fulfillments
- *  (`fulfillments/create` + `fulfillments/update` webhooks, `shipment_status` field).
- *  Third-party logistics partners (Shiprocket, Delhivery, etc.) push these into
- *  Shopify, and we mirror them to WhatsApp. Mirror frontend
- *  src/utils/commerceAutomationCatalog.js for label + tooltip parity. */
-const SHIPMENT_STATUS_RULES = [
-  {
+    kind: 'shipment',
     status: 'in_transit',
     label: 'In Transit',
-    tooltip: 'The courier has picked up the package and it is on the way',
+    tooltip:
+      'Triggers when the courier partner physically picks up the package from your warehouse and scans it. This sends as soon as the package is officially on its way to the customer\'s city.',
   },
   {
+    kind: 'shipment',
     status: 'out_for_delivery',
     label: 'Out for Delivery',
-    tooltip: 'The package is with the delivery agent and will arrive today',
+    tooltip:
+      'Triggers on the day of delivery when the courier agent scans the package and leaves the hub. Use this to alert customers to stay at home or keep cash ready for COD orders.',
   },
   {
+    kind: 'shipment',
     status: 'delivered',
     label: 'Delivered',
-    tooltip: 'The courier confirmed the package was delivered to the customer',
+    tooltip:
+      'Triggers the exact moment the courier agent marks the parcel as successfully handed over.',
   },
   {
+    kind: 'shipment',
     status: 'attempted_delivery',
-    label: 'Delivery Attempt Failed',
-    tooltip: 'The courier tried to deliver but could not — ask the customer to confirm address or availability',
+    label: 'Attempted delivery',
+    tooltip:
+      'Triggers if the delivery agent tried to deliver the package but failed (e.g., customer unavailable, door locked, or incorrect address). Use this to urgently prompt the customer to co-ordinate a re-delivery.',
   },
   {
+    kind: 'shipment',
     status: 'failure',
-    label: 'Delivery Failed',
-    tooltip: 'The courier marked the shipment as failed — rescue the order before it returns to origin (RTO)',
+    label: 'Failed Delivery (RTO)',
+    tooltip:
+      'Triggers when the courier gives up after multiple failed delivery attempts and officially marks the package to return back to your warehouse (Return to Origin). Use this to notify the customer that their delivery has been canceled.',
   },
 ];
 
-const PAYMENT_STATUS_RULES = [
-  {
-    status: 'pending',
-    label: 'Pending',
-    tooltip: 'Payment is being processed, or it is a Cash on Delivery',
-  },
-  {
-    status: 'authorized',
-    label: 'Authorized',
-    tooltip: 'Payment is verified but not yet captured by the merchant',
-  },
-  {
-    status: 'paid',
-    label: 'Paid',
-    tooltip: 'Payment successfully captured and completed',
-  },
-  {
-    status: 'partially_paid',
-    label: 'Partially Paid',
-    tooltip: 'Only a portion of the order total has been paid',
-  },
-  {
-    status: 'refunded',
-    label: 'Refunded',
-    tooltip: 'The full payment amount was sent back to the customer',
-  },
-  {
-    status: 'partially_refunded',
-    label: 'Partially Refunded',
-    tooltip: 'Only a portion of the payment was sent back',
-  },
-  {
-    status: 'voided',
-    label: 'Voided',
-    tooltip: 'The payment authorization was cancelled before any money changed hands',
-  },
-];
+/** @deprecated Jun 2026 — only unfulfilled remains as "Order placed". */
+const FULFILLMENT_STATUS_RULES = ORDER_MESSAGE_STATUS_RULES.filter((r) => r.kind === 'fulfillment');
+
+/** Courier delivery events — driven by Shopify fulfillment shipment_status webhooks. */
+const SHIPMENT_STATUS_RULES = ORDER_MESSAGE_STATUS_RULES.filter((r) => r.kind === 'shipment');
+
+/** @deprecated Jun 2026 — payment-status rules retired from Order updates UI. */
+const PAYMENT_STATUS_RULES = [];
 
 const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
 const { defaultEmailConfigForRule } = require('../../constants/prebuiltOrderEmailTemplates');
@@ -202,50 +158,136 @@ function shipmentStatusRule({ status, label, tooltip }) {
   };
 }
 
-function paymentStatusRule({ status, label, tooltip }) {
-  const ruleId = `sys_financial_${status}`;
-  return {
-    id: ruleId,
-    name: label,
-    triggerType: 'order_status',
-    triggerStatusType: 'financial',
-    triggerStatus: status,
-    event: status,
-    matchType: 'exact',
-    sku: '',
-    triggerScope: 'every_order',
-    targetProductIds: [],
-    productIds: [],
-    productId: '',
-    productTitle: '',
-    variantId: '',
-    actionType: 'send_template',
-    templateName: '',
-    sequenceId: '',
-    language: 'en',
-    delayMinutes: 0,
-    imageUrl: '',
-    isActive: false,
-    variableMappings: { body: {} },
-    customVariableValues: {},
-    isDeletable: false,
-    meta: {
-      system: true,
-      category: 'order_notification',
-      group: 'payment_status',
-      systemSlot: `financial_${status}`,
-      tooltip,
-      locked: true,
-    },
-    ...dualChannelDefaults(ruleId),
-  };
-}
-
 /** ID prefix of every legacy order-notification rule we now retire. */
 const LEGACY_ORDER_RULE_ID_PREFIX = 'sys_order_';
 
 function isLegacyOrderRuleId(id) {
   return String(id || '').startsWith(LEGACY_ORDER_RULE_ID_PREFIX);
+}
+
+/** Retired Jun 2026 — old fulfillment (except unfulfilled) + all payment-status system rules. */
+function isRetiredOrderStatusRule(rule) {
+  const id = String(rule?.id || '');
+  if (!id) return false;
+  if (isLegacyOrderRuleId(id)) return true;
+  if (id.startsWith('sys_financial_')) return true;
+  if (id.startsWith('sys_fulfillment_') && id !== 'sys_fulfillment_unfulfilled') return true;
+  return false;
+}
+
+/**
+ * One-time config migration: copy template / toggle / mappings from retired rules
+ * onto the Jun 2026 canonical six-rule set (only fills gaps on the target).
+ */
+const RETIRED_ORDER_RULE_MIGRATION_MAP = [
+  ['sys_financial_paid', 'sys_fulfillment_unfulfilled'],
+  ['sys_financial_pending', 'sys_fulfillment_unfulfilled'],
+  ['sys_fulfillment_fulfilled', 'sys_shipment_in_transit'],
+  ['sys_fulfillment_partial', 'sys_shipment_in_transit'],
+];
+
+function ruleHasMerchantConfig(rule) {
+  if (!rule) return false;
+  if (String(rule.templateName || '').trim()) return true;
+  const body = rule.variableMappings?.body || {};
+  if (Object.values(body).some((v) => v != null && v !== '')) return true;
+  if (rule.isActive) return true;
+  if (rule.emailConfig?.templateId || rule.emailConfig?.template) return true;
+  return false;
+}
+
+function mergeConfigFromRetiredRule(target = {}, source = {}) {
+  const patch = {};
+  const targetTpl = String(target.templateName || '').trim();
+  const sourceTpl = String(source.templateName || '').trim();
+  if (!targetTpl && sourceTpl) patch.templateName = sourceTpl;
+
+  const targetBody = target.variableMappings?.body || {};
+  const sourceBody = source.variableMappings?.body || {};
+  const targetHasMappings = Object.values(targetBody).some((v) => v != null && v !== '');
+  const sourceHasMappings = Object.values(sourceBody).some((v) => v != null && v !== '');
+  if (!targetHasMappings && sourceHasMappings) {
+    patch.variableMappings = source.variableMappings;
+    patch.customVariableValues = source.customVariableValues || {};
+  }
+
+  const effectiveTpl = patch.templateName || targetTpl;
+  if (!target.isActive && source.isActive && effectiveTpl) {
+    patch.isActive = true;
+  }
+
+  if (!target.emailConfig && source.emailConfig) {
+    patch.emailConfig = source.emailConfig;
+  } else if (target.emailConfig && source.emailConfig) {
+    const targetEmailTpl = target.emailConfig?.templateId || target.emailConfig?.template;
+    const sourceEmailTpl = source.emailConfig?.templateId || source.emailConfig?.template;
+    if (!targetEmailTpl && sourceEmailTpl) {
+      patch.emailConfig = source.emailConfig;
+    }
+  }
+
+  if (Array.isArray(source.channels) && source.channels.length) {
+    const targetChannels = Array.isArray(target.channels) ? target.channels : ['whatsapp'];
+    const mergedChannels = [...new Set([...targetChannels, ...source.channels])];
+    if (mergedChannels.length > targetChannels.length) {
+      patch.channels = mergedChannels;
+    }
+  }
+
+  const targetScope = String(target.triggerScope || 'every_order');
+  const sourceScope = String(source.triggerScope || 'every_order');
+  const sourceProducts = [
+    ...(Array.isArray(source.productIds) ? source.productIds : []),
+    ...(Array.isArray(source.targetProductIds) ? source.targetProductIds : []),
+  ].filter(Boolean);
+  if (
+    sourceScope === 'specific_product' &&
+    targetScope !== 'specific_product' &&
+    sourceProducts.length
+  ) {
+    patch.triggerScope = 'specific_product';
+    patch.productIds = source.productIds || sourceProducts;
+    patch.targetProductIds = source.targetProductIds || sourceProducts;
+    patch.productId = source.productId || sourceProducts[0] || '';
+    patch.productTitle = source.productTitle || '';
+  }
+
+  return patch;
+}
+
+function applyRetiredRuleMigrations(existing = []) {
+  if (!Array.isArray(existing) || !existing.length) return existing;
+  const byId = new Map(existing.map((r) => [r.id, r]));
+  const patches = new Map();
+
+  const applyPatch = (targetId, sourceRule) => {
+    if (!targetId || !sourceRule) return;
+    const target = { ...(byId.get(targetId) || {}), ...(patches.get(targetId) || {}) };
+    const patch = mergeConfigFromRetiredRule(target, sourceRule);
+    if (!Object.keys(patch).length) return;
+    patches.set(targetId, { ...(patches.get(targetId) || {}), ...patch });
+  };
+
+  for (const [fromId, toId] of RETIRED_ORDER_RULE_MIGRATION_MAP) {
+    const source = byId.get(fromId);
+    if (!source || !ruleHasMerchantConfig(source)) continue;
+
+    if (fromId === 'sys_financial_pending') {
+      const paid = byId.get('sys_financial_paid');
+      const target = { ...(byId.get(toId) || {}), ...(patches.get(toId) || {}) };
+      if (ruleHasMerchantConfig(paid) || String(target.templateName || '').trim()) continue;
+    }
+
+    applyPatch(toId, source);
+  }
+
+  if (!patches.size) return existing;
+  return existing.map((rule) => (patches.has(rule.id) ? { ...rule, ...patches.get(rule.id) } : rule));
+}
+
+function orderMessageStatusRule(def) {
+  if (def.kind === 'fulfillment') return fulfillmentStatusRule(def);
+  return shipmentStatusRule(def);
 }
 
 function abandonedCartRule(slot, stepNum) {
@@ -291,9 +333,7 @@ function abandonedCartRule(slot, stepNum) {
 
 function buildSystemAutomations() {
   return [
-    ...FULFILLMENT_STATUS_RULES.map(fulfillmentStatusRule),
-    ...SHIPMENT_STATUS_RULES.map(shipmentStatusRule),
-    ...PAYMENT_STATUS_RULES.map(paymentStatusRule),
+    ...ORDER_MESSAGE_STATUS_RULES.map(orderMessageStatusRule),
     ...ABANDONED_CART_SLOTS.map((slot, i) => abandonedCartRule(slot, i + 1)),
   ];
 }
@@ -303,8 +343,9 @@ function isSystemAutomation(automation) {
 }
 
 function mergeSystemAutomations(existing = []) {
+  const migratedExisting = applyRetiredRuleMigrations(existing);
   const presets = buildSystemAutomations();
-  const byId = new Map((existing || []).map((r) => [r.id, r]));
+  const byId = new Map((migratedExisting || []).map((r) => [r.id, r]));
   const merged = [];
 
   for (const preset of presets) {
@@ -331,15 +372,15 @@ function mergeSystemAutomations(existing = []) {
       channels: Array.isArray(cur.channels) ? cur.channels : preset.channels,
       emailConfig: cur.emailConfig != null ? cur.emailConfig : preset.emailConfig,
       isDeletable: false,
-      meta: { ...preset.meta, ...(cur.meta || {}) },
+      meta: { ...preset.meta, ...(cur.meta || {}), tooltip: preset.meta?.tooltip },
     });
   }
 
-  /** Surface custom rules merchants created in the past, but quietly drop the retired
-   *  legacy `sys_order_*` rules so the UI never shows them again. */
-  for (const rule of existing) {
+  /** Surface custom rules merchants created in the past, but drop retired system rules. */
+  for (const rule of migratedExisting) {
     if (presets.some((p) => p.id === rule.id)) continue;
     if (isLegacyOrderRuleId(rule.id)) continue;
+    if (isRetiredOrderStatusRule(rule)) continue;
     merged.push(rule);
   }
 
@@ -388,6 +429,7 @@ function cartFollowupSyncPatch(automation) {
 module.exports = {
   LEGACY_ORDER_NOTIFICATION_SLOTS,
   ABANDONED_CART_SLOTS,
+  ORDER_MESSAGE_STATUS_RULES,
   FULFILLMENT_STATUS_RULES,
   SHIPMENT_STATUS_RULES,
   PAYMENT_STATUS_RULES,
@@ -396,6 +438,9 @@ module.exports = {
   buildSystemAutomations,
   isSystemAutomation,
   isLegacyOrderRuleId,
+  isRetiredOrderStatusRule,
+  RETIRED_ORDER_RULE_MIGRATION_MAP,
+  applyRetiredRuleMigrations,
   mergeSystemAutomations,
   validateCartFollowupDelay,
   cartFollowupSyncPatch,

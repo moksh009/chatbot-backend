@@ -247,6 +247,7 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
     storeKey: options.storeKey || options.shopDomain || '',
     trackingNumber: ff.trackingNumber || '',
     trackingUrl: ff.trackingUrl || '',
+    lastShipmentStatus: ff.shipmentStatus || '',
   };
 }
 
