@@ -1,5 +1,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const router = express.Router();
 const SupportChat = require('../models/SupportChat');
 const Notification = require('../models/Notification');
@@ -602,7 +603,11 @@ const widgetChatLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many messages. Please wait a moment and try again.' },
-  keyGenerator: (req) => `${req.ip || 'unknown'}:${req.body?.clientId || 'unknown'}`,
+  keyGenerator: (req) => {
+    const clientId = req.body?.clientId || 'unknown';
+    const ip = ipKeyGenerator(req.ip || 'unknown');
+    return `widget_chat:${clientId}:${ip}`;
+  },
 });
 
 function resolveClientBranding(client) {

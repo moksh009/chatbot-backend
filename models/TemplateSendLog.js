@@ -32,7 +32,7 @@ const TemplateSendLogSchema = new mongoose.Schema(
     resolvedVariables: { type: mongoose.Schema.Types.Mixed, default: {} },
     status: { type: String, enum: ["sent", "delivered", "failed", "skipped"], default: "sent" },
     errorMessage: { type: String, default: null },
-    sentAt: { type: Date, default: Date.now, index: true },
+    sentAt: { type: Date, default: Date.now },
   },
   { timestamps: false }
 );

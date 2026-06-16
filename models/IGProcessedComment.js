@@ -7,7 +7,6 @@ const IGProcessedCommentSchema = new mongoose.Schema({
   processedAt: { type: Date, default: Date.now }
 });
 
-IGProcessedCommentSchema.index({ commentId: 1 }, { unique: true });
 IGProcessedCommentSchema.index({ processedAt: 1 }, { expireAfterSeconds: 86400 }); // TTL 24 hours auto-cleanup
 
 module.exports = mongoose.model('IGProcessedComment', IGProcessedCommentSchema);
