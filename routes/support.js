@@ -324,12 +324,58 @@ router.post('/handoff', protect, async (req, res) => {
   }
 });
 
-// Super Admin: Get all support chats
+// Super Admin: Get all support chats (cursor pagination)
 router.get('/all', protect, async (req, res) => {
   if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
   try {
-    const chats = await SupportChat.find(supportScopeQuery(req)).sort({ lastMessageAt: -1 }).limit(50);
-    res.json(chats);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+    const clientId = req.query.clientId ? String(req.query.clientId).trim() : '';
+    const cursorRaw = req.query.cursor;
+    const cursor = cursorRaw != null && cursorRaw !== '' ? Number(cursorRaw) : null;
+
+    const query = supportScopeQuery(req);
+    if (clientId) query.clientId = clientId;
+    if (cursor != null && !Number.isNaN(cursor)) {
+      query.lastMessageAt = { $lt: cursor };
+    }
+
+    const rows = await SupportChat.find(query)
+      .sort({ lastMessageAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore && items.length ? items[items.length - 1].lastMessageAt : null;
+
+    res.json({ items, nextCursor, hasMore });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Distinct merchants with support threads (for admin inbox filter)
+router.get('/client-options', protect, async (req, res) => {
+  if (!isSupportAdmin(req)) return res.status(403).json({ message: 'Unauthorized' });
+  try {
+    const rows = await SupportChat.aggregate([
+      { $match: supportScopeQuery(req) },
+      {
+        $group: {
+          _id: '$clientId',
+          clientName: { $first: '$clientName' },
+          lastMessageAt: { $max: '$lastMessageAt' },
+        },
+      },
+      { $sort: { lastMessageAt: -1 } },
+      { $limit: 500 },
+    ]);
+    res.json(
+      rows.map((r) => ({
+        clientId: r._id,
+        clientName: r.clientName || r._id,
+      }))
+    );
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

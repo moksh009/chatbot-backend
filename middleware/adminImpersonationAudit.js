@@ -1,11 +1,12 @@
 'use strict';
 
 const AuditLog = require('../models/AuditLog');
+const { canImpersonateMerchants } = require('./adminAccess');
 
-/** Log super-admin actions performed while impersonating a tenant workspace. */
+/** Log platform admin actions performed while impersonating a tenant workspace. */
 function adminImpersonationAudit(req, res, next) {
   const impersonating = req.headers['x-admin-impersonating'];
-  if (!impersonating || req.user?.role !== 'SUPER_ADMIN') return next();
+  if (!impersonating || !canImpersonateMerchants(req.user)) return next();
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
 
   const clientId = String(impersonating).trim();
@@ -17,7 +18,7 @@ function adminImpersonationAudit(req, res, next) {
     action_type: 'IMPERSONATION_ACTION',
     severity: 'warning',
     actor: {
-      type: 'super_admin',
+      type: req.user?.role === 'SUPER_ADMIN' ? 'super_admin' : 'admin_team',
       userId: req.user._id,
       source: 'dashboard',
     },

@@ -3,6 +3,7 @@ const dns = require('dns');
 const net = require('net');
 const axios = require('axios');
 const { decrypt } = require('./encryption');
+const { renderBrandedEmail } = require('../../services/mjmlEmailRenderer');
 
 /** True when workspace can send mail via Gmail OAuth (gmail.send) or SMTP / env app password. */
 function isWorkspaceEmailReady(client) {
@@ -1365,6 +1366,80 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
     });
 }
 
+function formatTrialDateForEmail(dateInput) {
+    const dt = dateInput ? new Date(dateInput) : null;
+    if (!dt || Number.isNaN(dt.getTime())) return 'your current trial window';
+    return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function buildPlatformWelcomeEmail({
+    merchantName = 'there',
+    trialEndsAt,
+    dashboardUrl,
+    connectWhatsAppUrl,
+    plan = '',
+    dfyBookingUrl,
+}) {
+    const safeName = String(merchantName || 'there').trim() || 'there';
+    const trialLabel = formatTrialDateForEmail(trialEndsAt);
+    const isDfy = /dfy/i.test(String(plan || ''));
+    const connectUrl =
+        connectWhatsAppUrl ||
+        `${String(dashboardUrl || '').replace(/\/$/, '')}/settings?tab=connections&connect=whatsapp`;
+
+    const bodyLines = [
+        `Hi ${safeName}, welcome to TopEdge AI.`,
+        `Your trial is live and currently runs until ${trialLabel}.`,
+        'First milestone: connect your WhatsApp Business number so automations and support flows can go live.',
+        isDfy && dfyBookingUrl
+            ? `You are on a DFY plan — book your kickoff call here: ${dfyBookingUrl}`
+            : 'Need help? Reply to this email and our team will assist with setup.',
+    ];
+
+    const html = renderBrandedEmail({
+        brandName: 'TopEdge AI',
+        title: 'Welcome to TopEdge AI',
+        bodyHtml: bodyLines.join('\n\n'),
+        ctaUrl: connectUrl,
+        ctaLabel: 'Connect WhatsApp',
+    });
+
+    return {
+        subject: 'Welcome to TopEdge AI — connect WhatsApp to go live',
+        html,
+    };
+}
+
+async function sendPlatformWelcomeEmail({
+    toEmail,
+    merchantName,
+    trialEndsAt,
+    plan,
+    dashboardUrl,
+    dfyBookingUrl,
+}) {
+    if (!toEmail) return false;
+
+    const baseDashboard = String(
+        dashboardUrl || process.env.TOPEDGE_DASHBOARD_URL || process.env.FRONTEND_URL || 'https://dash.topedgeai.com'
+    ).replace(/\/$/, '');
+
+    const payload = buildPlatformWelcomeEmail({
+        merchantName,
+        trialEndsAt,
+        plan,
+        dashboardUrl: baseDashboard,
+        connectWhatsAppUrl: `${baseDashboard}/settings?tab=connections&connect=whatsapp`,
+        dfyBookingUrl: dfyBookingUrl || process.env.DFY_BOOKING_URL || '',
+    });
+
+    return sendSystemEmail({
+        to: String(toEmail).trim(),
+        subject: payload.subject,
+        html: payload.html,
+    });
+}
+
 module.exports = {
     sendEmail,
     sendSystemEmail,
@@ -1385,6 +1460,8 @@ module.exports = {
     sendSystemOTPEmail,
     sendTeamInviteEmail,
     sendAdminConfirmationEmail,
+    buildPlatformWelcomeEmail,
+    sendPlatformWelcomeEmail,
     createSystemEmailTransporter,
     deliverSystemEmail
 };

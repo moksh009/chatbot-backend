@@ -4,12 +4,21 @@ const jwt = require('jsonwebtoken');
 const User = require('../../models/User');
 const log = require('./logger')('SocketAuth');
 const { auditSecurity } = require('../../middleware/securityAudit');
+const { canImpersonateMerchants, isImpersonationAllowedForClient } = require('../../middleware/adminAccess');
 
 const ADMIN_PSEUDO_CLIENT_ID = 'TOPEDGE_ADMIN';
 
+function resolveAdminImpersonatedClientId(user, handshakeAuth = {}) {
+  if (!canImpersonateMerchants(user)) return null;
+  const impersonated = handshakeAuth.clientId && String(handshakeAuth.clientId).trim();
+  if (!impersonated || impersonated === ADMIN_PSEUDO_CLIENT_ID) return null;
+  const gate = isImpersonationAllowedForClient(user, impersonated);
+  return gate.ok ? impersonated : null;
+}
+
 /**
  * Resolve the tenant room a socket may subscribe to after JWT verification.
- * Super-admins may pass handshake.auth.clientId when impersonating a merchant.
+ * Platform admins may pass handshake.auth.clientId when impersonating a merchant.
  */
 function resolveSocketTenantClientId(user, handshakeAuth = {}) {
   if (!user) return null;
@@ -20,7 +29,7 @@ function resolveSocketTenantClientId(user, handshakeAuth = {}) {
     }
     return null;
   }
-  return user.clientId || null;
+  return resolveAdminImpersonatedClientId(user, handshakeAuth);
 }
 
 /**
@@ -33,7 +42,6 @@ function canJoinClientRoom(user, roomClientId, handshakeAuth = {}) {
 
   if (user.role === 'SUPER_ADMIN') {
     if (room === ADMIN_PSEUDO_CLIENT_ID) return true;
-    // Super-admins may join any merchant room (mirrors API tenant bypass for support).
     const impersonated = handshakeAuth.clientId && String(handshakeAuth.clientId).trim();
     if (impersonated && impersonated !== room && impersonated !== ADMIN_PSEUDO_CLIENT_ID) {
       log.info('Super-admin joined room outside handshake impersonation', {
@@ -43,6 +51,11 @@ function canJoinClientRoom(user, roomClientId, handshakeAuth = {}) {
       });
     }
     return true;
+  }
+
+  if (canImpersonateMerchants(user)) {
+    const impersonated = resolveAdminImpersonatedClientId(user, handshakeAuth);
+    return impersonated != null && String(room) === String(impersonated);
   }
 
   return String(user.clientId) === room;
@@ -93,6 +106,13 @@ async function verifySocketUser(token) {
       name: member.name,
       role: 'ADMIN_TEAM',
       isAdminTeam: true,
+      adminMemberId: member._id,
+      adminRole: member.role,
+      permissions: {
+        ...AdminTeamMember.applyRoleTemplate(member.role),
+        ...(member.permissions || {}),
+      },
+      allowedClientIds: member.allowedClientIds || [],
       clientId: null,
     };
   }

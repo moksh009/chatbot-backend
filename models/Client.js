@@ -573,6 +573,14 @@ const ClientSchema = new mongoose.Schema({
   /** Legacy/slugs kept for backward-compatible inbound webhook URLs. */
   clientAliases: { type: [String], default: [] },
   isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
+  isPlatformInternal: { type: Boolean, default: false },
+  becamePayingAt: { type: Date, default: null },
+  platformReviewSentAt: { type: Date, default: null },
+  platformReviewRating: { type: Number, min: 1, max: 5, default: null },
+  platformReviewComment: { type: String, default: '' },
+  dfyManagerId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdminTeamMember', default: null },
+  dfyKickoffAt: { type: Date, default: null },
+  dfyGoLiveAt: { type: Date, default: null },
   businessName: { 
     type: String, 
     required: true,

@@ -50,7 +50,7 @@ router.get('/usage', protect, apiCache(300), async (req, res) => {
       Subscription.findOne({ clientId: client.clientId }).lean()
     );
     if (!sub) {
-      sub = await Subscription.findOne({ clientId: String(client._id) });
+      sub = await Subscription.findOne({ clientId: String(client.clientId || '') });
     }
     
     if (!sub) {
@@ -100,7 +100,7 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
     // Get Subscription status
     let sub = await Subscription.findOne({ clientId: client.clientId });
     if (!sub) {
-      sub = await Subscription.findOne({ clientId: String(client._id) });
+      sub = await Subscription.findOne({ clientId: String(client.clientId || '') });
     }
     
     // ST-P1-04: Return canonical plan slug (diy_lite / dfy_*), not legacy Client.plan labels
@@ -185,7 +185,7 @@ router.get('/:clientId/invoices', protect, verifyTenantScope(), async (req, res)
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
         const Invoice = require('../models/Invoice');
-        const invoices = await Invoice.find({ clientId: client._id }).sort({ createdAt: -1 }).limit(10);
+        const invoices = await Invoice.find({ clientId: client.clientId }).sort({ createdAt: -1 }).limit(10);
         
         res.json({
             success: true,
@@ -295,11 +295,12 @@ router.post('/verify', protect, async (req, res) => {
 
     // Update Subscription locally (Webhook will also confirm this later)
     const sub = await Subscription.findOneAndUpdate(
-      { clientId: client._id },
+      { clientId: client.clientId },
       {
         plan: canonicalPlan,
         status: 'active',
         razorpaySubId: razorpay_subscription_id,
+        billingCycle: 'monthly',
         currentPeriodStart: new Date(),
         currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       },

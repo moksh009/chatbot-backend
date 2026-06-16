@@ -49,10 +49,36 @@ function authorizeAdminScope(permissionKey) {
   };
 }
 
+function canImpersonateMerchants(user) {
+  if (!user) return false;
+  if (user.role === 'SUPER_ADMIN') return true;
+  if (user.isAdminTeam && user.permissions?.canImpersonateMerchants) return true;
+  return false;
+}
+
+/** Validate admin team may impersonate a specific merchant clientId. */
+function isImpersonationAllowedForClient(user, targetClientId) {
+  const target = targetClientId != null ? String(targetClientId).trim() : '';
+  if (!target) {
+    return { ok: false, status: 400, message: 'Invalid client' };
+  }
+  if (!canImpersonateMerchants(user)) {
+    return { ok: false, status: 403, message: 'Impersonation not permitted' };
+  }
+  if (user.role === 'SUPER_ADMIN') return { ok: true };
+  const allowed = user.allowedClientIds || [];
+  if (allowed.length && !allowed.includes(target)) {
+    return { ok: false, status: 403, message: 'Client not in your allowed list' };
+  }
+  return { ok: true };
+}
+
 module.exports = {
   blockMasterTesterOnAdmin,
   requireAdminUser,
   getAllowedClientIds,
   applyClientScopeFilter,
   authorizeAdminScope,
+  canImpersonateMerchants,
+  isImpersonationAllowedForClient,
 };

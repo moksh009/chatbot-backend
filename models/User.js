@@ -79,6 +79,10 @@ const UserSchema = new mongoose.Schema({
   twoFactorEnabled: { type: Boolean, default: false },
   twoFactorSecret: { type: String, default: null },
   twoFactorRecoveryCodes: { type: [String], default: [] },
+  /** E.164 Indian mobile — optional, captured at signup or onboarding */
+  phone: { type: String, default: null },
+  welcomeEmailSentAt: { type: Date, default: null },
+  welcomeWhatsappSentAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

@@ -21,6 +21,9 @@ const PERMISSION_DEFAULTS = {
   viewDeadLetters: false,
   retryDeadLetters: false,
   manageTeam: false,
+  canImpersonateMerchants: false,
+  managePlatformCampaigns: false,
+  manageCompanyInbox: false,
 };
 
 const ROLE_TEMPLATES = {
@@ -41,6 +44,9 @@ const ROLE_TEMPLATES = {
     viewMetrics: true,
     manageTemplates: true,
     bulkPushTemplates: true,
+    canImpersonateMerchants: true,
+    managePlatformCampaigns: true,
+    manageCompanyInbox: true,
   },
   VIEWER: {
     ...PERMISSION_DEFAULTS,

@@ -65,7 +65,14 @@ router.get('/me', protect, async (req, res) => {
   }
   const member = await AdminTeamMember.findById(req.user?.adminMemberId).lean();
   if (!member) return res.status(404).json({ message: 'Not found' });
-  res.json({ type: 'admin_team', ...member });
+  res.json({
+    type: 'admin_team',
+    ...member,
+    permissions: {
+      ...AdminTeamMember.applyRoleTemplate(member.role),
+      ...(member.permissions || {}),
+    },
+  });
 });
 
 router.post('/accept-invite', async (req, res) => {

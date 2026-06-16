@@ -25,6 +25,7 @@ const {
   isWebsiteChatWidgetSettingsEnabled,
   isDeliveryRtoInsightsEnabled,
 } = require('../utils/core/featureFlags');
+const AdminTeamMember = require('../models/AdminTeamMember');
 
 async function fetchWorkerHealthSnapshot() {
   try {
@@ -277,6 +278,40 @@ router.patch('/:clientId/logistics/settings', protect, verifyTenantScope(), asyn
       success: false,
       error: err.message,
     });
+  }
+});
+
+router.get('/:clientId/dfy-profile', protect, verifyTenantScope(), async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const client = await Client.findOne({ clientId })
+      .select('plan tier dfyManagerId dfyKickoffAt dfyGoLiveAt')
+      .lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const planText = `${String(client.plan || '')} ${String(client.tier || '')}`.toLowerCase();
+    const isDfyPlan = /dfy|growth/.test(planText);
+
+    let manager = null;
+    if (client.dfyManagerId) {
+      manager = await AdminTeamMember.findById(client.dfyManagerId).select('name email').lean();
+    }
+
+    return res.json({
+      success: true,
+      dfy: {
+        isDfyPlan,
+        managerName: manager?.name || '',
+        managerEmail: manager?.email || '',
+        kickoffAt: client.dfyKickoffAt || null,
+        goLiveAt: client.dfyGoLiveAt || null,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

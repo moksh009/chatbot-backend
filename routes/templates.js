@@ -31,6 +31,7 @@ const {
 } = require('../services/templateBrandOverrides');
 const {
   assertSuperAdmin,
+  assertTemplateOpsAdmin,
   bulkPushEcoPack,
   getApprovalBoard,
 } = require('../services/templateAdminOps');
@@ -1226,7 +1227,7 @@ router.patch('/overrides/:slotId', protect, async (req, res) => {
 /** SUPER_ADMIN — approval board across clients. */
 router.get('/admin/board', protect, async (req, res) => {
     try {
-        await assertSuperAdmin(req.user.id);
+        assertTemplateOpsAdmin(req.user);
         const needsActionOnly = req.query.needsAction === 'true';
         const limit = Math.min(parseInt(req.query.limit, 10) || 80, 200);
         const data = await getApprovalBoard({ limit, needsActionOnly });
@@ -1240,7 +1241,7 @@ router.get('/admin/board', protect, async (req, res) => {
 /** SUPER_ADMIN — bulk push eco pack. */
 router.post('/admin/bulk-push-eco', protect, async (req, res) => {
     try {
-        await assertSuperAdmin(req.user.id);
+        assertTemplateOpsAdmin(req.user);
         const { clientIds = [], skipExisting = true } = req.body || {};
         const data = await bulkPushEcoPack({ clientIds, skipExisting });
         return res.json({ success: true, data });
@@ -1253,7 +1254,7 @@ router.post('/admin/bulk-push-eco', protect, async (req, res) => {
 /** SUPER_ADMIN — latest catalog drift audits. */
 router.get('/admin/audits', protect, async (req, res) => {
     try {
-        await assertSuperAdmin(req.user.id);
+        assertTemplateOpsAdmin(req.user);
         const needsActionOnly = req.query.needsAction === 'true';
         const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
         const audits = await getLatestAudits({ limit, needsActionOnly });
@@ -1267,7 +1268,7 @@ router.get('/admin/audits', protect, async (req, res) => {
 /** SUPER_ADMIN — run validation now (same as nightly cron). */
 router.post('/admin/validate-catalog', protect, async (req, res) => {
     try {
-        await assertSuperAdmin(req.user.id);
+        assertTemplateOpsAdmin(req.user);
         const limit = Math.min(parseInt(req.body?.limit, 10) || 200, 500);
         const data = await runCatalogValidationJob({ limit });
         return res.json({ success: true, data });

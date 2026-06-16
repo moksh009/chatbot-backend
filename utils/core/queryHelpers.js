@@ -3,16 +3,30 @@ const Client   = require("../../models/Client");
 const logger   = require('./logger')("QueryHelpers");
 const { hasMasterTesterBypass } = require("../../middleware/productionSecurity");
 const { auditSecurity } = require("../../middleware/securityAudit");
+const {
+  canImpersonateMerchants,
+  isImpersonationAllowedForClient,
+} = require("../../middleware/adminAccess");
+
+function resolveImpersonatedClientId(req) {
+  const raw = req.headers["x-admin-impersonating"];
+  if (!raw) return null;
+  const target = String(raw).trim();
+  if (!target) return null;
+  const gate = isImpersonationAllowedForClient(req.user, target);
+  return gate.ok ? target : null;
+}
 
 /**
  * Tenant isolation: non–super-admins MUST only ever use `req.user.clientId`.
- * Super-admins may target another tenant via params, query, or body.
+ * Super-admins and authorized admin-team members may impersonate via header.
  */
 function tenantClientId(req) {
   if (!req.user) return null;
+
   if (req.user.role === "SUPER_ADMIN") {
-    const impersonating = req.headers["x-admin-impersonating"];
-    if (impersonating) return String(impersonating).trim();
+    const impersonating = resolveImpersonatedClientId(req);
+    if (impersonating) return impersonating;
     return (
       req.params?.clientId ||
       req.query?.clientId ||
@@ -21,6 +35,20 @@ function tenantClientId(req) {
       null
     );
   }
+
+  if (canImpersonateMerchants(req.user)) {
+    const impersonating = resolveImpersonatedClientId(req);
+    if (impersonating) return impersonating;
+    const fromParams =
+      req.params?.clientId || req.query?.clientId || req.body?.clientId;
+    if (fromParams) {
+      const target = String(fromParams).trim();
+      const gate = isImpersonationAllowedForClient(req.user, target);
+      if (gate.ok) return target;
+    }
+    return null;
+  }
+
   return req.user.clientId || null;
 }
 

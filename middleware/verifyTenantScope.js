@@ -2,10 +2,12 @@
 
 const { auditLog } = require('../services/audit/auditWriter');
 const { resolveTargetClientId } = require('../utils/security/resolveTargetClientId');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { canImpersonateMerchants } = require('./adminAccess');
 
 /**
  * Tenant scope enforcement (Phase 5 A2).
- * SUPER_ADMIN bypasses. Logs unauthorized_cross_tenant_attempt.
+ * SUPER_ADMIN and authorized admin-team impersonation bypass.
  */
 function verifyTenantScope(opts = {}) {
   return async (req, res, next) => {
@@ -15,6 +17,14 @@ function verifyTenantScope(opts = {}) {
 
       const targetClientId = await resolveTargetClientId(req, opts);
       if (!targetClientId) return next();
+
+      if (canImpersonateMerchants(req.user)) {
+        const resolved = tenantClientId(req);
+        if (resolved && String(resolved) === String(targetClientId)) {
+          req.tenantId = resolved;
+          return next();
+        }
+      }
 
       if (String(targetClientId) !== String(req.user.clientId)) {
         auditLog({

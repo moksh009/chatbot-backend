@@ -102,6 +102,7 @@ async function buildAuthSessionPayload(user, client) {
     plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client?.plan || lean?.plan || 'CX Agent (V1)'),
     hasCompletedTour: user.hasCompletedTour,
     hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
+    phone: user.phone || null,
     telemetryConsent: user.telemetryConsent || '',
     telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
     trialActive: client?.trialActive ?? lean?.trialActive ?? true,
@@ -229,6 +230,7 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
         hasCompletedTour: user.hasCompletedTour,
         hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
+        phone: user.phone || null,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
         manuallySuspended: access.manuallySuspended,
@@ -284,7 +286,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const payload = await getBootstrapPayload(String(req.user.id), { refresh }, async () => {
     timer.checkpoint('bootstrap_cache_miss');
     let user = await User.findById(req.user.id).select(
-      'name email role clientId isLifetimeAdmin hasCompletedTour telemetryConsent telemetryConsentUpdatedAt hubAccess'
+      'name email role clientId isLifetimeAdmin hasCompletedTour telemetryConsent telemetryConsentUpdatedAt hubAccess phone'
     );
     if (!user) {
       const err = new Error('User not found');
@@ -324,6 +326,7 @@ router.get('/bootstrap', protect, async (req, res) => {
         telemetryConsent: user.telemetryConsent || '',
         telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt || null,
         hubAccess: Array.isArray(user.hubAccess) ? user.hubAccess : [],
+        phone: user.phone || null,
         business_type: 'ecommerce',
         manuallySuspended: access.manuallySuspended,
         trialWindowActive: access.trialWindowActive,
@@ -355,7 +358,9 @@ router.get('/bootstrap', protect, async (req, res) => {
 
 router.patch('/me', protect, async (req, res) => {
   try {
-    const { hasCompletedTour, telemetryConsent } = req.body;
+    const { hasCompletedTour, telemetryConsent, phone: rawPhone } = req.body;
+    const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
+    const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -371,13 +376,30 @@ router.patch('/me', protect, async (req, res) => {
       user.telemetryConsent = telemetryConsent;
       user.telemetryConsentUpdatedAt = new Date();
     }
+
+    if (rawPhone !== undefined && !user.phone) {
+      const trimmed = rawPhone == null ? '' : String(rawPhone).trim();
+      if (trimmed) {
+        const normalized = normalizeIndianPhone(trimmed);
+        if (!normalized) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid WhatsApp number. Use a 10-digit Indian mobile number.',
+            code: 'INVALID_PHONE',
+          });
+        }
+        user.phone = normalized;
+      }
+    }
     
     await user.save();
+    invalidateBootstrapCache(user._id);
     res.json({
       success: true,
       user: {
         _id: user._id,
         hasCompletedTour: user.hasCompletedTour,
+        phone: user.phone || null,
         telemetryConsent: user.telemetryConsent || '',
         telemetryConsentUpdatedAt: user.telemetryConsentUpdatedAt,
       },
@@ -492,8 +514,9 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, businessName, otp, acceptLegal, docsVersion } = req.body;
+  const { name, email, password, businessName, otp, acceptLegal, docsVersion, phone: rawPhone } = req.body;
   const mongoose = require('mongoose');
+  const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
 
   if (!acceptLegal) {
     return res.status(400).json({
@@ -533,6 +556,19 @@ router.post('/register', async (req, res) => {
     }
 
     const displayName = (name && String(name).trim()) || businessName.trim();
+
+    let phone = null;
+    if (rawPhone != null && String(rawPhone).trim()) {
+      phone = normalizeIndianPhone(rawPhone);
+      if (!phone) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          message: 'Invalid WhatsApp number. Use a 10-digit Indian mobile number.',
+          code: 'INVALID_PHONE',
+        });
+      }
+    }
 
     // -- OTP Verification --
     const validOtp = await OTP.findOne({ email, otp, purpose: 'SIGNUP' }).session(session);
@@ -579,7 +615,8 @@ router.post('/register', async (req, res) => {
       role: 'CLIENT_ADMIN',
       business_type: chosenType,
       clientId: newClientId,
-      legal: { acceptedAt: new Date(), docsVersion: LEGAL_DOCS_VERSION }
+      legal: { acceptedAt: new Date(), docsVersion: LEGAL_DOCS_VERSION },
+      ...(phone ? { phone } : {}),
     }], { session });
 
     await session.commitTransaction();
@@ -590,6 +627,17 @@ router.post('/register', async (req, res) => {
       let createdClient = await Client.findOne({ clientId: newClientId });
       if (createdClient) {
         createdClient = await provisionNewClientTrial(createdClient);
+        try {
+          const { enqueueSignupWelcomeJob } = require('../utils/messaging/queues/signupWelcomeQueue');
+          enqueueSignupWelcomeJob({
+            userId: createdUser._id,
+            clientId: newClientId,
+          }).catch((err) => {
+            log.warn(`[Auth] Signup welcome enqueue failed: ${err.message}`);
+          });
+        } catch (enqueueErr) {
+          log.warn(`[Auth] Signup welcome queue unavailable: ${enqueueErr.message}`);
+        }
       }
       const session = await buildAuthSessionPayload(createdUser, createdClient);
       res.status(201).json({

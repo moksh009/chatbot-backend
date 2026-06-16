@@ -186,6 +186,60 @@ function testTenantClientIdImpersonationHeader() {
   assert.strictEqual(tenantClientId(req), 'tenant_b');
 }
 
+function testAdminTeamImpersonationHeader() {
+  const { tenantClientId } = require('../../utils/core/queryHelpers');
+  const req = {
+    user: {
+      role: 'ADMIN_TEAM',
+      isAdminTeam: true,
+      permissions: { canImpersonateMerchants: true },
+      allowedClientIds: ['tenant_b'],
+    },
+    headers: { 'x-admin-impersonating': 'tenant_b' },
+    params: {},
+    query: {},
+    body: {},
+  };
+  assert.strictEqual(tenantClientId(req), 'tenant_b');
+}
+
+function testAdminTeamImpersonationBlockedOutsideAllowList() {
+  const { tenantClientId } = require('../../utils/core/queryHelpers');
+  const req = {
+    user: {
+      role: 'ADMIN_TEAM',
+      isAdminTeam: true,
+      permissions: { canImpersonateMerchants: true },
+      allowedClientIds: ['tenant_a'],
+    },
+    headers: { 'x-admin-impersonating': 'tenant_b' },
+    params: {},
+    query: {},
+    body: {},
+  };
+  assert.strictEqual(tenantClientId(req), null);
+}
+
+function testTemplateOpsAdminTeamAccess() {
+  const { assertTemplateOpsAdmin } = require('../../services/templateAdminOps');
+  assertTemplateOpsAdmin({
+    role: 'ADMIN_TEAM',
+    isAdminTeam: true,
+    permissions: { manageTemplates: true },
+  });
+  let threw = false;
+  try {
+    assertTemplateOpsAdmin({
+      role: 'ADMIN_TEAM',
+      isAdminTeam: true,
+      permissions: { viewClients: true },
+    });
+  } catch (e) {
+    threw = e.status === 403;
+  }
+  assert.ok(threw, 'viewer without template perms should be denied');
+}
+
 function testBillingInvoicesTenantScoped() {
   const src = read('routes/billing.js');
   const block = src.slice(src.indexOf("router.get('/:clientId/invoices'"), src.indexOf("router.get('/:clientId/invoices'") + 120);
@@ -223,10 +277,13 @@ async function main() {
   testCampaignsHotLeadsResolver();
   testFlowPublishDemotesOthers();
   testTenantClientIdImpersonationHeader();
+  testAdminTeamImpersonationHeader();
+  testAdminTeamImpersonationBlockedOutsideAllowList();
+  testTemplateOpsAdminTeamAccess();
   testBillingInvoicesTenantScoped();
   testSupportModuleLoads();
   testAdminWebhookUsesTenantClientId();
-  console.log('✓ sprint0Security tests passed');
+  console.log('? sprint0Security tests passed');
 }
 
 main().catch((e) => {

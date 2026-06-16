@@ -22,6 +22,23 @@ async function assertSuperAdmin(userId) {
   }
 }
 
+/** SUPER_ADMIN or ADMIN_TEAM with template ops permissions (OPERATIONS role template). */
+function assertTemplateOpsAdmin(user) {
+  if (!user) {
+    const err = new Error("Forbidden");
+    err.status = 403;
+    throw err;
+  }
+  if (user.role === "SUPER_ADMIN") return;
+  if (user.isAdminTeam) {
+    const perms = user.permissions || {};
+    if (perms.manageTemplates || perms.bulkPushTemplates) return;
+  }
+  const err = new Error("Template ops access required");
+  err.status = 403;
+  throw err;
+}
+
 function getClientWaCreds(client) {
   const wabaId = client.wabaId || client.whatsapp?.wabaId;
   const rawToken = client.whatsappToken || client.whatsapp?.accessToken;
@@ -213,6 +230,7 @@ async function getApprovalBoard({ limit = 80, needsActionOnly = false } = {}) {
 
 module.exports = {
   assertSuperAdmin,
+  assertTemplateOpsAdmin,
   bulkPushEcoPack,
   getApprovalBoard,
   pushStandardTemplateToMeta,

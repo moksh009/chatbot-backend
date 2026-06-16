@@ -6,6 +6,7 @@ const { startWebhookDeliveryWorker } = require('./webhookDeliveryWorker');
 const { startInventoryShopifyPushWorker } = require('./inventoryShopifyPushWorker');
 const { startInventoryAmazonPushWorker } = require('./inventoryAmazonPushWorker');
 const { startAmazonInventorySyncWorker } = require('./amazonInventorySyncWorker');
+const { startSignupWelcomeWorker } = require('./signupWelcomeWorker');
 const { ensureMaintenanceRepeatable } = require('../utils/messaging/queues/maintenanceQueue');
 
 function startPhase3Workers() {
@@ -21,6 +22,7 @@ function startPhase3Workers() {
   const inventoryPush = startInventoryShopifyPushWorker();
   const inventoryAmazonPush = startInventoryAmazonPushWorker();
   const amazonInventoryPull = startAmazonInventorySyncWorker();
+  const signupWelcome = startSignupWelcomeWorker();
   let inboundEngine = null;
   try {
     const { startInboundEngineWorker } = require('../utils/messaging/inboundEngineQueue');
@@ -36,6 +38,7 @@ function startPhase3Workers() {
     inventoryPush,
     inventoryAmazonPush,
     amazonInventoryPull,
+    signupWelcome,
     inboundEngine,
   };
 }

@@ -46,6 +46,7 @@ const subscriptionSchema = new mongoose.Schema({
   
   currentPeriodStart: { type: Date },
   currentPeriodEnd: { type: Date },
+  preBillReminderSentForPeriodEnd: { type: Date, default: null },
   
   usageThisPeriod: {
     type: usageSchema,

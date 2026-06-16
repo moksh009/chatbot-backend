@@ -35,7 +35,10 @@ const protect = async (req, res, next) => {
           isAdminTeam: true,
           adminMemberId: member._id,
           adminRole: member.role,
-          permissions: member.permissions || {},
+          permissions: {
+            ...AdminTeamMember.applyRoleTemplate(member.role),
+            ...(member.permissions || {}),
+          },
           allowedClientIds: member.allowedClientIds || [],
         };
         return next();

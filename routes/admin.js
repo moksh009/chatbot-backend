@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const User = require('../models/User');
+const Subscription = require('../models/Subscription');
+const Invoice = require('../models/Invoice');
 const { protect, authorize } = require('../middleware/auth');
 const log = require('../utils/core/logger')('AdminAPI');
 const { tenantClientId } = require('../utils/core/queryHelpers');
@@ -24,6 +26,16 @@ const { getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
 const WhatsApp = require('../utils/meta/whatsapp');
 const AuditLog = require('../models/AuditLog');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
+const LifecycleAutomationLog = require('../models/LifecycleAutomationLog');
+const { sendSystemEmail } = require('../utils/core/emailService');
+const { renderBrandedEmail } = require('../services/mjmlEmailRenderer');
+const { formatInr } = require('../config/planCatalog');
+const { sendPlatformWhatsAppTemplate } = require('../services/lifecycle/platformWelcomeWhatsApp');
+const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
+const AdLead = require('../models/AdLead');
+const Campaign = require('../models/Campaign');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
 const { adminSensitiveLimiter } = require('../middleware/adminRateLimits');
 const { requireAdminPermission } = require('../middleware/requireAdminPermission');
 const {
@@ -31,7 +43,18 @@ const {
   requireAdminUser,
   applyClientScopeFilter,
   authorizeAdminScope,
+  getAllowedClientIds,
 } = require('../middleware/adminAccess');
+
+function denyUnlessAdminClientAccess(req, res, clientId) {
+  const allowed = getAllowedClientIds(req);
+  const target = String(clientId || '').trim();
+  if (allowed?.length && !allowed.includes(target)) {
+    res.status(403).json({ success: false, message: 'Client not in your allowed list' });
+    return false;
+  }
+  return true;
+}
 
 router.use(blockMasterTesterOnAdmin);
 
@@ -57,6 +80,7 @@ router.post('/shopify/force-sync', protect, async (req, res) => {
 });
 
 const isSuperAdmin = requireAdminUser;
+const MARKETING_DESK_MAX_CONTACTS = Number(process.env.MARKETING_DESK_MAX_CONTACTS || 500);
 // --- TEST WHATSAPP CONNECTION ---
 router.post('/test-whatsapp-send', protect, isSuperAdmin, async (req, res) => {
   try {
@@ -276,7 +300,10 @@ router.post('/warranty/migrate-legacy', protect, async (req, res) => {
 const { enrichClientsForList } = require('../utils/admin/clientListEnrichment');
 
 function buildAdminClientListFilter(query = {}) {
-  const filter = { isActive: { $ne: false }, deletedAt: { $exists: false } };
+  const filter = { isActive: { $ne: false }, deletedAt: { $exists: false }, isPlatformInternal: { $ne: true } };
+  if (query.includeInternal === 'true') {
+    delete filter.isPlatformInternal;
+  }
   if (query.search) {
     filter.$or = [
       { businessName: { $regex: query.search, $options: 'i' } },
@@ -355,9 +382,9 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
 });
 
 // --- EXPORT CLIENTS CSV ---
-router.get('/clients/export', protect, isSuperAdmin, async (req, res) => {
+router.get('/clients/export', protect, authorizeAdminScope('viewClients'), async (req, res) => {
   try {
-    const filter = buildAdminClientListFilter(req.query);
+    const filter = applyClientScopeFilter(buildAdminClientListFilter(req.query), req);
     const clients = await Client.find(filter)
       .sort({ createdAt: -1 })
       .limit(5000)
@@ -3260,9 +3287,539 @@ router.get('/tenant-economics', protect, authorizeAdminScope('viewMetrics'), asy
   }
 });
 
-/** GET /api/admin/dlq/:clientId — cart recovery dead-letter queue (Phase 7 B6.5) */
-router.get('/dlq/:clientId', protect, isSuperAdmin, async (req, res) => {
+router.get('/billing/overview', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
   try {
+    const { filter = 'all' } = req.query || {};
+    const scopedClientFilter = applyClientScopeFilter({}, req);
+    const clients = await Client.find(scopedClientFilter)
+      .select('clientId name businessName plan isLifetimeAdmin trialEndsAt billing')
+      .lean();
+    const clientMap = new Map(clients.map((c) => [String(c.clientId), c]));
+    const clientIds = clients.map((c) => String(c.clientId));
+
+    const subs = await Subscription.find({ clientId: { $in: clientIds } })
+      .select('clientId plan status currentPeriodEnd amount updatedAt')
+      .lean();
+    const invoices = await Invoice.find({ clientId: { $in: clientIds } })
+      .sort({ createdAt: -1 })
+      .select('clientId createdAt paidAt amount status')
+      .lean();
+    const latestInvoiceMap = new Map();
+    for (const inv of invoices) {
+      const key = String(inv.clientId);
+      if (!latestInvoiceMap.has(key)) latestInvoiceMap.set(key, inv);
+    }
+
+    const rows = clients.map((client) => {
+      const sub = subs.find((s) => String(s.clientId) === String(client.clientId));
+      const inv = latestInvoiceMap.get(String(client.clientId));
+      return {
+        clientId: client.clientId,
+        clientName: client.name || client.businessName || client.clientId,
+        plan: sub?.plan || client.plan || 'trial',
+        status: sub?.status || (client.isLifetimeAdmin ? 'vip' : 'trial'),
+        currentPeriodEnd: sub?.currentPeriodEnd || client.trialEndsAt || null,
+        estimatedMrrInr: sub?.amount ? Math.round(Number(sub.amount) / 100) : 0,
+        lastInvoiceAt: inv?.paidAt || inv?.createdAt || null,
+        isLifetimeAdmin: !!client.isLifetimeAdmin,
+      };
+    }).filter((row) => {
+      if (filter === 'trial_7d') {
+        const dt = row.currentPeriodEnd ? new Date(row.currentPeriodEnd) : null;
+        if (!dt || Number.isNaN(dt.getTime())) return false;
+        const ms = dt.getTime() - Date.now();
+        return ms >= 0 && ms <= 7 * 24 * 60 * 60 * 1000 && row.status === 'trial';
+      }
+      if (filter === 'past_due') return row.status === 'past_due';
+      if (filter === 'vip') return row.isLifetimeAdmin === true;
+      return true;
+    });
+
+    res.json({ success: true, rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/billing/:clientId/extend-trial', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
+  try {
+    const targetClientId = String(req.params.clientId || '').trim();
+    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
+    const days = Math.max(1, Math.min(60, Number(req.body?.days) || 7));
+    const nextTrialDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    await Client.updateOne(
+      { clientId: targetClientId },
+      {
+        $set: {
+          trialActive: true,
+          trialEndsAt: nextTrialDate,
+          'billing.trialActive': true,
+          'billing.trialEndsAt': nextTrialDate,
+        },
+      }
+    );
+    res.json({ success: true, clientId: targetClientId, trialEndsAt: nextTrialDate });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/billing/:clientId/grant-vip', protect, authorizeAdminScope('grantVIP'), async (req, res) => {
+  try {
+    const targetClientId = String(req.params.clientId || '').trim();
+    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
+    const { grantFullWorkspaceAccess } = require('../utils/core/entitlements');
+    const out = await grantFullWorkspaceAccess(targetClientId, {
+      grantedBy: req.user?._id || req.user?.id || null,
+      reason: req.body?.note || 'admin_billing_ops_grant',
+      grantUserLifetime: true,
+    });
+    res.json({ success: true, client: out });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/billing/:clientId/resend-reminder', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
+  try {
+    const targetClientId = String(req.params.clientId || '').trim();
+    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
+    const [client, sub, adminUser] = await Promise.all([
+      Client.findOne({ clientId: targetClientId }).lean(),
+      Subscription.findOne({ clientId: targetClientId }).lean(),
+      User.findOne({ clientId: targetClientId, role: 'CLIENT_ADMIN' }).select('name email phone').lean(),
+    ]);
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!sub) return res.status(400).json({ success: false, message: 'No subscription found' });
+
+    const sentForKey = `manual-billing-reminder:${targetClientId}:${Date.now()}`;
+    const periodEnd = sub.currentPeriodEnd
+      ? new Date(sub.currentPeriodEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : 'your renewal date';
+    const amount = sub.amount ? Math.round(Number(sub.amount) / 100) : 0;
+    const billingUrl = `${String(process.env.TOPEDGE_DASHBOARD_URL || 'https://dash.topedgeai.com').replace(/\/$/, '')}/billing`;
+
+    if (adminUser?.email) {
+      const html = renderBrandedEmail({
+        brandName: 'TopEdge AI',
+        title: 'Billing reminder',
+        bodyHtml: `Hi ${adminUser.name || client.name || 'there'}, your plan renews on ${periodEnd}. Upcoming amount: ${amount ? formatInr(amount) : 'as per your plan'}.`,
+        ctaUrl: billingUrl,
+        ctaLabel: 'Open billing',
+      });
+      const ok = await sendSystemEmail({ to: adminUser.email, subject: 'TopEdge billing reminder', html });
+      await LifecycleAutomationLog.create({
+        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'billing_reminder',
+        channel: 'email', status: ok ? 'sent' : 'failed', reason: ok ? '' : 'send_failed', sentForKey,
+      }).catch(() => {});
+    }
+    if (adminUser?.phone) {
+      const wa = await sendPlatformWhatsAppTemplate({
+        toPhone: adminUser.phone,
+        templateName: String(process.env.TOPEDGE_BILLING_REMINDER_TEMPLATE_NAME || '').trim() || 'topedge_billing_reminder_7d_v1',
+        components: [{ type: 'body', parameters: [{ type: 'text', text: adminUser.name || client.name || 'there' }, { type: 'text', text: periodEnd }, { type: 'text', text: amount ? formatInr(amount) : 'your plan amount' }] }],
+      });
+      await LifecycleAutomationLog.create({
+        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'billing_reminder',
+        channel: 'whatsapp', status: wa.sent ? 'sent' : wa.skipped ? 'skipped' : 'failed', reason: wa.reason || '', sentForKey,
+      }).catch(() => {});
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/billing/:clientId/resend-receipt', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
+  try {
+    const targetClientId = String(req.params.clientId || '').trim();
+    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
+    const [client, sub, adminUser, latestInvoice] = await Promise.all([
+      Client.findOne({ clientId: targetClientId }).lean(),
+      Subscription.findOne({ clientId: targetClientId }).lean(),
+      User.findOne({ clientId: targetClientId, role: 'CLIENT_ADMIN' }).select('name email phone').lean(),
+      Invoice.findOne({ clientId: targetClientId }).sort({ createdAt: -1 }).lean(),
+    ]);
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!sub) return res.status(400).json({ success: false, message: 'No subscription found' });
+
+    const sentForKey = `manual-payment-receipt:${targetClientId}:${Date.now()}`;
+    const amount = latestInvoice?.amount ? Math.round(Number(latestInvoice.amount) / 100) : (sub.amount ? Math.round(Number(sub.amount) / 100) : 0);
+    const periodEnd = sub.currentPeriodEnd
+      ? new Date(sub.currentPeriodEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : 'your current billing period';
+
+    if (adminUser?.email) {
+      const html = renderBrandedEmail({
+        brandName: 'TopEdge AI',
+        title: 'Payment received',
+        bodyHtml: `Hi ${adminUser.name || client.name || 'there'}, we received your payment${amount ? ` of ${formatInr(amount)}` : ''}. Plan: ${sub.plan || 'TopEdge'}. Next renewal: ${periodEnd}.`,
+        ctaUrl: latestInvoice?.invoiceUrl || '',
+        ctaLabel: latestInvoice?.invoiceUrl ? 'View invoice' : 'Open dashboard',
+      });
+      const ok = await sendSystemEmail({ to: adminUser.email, subject: 'TopEdge payment receipt', html });
+      await LifecycleAutomationLog.create({
+        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'payment_success',
+        channel: 'email', status: ok ? 'sent' : 'failed', reason: ok ? '' : 'send_failed', sentForKey,
+      }).catch(() => {});
+    }
+    if (adminUser?.phone) {
+      const wa = await sendPlatformWhatsAppTemplate({
+        toPhone: adminUser.phone,
+        templateName: String(process.env.TOPEDGE_PAYMENT_SUCCESS_TEMPLATE_NAME || '').trim() || 'topedge_payment_success_v1',
+        components: [{ type: 'body', parameters: [{ type: 'text', text: adminUser.name || client.name || 'there' }, { type: 'text', text: amount ? formatInr(amount) : 'your payment' }, { type: 'text', text: periodEnd }] }],
+      });
+      await LifecycleAutomationLog.create({
+        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'payment_success',
+        channel: 'whatsapp', status: wa.sent ? 'sent' : wa.skipped ? 'skipped' : 'failed', reason: wa.reason || '', sentForKey,
+      }).catch(() => {});
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/lifecycle/log', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
+  try {
+    const {
+      automationType = 'all',
+      status = 'all',
+      limit: rawLimit = '50',
+      before = '',
+    } = req.query || {};
+
+    const limit = Math.min(100, Math.max(1, parseInt(rawLimit, 10) || 50));
+    const query = {};
+    if (automationType !== 'all') query.automationType = String(automationType);
+    if (status !== 'all') query.status = String(status);
+    if (before) {
+      const dt = new Date(before);
+      if (!Number.isNaN(dt.getTime())) query.createdAt = { $lt: dt };
+    }
+
+    const rows = await LifecycleAutomationLog.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore && items.length ? items[items.length - 1].createdAt : null;
+
+    res.json({
+      success: true,
+      items,
+      hasMore,
+      nextCursor,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/lifecycle/review-summary', protect, authorizeAdminScope('viewMetrics'), async (_req, res) => {
+  try {
+    const clients = await Client.find({ platformReviewRating: { $gte: 1, $lte: 5 } })
+      .select('platformReviewRating becamePayingAt')
+      .lean();
+    const eligible = await Client.countDocuments({
+      becamePayingAt: { $ne: null },
+      isLifetimeAdmin: { $ne: true },
+    });
+    const responded = clients.length;
+    const avgRating = responded
+      ? Number((clients.reduce((sum, c) => sum + Number(c.platformReviewRating || 0), 0) / responded).toFixed(2))
+      : 0;
+    const lowRatings = clients.filter((c) => Number(c.platformReviewRating || 0) <= 3).length;
+    const responseRate = eligible > 0 ? Number(((responded / eligible) * 100).toFixed(2)) : 0;
+    res.json({
+      success: true,
+      avgRating,
+      responseRate,
+      lowRatings,
+      responded,
+      eligible,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+function getPlatformClientId() {
+  return String(process.env.TOPEDGE_SYSTEM_CLIENT_ID || 'topedge_platform_support').trim();
+}
+
+function canManagePlatformCampaigns(req) {
+  if (req.user?.role === 'SUPER_ADMIN') return true;
+  if (!req.user?.isAdminTeam) return false;
+  return !!req.user?.permissions?.managePlatformCampaigns;
+}
+
+function canManageCompanyInbox(req) {
+  if (req.user?.role === 'SUPER_ADMIN') return true;
+  if (!req.user?.isAdminTeam) return false;
+  return !!req.user?.permissions?.manageCompanyInbox;
+}
+
+function parseCsvRows(csvText = '') {
+  const lines = String(csvText || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
+  return lines.slice(1).map((line) => {
+    const cols = line.split(',').map((v) => String(v || '').trim());
+    const row = {};
+    headers.forEach((h, idx) => {
+      row[h] = cols[idx] || '';
+    });
+    return row;
+  });
+}
+
+router.post('/marketing-desk/import', protect, async (req, res) => {
+  try {
+    if (!canManagePlatformCampaigns(req)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const platformClientId = getPlatformClientId();
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : parseCsvRows(req.body?.csvText || '');
+    if (!rows.length) {
+      return res.status(400).json({ success: false, message: 'Upload CSV rows or csvText' });
+    }
+    if (rows.length > MARKETING_DESK_MAX_CONTACTS) {
+      return res.status(400).json({ success: false, message: `Max ${MARKETING_DESK_MAX_CONTACTS} contacts per campaign` });
+    }
+    let imported = 0;
+    let skipped = 0;
+    for (const row of rows) {
+      const phone = normalizeIndianPhone(row.phone || row.mobile || row.number || '');
+      if (!phone) {
+        skipped += 1;
+        continue;
+      }
+      await AdLead.updateOne(
+        { clientId: platformClientId, phoneNumber: phone },
+        {
+          $set: {
+            phoneNumber: phone,
+            name: String(row.name || row.full_name || '').trim(),
+            source: 'Platform Marketing Desk',
+            tags: String(row.tags || '')
+              .split('|')
+              .map((t) => t.trim())
+              .filter(Boolean),
+            optStatus: 'opted_in',
+            optInSource: 'csv_import',
+            optInDate: new Date(),
+            lastInteraction: new Date(),
+          },
+          $setOnInsert: { clientId: platformClientId },
+        },
+        { upsert: true }
+      );
+      imported += 1;
+    }
+    return res.json({ success: true, imported, skipped, maxContacts: MARKETING_DESK_MAX_CONTACTS });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/marketing-desk/campaigns', protect, async (req, res) => {
+  try {
+    if (!canManagePlatformCampaigns(req)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const platformClientId = getPlatformClientId();
+    const { name, templateName, consentAttested, dryRun, dryRunCompleted } = req.body || {};
+    if (!templateName) return res.status(400).json({ success: false, message: 'templateName required' });
+    if (!consentAttested) return res.status(400).json({ success: false, message: 'Consent attestation required' });
+    const leads = await AdLead.find({
+      clientId: platformClientId,
+      phoneNumber: { $exists: true, $ne: '' },
+      optStatus: { $ne: 'opted_out' },
+    })
+      .sort({ updatedAt: -1 })
+      .limit(MARKETING_DESK_MAX_CONTACTS + 1)
+      .lean();
+    if (leads.length > MARKETING_DESK_MAX_CONTACTS) {
+      return res.status(400).json({ success: false, message: `Audience exceeds ${MARKETING_DESK_MAX_CONTACTS}` });
+    }
+    const audience = leads.map((l) => ({ _id: l._id, phone: l.phoneNumber, name: l.name || 'Lead' }));
+    if (dryRun === false && !dryRunCompleted) {
+      return res.status(400).json({ success: false, message: 'Run a dry-run first before live launch' });
+    }
+    const campaign = await Campaign.create({
+      clientId: platformClientId,
+      name: name || `Platform campaign ${new Date().toISOString().slice(0, 10)}`,
+      templateName,
+      channel: 'whatsapp',
+      campaignType: 'STANDARD',
+      templateCategory: 'MARKETING',
+      status: dryRun ? 'DRAFT' : 'QUEUED',
+      audience,
+      audienceCount: audience.length,
+      metadata: {
+        marketingDesk: true,
+        dryRun: dryRun !== false,
+        consentAttested: true,
+        dryRunCompletedAt: dryRun !== false ? new Date() : null,
+      },
+    });
+
+    if (dryRun !== false) {
+      return res.json({
+        success: true,
+        mode: 'dry_run',
+        campaignId: campaign._id,
+        wouldSend: audience.length,
+      });
+    }
+    const { launchCampaignDispatch } = require('../services/campaignLaunchService');
+    const launch = await launchCampaignDispatch(campaign, audience);
+    return res.json({
+      success: true,
+      mode: 'live',
+      campaignId: campaign._id,
+      enqueued: launch.enqueued || 0,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/company-inbox/conversations', protect, async (req, res) => {
+  try {
+    if (!canManageCompanyInbox(req)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const platformClientId = getPlatformClientId();
+    const tag = String(req.query.tag || 'all');
+    const query = { clientId: platformClientId };
+    if (tag !== 'all') query.tags = tag;
+    const rows = await Conversation.find(query)
+      .sort({ lastMessageAt: -1 })
+      .limit(200)
+      .lean();
+    for (const row of rows) {
+      const phone = String(row.phone || '').replace(/\D/g, '');
+      if (!phone) continue;
+      const phoneVariants = [phone, `+${phone}`, phone.startsWith('91') ? phone.slice(2) : `91${phone}`];
+      const matchedUser = await User.findOne({ phone: { $in: phoneVariants } }).select('clientId').lean();
+      const matchedLead = await AdLead.findOne({ clientId: platformClientId, phoneNumber: { $in: phoneVariants } }).select('_id').lean();
+      let tagValue = 'prospect';
+      if (matchedUser?.clientId && matchedUser.clientId !== platformClientId) tagValue = 'client';
+      else if (matchedLead?._id) tagValue = 'marketing_reply';
+      await Conversation.updateOne(
+        { _id: row._id, clientId: platformClientId },
+        {
+          $set: { 'metadata.platformThreadTag': tagValue, 'metadata.linkedClientId': matchedUser?.clientId || '' },
+          $addToSet: { tags: tagValue },
+        }
+      );
+      row.tags = Array.from(new Set([...(row.tags || []), tagValue]));
+      row.metadata = {
+        ...(row.metadata || {}),
+        platformThreadTag: tagValue,
+        linkedClientId: matchedUser?.clientId || '',
+      };
+    }
+    return res.json({ success: true, rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/company-inbox/:conversationId/messages', protect, async (req, res) => {
+  try {
+    if (!canManageCompanyInbox(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    const platformClientId = getPlatformClientId();
+    const convo = await Conversation.findOne({ _id: req.params.conversationId, clientId: platformClientId }).lean();
+    if (!convo) return res.status(404).json({ success: false, message: 'Conversation not found' });
+    const rows = await Message.find({ conversationId: convo._id, clientId: platformClientId }).sort({ timestamp: 1 }).lean();
+    return res.json({ success: true, rows, conversation: convo });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/company-inbox/:conversationId/reply', protect, async (req, res) => {
+  try {
+    if (!canManageCompanyInbox(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    const platformClientId = getPlatformClientId();
+    const convo = await Conversation.findOne({ _id: req.params.conversationId, clientId: platformClientId });
+    if (!convo) return res.status(404).json({ success: false, message: 'Conversation not found' });
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ success: false, message: 'text required' });
+    const clientDoc = await Client.findOne({ clientId: platformClientId });
+    if (!clientDoc) return res.status(404).json({ success: false, message: 'Platform client not found' });
+    await WhatsApp.sendText(clientDoc, convo.phone, text);
+    await Message.create({
+      clientId: platformClientId,
+      conversationId: convo._id,
+      from: String(clientDoc.phoneNumberId || 'platform'),
+      to: String(convo.phone || ''),
+      content: text,
+      type: 'text',
+      direction: 'outgoing',
+      channel: 'whatsapp',
+      timestamp: new Date(),
+    });
+    convo.lastMessage = text;
+    convo.lastMessageAt = new Date();
+    await convo.save();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/dfy/board', protect, authorizeAdminScope('viewClients'), async (req, res) => {
+  try {
+    const filter = applyClientScopeFilter({ isPlatformInternal: { $ne: true } }, req);
+    const rows = await Client.find(filter)
+      .select('clientId businessName name onboardingData dfyManagerId dfyKickoffAt dfyGoLiveAt phoneNumberId shopifyAccessToken')
+      .sort({ updatedAt: -1 })
+      .limit(300)
+      .lean();
+    const data = rows.map((c) => ({
+      ...c,
+      checklist: {
+        whatsappConnected: Boolean(c.phoneNumberId),
+        shopifyConnected: Boolean(c.shopifyAccessToken),
+        kickoffDone: Boolean(c.dfyKickoffAt),
+        goLiveDone: Boolean(c.dfyGoLiveAt),
+      },
+    }));
+    return res.json({ success: true, rows: data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/dfy/:clientId', protect, authorizeAdminScope('editClients'), async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId || '');
+    if (!denyUnlessAdminClientAccess(req, res, clientId)) return;
+    const patch = {};
+    if (req.body?.dfyManagerId !== undefined) patch.dfyManagerId = req.body.dfyManagerId || null;
+    if (req.body?.dfyKickoffAt !== undefined) patch.dfyKickoffAt = req.body.dfyKickoffAt ? new Date(req.body.dfyKickoffAt) : null;
+    if (req.body?.dfyGoLiveAt !== undefined) patch.dfyGoLiveAt = req.body.dfyGoLiveAt ? new Date(req.body.dfyGoLiveAt) : null;
+    await Client.updateOne({ clientId }, { $set: patch });
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/** GET /api/admin/dlq/:clientId — cart recovery dead-letter queue (Phase 7 B6.5) */
+router.get('/dlq/:clientId', protect, authorizeAdminScope('viewDeadLetters'), async (req, res) => {
+  try {
+    if (!denyUnlessAdminClientAccess(req, res, req.params.clientId)) return;
     const { listCartRecoveryDlq } = require('../utils/commerce/cartRecoveryDlq');
     const limit = Math.min(100, parseInt(req.query.limit, 10) || 50);
     const items = await listCartRecoveryDlq(req.params.clientId, limit);
@@ -3273,8 +3830,9 @@ router.get('/dlq/:clientId', protect, isSuperAdmin, async (req, res) => {
 });
 
 /** POST /api/admin/dlq/:clientId/replay/:entryId */
-router.post('/dlq/:clientId/replay/:entryId', protect, isSuperAdmin, async (req, res) => {
+router.post('/dlq/:clientId/replay/:entryId', protect, authorizeAdminScope('retryDeadLetters'), async (req, res) => {
   try {
+    if (!denyUnlessAdminClientAccess(req, res, req.params.clientId)) return;
     const { replayCartRecoveryDlqEntry } = require('../utils/commerce/cartRecoveryDlq');
     const out = await replayCartRecoveryDlqEntry(req.params.clientId, req.params.entryId);
     if (!out.ok) return res.status(400).json({ success: false, ...out });
