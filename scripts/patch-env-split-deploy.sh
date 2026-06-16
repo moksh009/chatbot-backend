@@ -11,8 +11,9 @@ set -euo pipefail
 ROLE="${1:-}"
 ENV_FILE="${2:-$HOME/chatbot-backend/.env}"
 
-if [[ "$ROLE" != "api" && "$ROLE" != "worker" ]]; then
-  echo "Usage: $0 api|worker [ENV_FILE]"
+if [[ "$ROLE" != "api" && "$ROLE" != "worker" && "$ROLE" != "strip" ]]; then
+  echo "Usage: $0 api|worker|strip [ENV_FILE]"
+  echo "  strip — remove RUN_* from shared .env (same-host: use ecosystem.config.cjs per process)"
   exit 1
 fi
 
@@ -21,9 +22,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-strip_keys='^RUN_API=|^RUN_CRONS=|^RUN_WORKERS=|^CHATBOT_PROCESS_ROLE=|^EMAIL_SCHEDULE_TICK_ON_API=|^ABANDON_CART_TICK_ON_API=|^SUPPRESS_SPLIT_DEPLOY_WARN='
+strip_keys='^RUN_API=|^RUN_CRONS=|^RUN_WORKERS=|^CHATBOT_PROCESS_ROLE=|^EMAIL_SCHEDULE_TICK_ON_API=|^ABANDON_CART_TICK_ON_API=|^SUPPRESS_SPLIT_DEPLOY_WARN=|^CRON_USE_COORDINATOR=|^CRON_MONGO_CONCURRENCY=|^CRON_MONGO_BUDGET=|^ENABLE_SELF_PING=|^DEFER_STARTUP_HEAVY_MS=|^MONGODB_MAX_POOL_SIZE='
 grep -v -E "$strip_keys" "$ENV_FILE" > "${ENV_FILE}.tmp"
 mv "${ENV_FILE}.tmp" "$ENV_FILE"
+
+if [[ "$ROLE" == "strip" ]]; then
+  cat >> "$ENV_FILE" <<'EOF'
+
+# Split deploy — RUN_* owned by ecosystem.config.cjs (patched strip by patch-env-split-deploy.sh)
+# Do not set RUN_API/RUN_CRONS/RUN_WORKERS here when API + worker share this host.
+EOF
+  echo "Stripped RUN_* from $ENV_FILE — per-process flags live in ecosystem.config.cjs"
+  exit 0
+fi
 
 if [[ "$ROLE" == "api" ]]; then
   cat >> "$ENV_FILE" <<'EOF'

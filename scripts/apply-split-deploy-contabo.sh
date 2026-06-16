@@ -1,63 +1,93 @@
 #!/usr/bin/env bash
-# Apply Phase 2 split deploy on Contabo (or any VPS with PM2).
-# Run ONCE per host after git pull — patches .env then restarts processes.
+# Apply Phase 2 split deploy on Contabo (API + worker on same host).
 #
-# Usage:
-#   bash scripts/apply-split-deploy-contabo.sh api    # api.topedgeai.com process
-#   bash scripts/apply-split-deploy-contabo.sh worker # cron + BullMQ process
+# Usage (recommended — one npm ci, both processes):
+#   bash scripts/apply-split-deploy-contabo.sh
+#   bash scripts/apply-split-deploy-contabo.sh both
+#
+# Legacy single-role (avoid on same host — races on node_modules):
+#   bash scripts/apply-split-deploy-contabo.sh api
+#   bash scripts/apply-split-deploy-contabo.sh worker
 #
 # Prerequisites: pm2, .env at $ENV_FILE (default ~/chatbot-backend/.env)
 
 set -euo pipefail
 
-ROLE="${1:-}"
+ROLE="${1:-both}"
 ENV_FILE="${ENV_FILE:-$HOME/chatbot-backend/.env}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-if [[ "$ROLE" != "api" && "$ROLE" != "worker" ]]; then
-  echo "Usage: $0 api|worker"
-  echo "  api    — HTTP only (RUN_CRONS=false RUN_WORKERS=false)"
-  echo "  worker — crons + BullMQ (RUN_API=false)"
-  exit 1
-fi
+install_deps() {
+  echo "==> Stopping pm2 (avoid MODULE_NOT_FOUND during npm ci)"
+  pm2 stop topedge-api topedge-worker 2>/dev/null || true
 
-bash "$SCRIPT_DIR/patch-env-split-deploy.sh" "$ROLE" "$ENV_FILE"
-
-cd "$BACKEND_ROOT"
-
-# Clean install when lockfile present — prevents MODULE_NOT_FOUND crash loops after partial pulls.
-if [[ -f package-lock.json ]]; then
-  echo "==> npm ci --omit=dev (lockfile install)"
-  npm ci --omit=dev
-  echo "==> integration probe"
-  npm run integration-probe
-else
-  echo "WARN: no package-lock.json — skipping npm ci"
-fi
-
-if [[ "$ROLE" == "api" ]]; then
-  if pm2 describe topedge-api >/dev/null 2>&1; then
-    pm2 restart topedge-api --update-env
-    echo "Restarted pm2: topedge-api"
+  cd "$BACKEND_ROOT"
+  if [[ -f package-lock.json ]]; then
+    echo "==> npm ci --omit=dev (lockfile install)"
+    npm ci --omit=dev
+    echo "==> integration probe"
+    npm run integration-probe
+    echo "==> core module smoke"
+    node -e "require('express'); require('mongoose'); console.log('express + mongoose ok')"
   else
-    echo "No pm2 process 'topedge-api' — start manually:"
-    echo "  pm2 start $SCRIPT_DIR/start-api-prod.sh --name topedge-api"
+    echo "WARN: no package-lock.json — skipping npm ci"
   fi
-else
-  if pm2 describe topedge-worker >/dev/null 2>&1; then
-    pm2 restart topedge-worker --update-env
-    echo "Restarted pm2: topedge-worker"
-  else
-    echo "No pm2 process 'topedge-worker' — start manually:"
-    echo "  pm2 start $SCRIPT_DIR/start-worker-prod.sh --name topedge-worker"
-  fi
-fi
+}
 
-echo ""
-echo "Verify logs:"
-if [[ "$ROLE" == "api" ]]; then
-  echo "  pm2 logs topedge-api --lines 30 | rg 'RUN_CRONS=false|HTTP server'"
-else
-  echo "  pm2 logs topedge-worker --lines 30 | rg 'RUN_API=false|workers/crons only'"
-fi
+start_or_reload_ecosystem() {
+  cd "$BACKEND_ROOT"
+  if [[ ! -f ecosystem.config.cjs ]]; then
+    echo "ERROR: ecosystem.config.cjs missing — git pull first"
+    exit 1
+  fi
+
+  if pm2 describe topedge-api >/dev/null 2>&1 || pm2 describe topedge-worker >/dev/null 2>&1; then
+    echo "==> pm2 reload ecosystem (update env + cwd)"
+    pm2 delete topedge-api topedge-worker 2>/dev/null || true
+  fi
+
+  pm2 start ecosystem.config.cjs --update-env
+  pm2 save
+  pm2 list
+}
+
+restart_one_pm2() {
+  local name="$1"
+  if pm2 describe "$name" >/dev/null 2>&1; then
+    pm2 restart "$name" --update-env
+    echo "Restarted pm2: $name"
+  else
+    echo "No pm2 process '$name' — use: bash $0 both"
+  fi
+}
+
+case "$ROLE" in
+  both|"")
+    echo "==> Split deploy: BOTH processes (recommended)"
+    bash "$SCRIPT_DIR/patch-env-split-deploy.sh" strip "$ENV_FILE"
+    install_deps
+    start_or_reload_ecosystem
+    echo ""
+    echo "Verify:"
+    echo "  pm2 logs topedge-api --lines 25 --nostream | tail -15"
+    echo "  pm2 logs topedge-worker --lines 25 --nostream | tail -15"
+    echo "  curl -s https://api.topedgeai.com/api/health/workers"
+    ;;
+  api)
+    echo "WARN: single-role 'api' on a shared host can break worker — prefer: bash $0 both"
+    bash "$SCRIPT_DIR/patch-env-split-deploy.sh" strip "$ENV_FILE"
+    install_deps
+    restart_one_pm2 topedge-api
+    ;;
+  worker)
+    echo "WARN: single-role 'worker' on a shared host can break api — prefer: bash $0 both"
+    bash "$SCRIPT_DIR/patch-env-split-deploy.sh" strip "$ENV_FILE"
+    install_deps
+    restart_one_pm2 topedge-worker
+    ;;
+  *)
+    echo "Usage: $0 [both|api|worker]"
+    exit 1
+    ;;
+esac

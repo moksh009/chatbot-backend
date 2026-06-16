@@ -50,6 +50,11 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 fi
 
+if command -v pm2 >/dev/null 2>&1; then
+  echo "==> Stopping pm2 (prevents MODULE_NOT_FOUND during install)"
+  pm2 stop topedge-api topedge-worker 2>/dev/null || true
+fi
+
 echo "==> Removing node_modules"
 rm -rf node_modules
 
@@ -74,12 +79,13 @@ if [[ "$NO_RESTART" == "true" ]]; then
 fi
 
 if command -v pm2 >/dev/null 2>&1; then
-  echo "==> Restarting pm2 processes"
-  if pm2 describe topedge-api >/dev/null 2>&1; then
-    pm2 restart topedge-api --update-env
-  fi
-  if pm2 describe topedge-worker >/dev/null 2>&1; then
-    pm2 restart topedge-worker --update-env
+  echo "==> Starting pm2 from ecosystem.config.cjs"
+  if [[ -f ecosystem.config.cjs ]]; then
+    pm2 delete topedge-api topedge-worker 2>/dev/null || true
+    pm2 start ecosystem.config.cjs --update-env
+    pm2 save
+  else
+    pm2 restart topedge-api topedge-worker --update-env 2>/dev/null || true
   fi
   pm2 list
   echo ""
