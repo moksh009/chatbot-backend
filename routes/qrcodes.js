@@ -176,4 +176,24 @@ router.get("/:clientId/:id/scans", verifyToken, tenantScope, async (req, res) =>
   }
 });
 
+// ─── POST /api/qrcodes/:clientId/preview — live PNG preview (no save) ─────────
+router.post("/:clientId/preview", verifyToken, tenantScope, async (req, res) => {
+  try {
+    const client = await loadClient(req);
+    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const { buildWaLink, generateQRImage } = require("../utils/core/qrGenerator");
+    const config = req.body?.config || {};
+    const shortCode = String(req.body?.shortCode || "QR_PREVIEW1").toUpperCase();
+    const waLink = buildWaLink(client, shortCode, config);
+    const fgColor = config?.styleConfig?.fgColor || "#000000";
+    const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
+    const qrImageUrl = await generateQRImage(waLink, fgColor, bgColor);
+
+    res.json({ success: true, waLink, qrImageUrl, shortCode });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
