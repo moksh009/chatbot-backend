@@ -231,6 +231,7 @@ async function logTemplateSendAttempt({
     contextData,
     resolvedVariables: logMeta.resolvedVariables || {},
     status,
+    messageId: logMeta.messageId || result?.whatsapp?.messageId || null,
     errorMessage,
   }).catch(() => {});
 
@@ -483,7 +484,11 @@ async function sendTemplatedMessage({
     channel,
     contextData,
     result: results,
-    logMeta: { ...logMeta, resolvedVariables: { ...context } },
+    logMeta: {
+      ...logMeta,
+      resolvedVariables: { ...context },
+      messageId: results.whatsapp?.messageId || null,
+    },
   });
 
   if (results.whatsapp?.sent) {
@@ -503,7 +508,9 @@ async function sendTemplatedMessage({
         messageId: results.whatsapp.messageId,
         metadata: {
           automationSlotId: logMeta.automationSlotId || null,
+          automation_rule_id: logMeta.automationSlotId || logMeta.automationRuleId || null,
           contextType: logMeta.contextType || null,
+          templateName: templateName || undefined,
         },
       });
     } catch (persistErr) {

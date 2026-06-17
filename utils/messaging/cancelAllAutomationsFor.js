@@ -82,6 +82,21 @@ async function applyMongoCancellations(
   if (leadId) seqFilter.leadId = leadId;
   else if (variants.length) seqFilter.phone = { $in: variants };
 
+  if (cancelReason === 'order_placed') {
+    const recoverFilter = { ...seqFilter, 'steps.status': 'sent' };
+    await FollowUpSequence.updateMany(
+      recoverFilter,
+      {
+        $set: {
+          'meta.recovered': true,
+          'meta.recoveredAt': new Date(),
+          'meta.recoveredReason': 'order_placed',
+        },
+      },
+      opts
+    );
+  }
+
   const seqRes = await FollowUpSequence.updateMany(
     seqFilter,
     {

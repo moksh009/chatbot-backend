@@ -279,8 +279,14 @@ const ClientSchema = new mongoose.Schema({
     applyPolicyToNewSignups: { type: Boolean, default: true },
     stopKeywords: {
       type: [String],
-      default: () => ['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'REMOVE', 'CANCEL'],
+      default: () => ['STOP', 'UNSUBSCRIBE'],
     },
+    customOptOutKeywords: {
+      type: [String],
+      default: () => [],
+    },
+    optOutAutoReplyMessage: { type: String, default: '' },
+    optInAutoReplyMessage: { type: String, default: '' },
   },
   /** Shopify stack + third-party checkout (Gokwik, Razorpay Magic, Shiprocket) — merchant + auto-detect */
   audienceContext: {

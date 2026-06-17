@@ -199,19 +199,28 @@ async function recordEmailOpen(envelopeId, clientId, req = {}) {
     timestamp: now,
   }).catch(() => {});
 
-  await MessageEnvelope.updateOne(
-    { _id: envelopeId, clientId },
-    {
-      $inc: { 'tracking.openCount': 1 },
-      $set: { 'tracking.lastOpenAt': now },
-      $setOnInsert: { tracking: {} },
-    }
-  );
+  try {
+    // Do not combine $set on tracking.* with $setOnInsert on tracking — MongoDB error 40.
+    await MessageEnvelope.updateOne(
+      { _id: envelopeId, clientId },
+      {
+        $inc: { 'tracking.openCount': 1 },
+        $set: { 'tracking.lastOpenAt': now },
+      }
+    );
 
-  await MessageEnvelope.updateOne(
-    { _id: envelopeId, clientId, 'tracking.firstOpenAt': null },
-    { $set: { 'tracking.firstOpenAt': now } }
-  );
+    await MessageEnvelope.updateOne(
+      { _id: envelopeId, clientId, 'tracking.firstOpenAt': null },
+      { $set: { 'tracking.firstOpenAt': now } }
+    );
+  } catch (err) {
+    const log = require('./logger')('EmailTracking');
+    log.warn('recordEmailOpen envelope update failed', {
+      envelopeId: String(envelopeId),
+      clientId,
+      message: err?.message,
+    });
+  }
 }
 
 async function recordEmailClick(envelopeId, clientId, url, req = {}) {

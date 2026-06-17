@@ -10,7 +10,7 @@ const { verifyToken } = require("../middleware/auth");
 const { syncMetaAds, getAdAccounts } = require('../utils/meta/metaAdsAPI');
 const { platformGenerateJSON } = require('../utils/core/gemini'); // ✅ Phase R4: Use platform key wrapper
 const CLIENT_META_ADS_SELECT =
-  '_id clientId name plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role premiumAccessToken premiumPhoneId whatsapp syncedMetaTemplates';
+  '_id clientId name plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role premiumAccessToken premiumPhoneId whatsapp.phoneNumberId whatsapp.wabaId whatsapp.accessToken config.whatsappToken config.phoneNumberId config.wabaId syncedMetaTemplates';
 
 function normalizeTemplateLanguage(code) {
   const raw = String(code || '').trim();
@@ -301,6 +301,19 @@ router.post("/test-template", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId }).select(CLIENT_META_ADS_SELECT).lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
+    const {
+      getEffectiveWhatsAppAccessToken,
+      getEffectiveWhatsAppPhoneNumberId,
+    } = require('../utils/meta/clientWhatsAppCreds');
+    const { buildTestTemplatePayload } = require('../utils/meta/buildTestTemplatePayload');
+
+    const token = getEffectiveWhatsAppAccessToken(client);
+    const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
+
+    if (!token || !phoneNumberId) {
+      return res.status(400).json({ success: false, message: "WhatsApp credentials not configured" });
+    }
+
     const { normalizePhoneWithCountry } = require('../utils/core/helpers');
     const normalizedPhone = normalizePhoneWithCountry(phone, client);
     if (!normalizedPhone || normalizedPhone.length < 10) {
@@ -311,15 +324,6 @@ router.post("/test-template", verifyToken, async (req, res) => {
     }
 
     const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
-    const { getEffectiveWhatsAppAccessToken, getEffectiveWhatsAppPhoneNumberId } = require('../utils/meta/clientWhatsAppCreds');
-    const { buildTestTemplatePayload } = require('../utils/meta/buildTestTemplatePayload');
-
-    const token = await getEffectiveWhatsAppAccessToken(client);
-    const phoneNumberId = await getEffectiveWhatsAppPhoneNumberId(client);
-
-    if (!token || !phoneNumberId) {
-      return res.status(400).json({ success: false, message: "WhatsApp credentials not configured" });
-    }
 
     const { components, mode } = await buildTestTemplatePayload({
       clientId,
@@ -374,6 +378,32 @@ router.post("/test-template", verifyToken, async (req, res) => {
           metaResponse: result.data || null,
         });
       }
+
+      try {
+        const TemplateSendLog = require('../models/TemplateSendLog');
+        await TemplateSendLog.create({
+          clientId,
+          templateName,
+          automationSlotId: ruleId ? String(ruleId) : null,
+          contextType: 'order_message_test',
+          failureCode: 'sent',
+          channel: 'whatsapp',
+          recipientPhone: normalizedPhone,
+          contextData: {
+            test: true,
+            triggerType: triggerType || null,
+            event: event || null,
+            followupStep: followupStep || null,
+            languageUsed: attemptedLanguages[attemptedLanguages.length - 1] || primaryLanguage,
+          },
+          status: 'sent',
+          messageId: waMessageId,
+          sentAt: new Date(),
+        });
+      } catch (logErr) {
+        console.warn('[test-template] TemplateSendLog write failed:', logErr.message);
+      }
+
       res.json({
         success: true,
         message: 'Test template dispatched',

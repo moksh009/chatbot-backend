@@ -5,7 +5,6 @@ const Conversation = require('../models/Conversation');
 const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
 const log = require('../utils/core/logger')('AbandonedCart');
 const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
-const { createMessage } = require('../utils/core/createMessage');
 const cron = require('node-cron');
 const axios = require('axios');
 const {
@@ -142,6 +141,21 @@ function cartAbandonTimeFilter(now, delayMinutes, maxAgeHours = 168) {
   };
 }
 
+/** When a cart recovery step was successfully sent (from activityLog). */
+function getStepSentAt(lead, stepNum) {
+  const detail = `cart_step_${stepNum}`;
+  const hits = (lead.activityLog || []).filter(
+    (l) => l.action === 'automation_nudge' && String(l.details || '') === detail
+  );
+  if (!hits.length) return null;
+  return new Date(Math.max(...hits.map((h) => new Date(h.timestamp).getTime())));
+}
+
+function minutesSince(pastDate, now = new Date()) {
+  if (!pastDate) return Infinity;
+  return (now.getTime() - pastDate.getTime()) / (60 * 1000);
+}
+
 function smartSendEligibleFilter(now) {
   return {
     $or: [
@@ -179,15 +193,25 @@ const wasRoleHandled = (lead, role) =>
     (l) => l.action === 'automation_nudge' && l.details === role
   );
 
-// Outbound message recording helper
-async function recordNudge(lead, body, type = 'text') {
-    await createMessage({
+// Outbound message recording — routes through persistAutomationOutbound for inbox threads
+async function recordNudge(lead, body, type = 'text', extra = {}) {
+    const phone = lead?.phoneNumber;
+    if (!hasRealPhone(phone)) return null;
+    const { persistAutomationOutbound } = require('../utils/messaging/persistAutomationOutbound');
+    return persistAutomationOutbound({
         clientId: lead.clientId,
-        phone: lead.phoneNumber,
-        direction: 'outbound',
-        type: type,
-        body: body,
-        metadata: { is_automation_nudge: true }
+        phone,
+        templateName: extra.templateName || '',
+        bodyPreview: body,
+        messageId: extra.messageId || '',
+        channel: type === 'email' ? 'email' : 'whatsapp',
+        metadata: {
+            is_automation_nudge: true,
+            cart_recovery: extra.cartStep != null,
+            cart_step: extra.cartStep,
+            automation_rule_id: extra.ruleId || null,
+            ...extra.metadata,
+        },
     });
 }
 
@@ -343,7 +367,12 @@ async function sendRichNudge(client, lead, text, options = {}) {
             if (!templateOut.useLegacy) {
                 const outcome = handleCronEnvelopeOutcome(templateOut);
                 if (outcome === 'sent' || outcome === 'duplicate') {
-                    await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+                    await recordNudge(lead, `[Template: ${templateName}]`, 'template', {
+                        templateName,
+                        messageId: outboundMessageId,
+                        cartStep: stepNum,
+                        ruleId: cartRule?.id,
+                    });
                     waSent = outcome === 'sent';
                     successfullySent = true;
                     outboundMessageId = templateOut.messageId || null;
@@ -685,15 +714,7 @@ async function runAbandonedCartTick() {
                     $and: [
                       smartSendEligibleFilter(now),
                       cartLeadContactFilter(),
-                      {
-                        $or: [
-                          { cartAbandonedAt: cartAbandonTimeFilter(now, delay2Min) },
-                          {
-                            cartAbandonedAt: { $exists: false },
-                            lastCartEventAt: cartAbandonTimeFilter(now, delay2Min),
-                          },
-                        ],
-                      },
+                      { 'activityLog.details': 'cart_step_1' },
                     ],
                 })
                   .sort(CART_BATCH_SORT)
@@ -705,6 +726,8 @@ async function runAbandonedCartTick() {
                     if (!dedupeKey) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
                     if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 2, lead)) continue;
+                    const step1SentAt = getStepSentAt(lead, 1);
+                    if (!step1SentAt || minutesSince(step1SentAt, now) < delay2Min) continue;
                     const gate2 = await gateCartSend(client, lead, config, now);
                     if (!gate2.ok) continue;
                     const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_2', config, lead);
@@ -747,15 +770,7 @@ async function runAbandonedCartTick() {
                     $and: [
                       smartSendEligibleFilter(now),
                       cartLeadContactFilter(),
-                      {
-                        $or: [
-                          { cartAbandonedAt: cartAbandonTimeFilter(now, delay3Min) },
-                          {
-                            cartAbandonedAt: { $exists: false },
-                            lastCartEventAt: cartAbandonTimeFilter(now, delay3Min),
-                          },
-                        ],
-                      },
+                      { 'activityLog.details': 'cart_step_2' },
                     ],
                 })
                   .sort(CART_BATCH_SORT)
@@ -767,6 +782,8 @@ async function runAbandonedCartTick() {
                     if (!dedupeKey) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
                     if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 3, lead)) continue;
+                    const step2SentAt = getStepSentAt(lead, 2);
+                    if (!step2SentAt || minutesSince(step2SentAt, now) < delay3Min) continue;
                     const gate3 = await gateCartSend(client, lead, config, now);
                     if (!gate3.ok) continue;
                     const resolved = await resolveCartStepTemplate(client, cartRules, 'followup_3', config, lead);

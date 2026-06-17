@@ -78,12 +78,22 @@ function buildLegacySnapshot(client = {}) {
 
 function normalizeAutomationMappings(raw) {
   if (!raw || typeof raw !== 'object') return { body: {} };
-  const body = raw.body && typeof raw.body === 'object' ? raw.body : raw;
-  const out = {};
-  Object.entries(body || {}).forEach(([k, v]) => {
-    if (v != null && v !== '') out[String(k)] = String(v);
+  const bodySource = raw.body && typeof raw.body === 'object' ? raw.body : raw;
+  const body = {};
+  Object.entries(bodySource || {}).forEach(([k, v]) => {
+    if (/^\d+$/.test(String(k)) && v != null && v !== '') body[String(k)] = String(v);
   });
-  return { body: out };
+  const out = { body };
+  const headerKey = raw.header || raw.headerVariable;
+  if (headerKey) out.header = String(headerKey);
+  if (raw.buttons && typeof raw.buttons === 'object') {
+    const buttons = {};
+    Object.entries(raw.buttons).forEach(([k, v]) => {
+      if (v != null && v !== '') buttons[String(k)] = String(v);
+    });
+    if (Object.keys(buttons).length) out.buttons = buttons;
+  }
+  return out;
 }
 
 /**
@@ -94,7 +104,7 @@ function normalizeAutomationMappings(raw) {
  * pick the recommended Shopify pack template.
  */
 const ECO_TEMPLATE_BODY_MAPPINGS = {
-  eco_order_confirmed: { 1: 'first_name', 2: 'order_id', 3: 'order_total', 4: 'payment_method' },
+  eco_order_confirmed: { 1: 'first_name', 2: 'order_id', 3: 'order_items', 4: 'payment_method' },
   order_confirmation_v1: {
     1: 'first_name',
     2: 'order_id',
@@ -125,16 +135,27 @@ function seedEcoBodyMappings(templateName, mappings) {
       touched = true;
     }
   }
+  if (tplName === 'eco_order_confirmed' && merged['3'] === 'order_total') {
+    merged['3'] = 'order_items';
+    touched = true;
+  }
   if (!touched) return mappings;
   return { ...(mappings || {}), body: merged };
 }
 
 function mergeTemplateMappings(templateMappings = {}, automationMappings = {}) {
-  const tplBody = templateMappings?.body || templateMappings || {};
-  const autoBody = automationMappings?.body || automationMappings || {};
-  return {
+  const tpl = templateMappings && typeof templateMappings === 'object' ? templateMappings : {};
+  const auto = automationMappings && typeof automationMappings === 'object' ? automationMappings : {};
+  const tplBody = tpl.body || tpl;
+  const autoBody = auto.body || auto;
+  const merged = {
     body: { ...tplBody, ...autoBody },
   };
+  const header = auto.header || auto.headerVariable || tpl.header || tpl.headerVariable;
+  if (header) merged.header = String(header);
+  const buttons = { ...(tpl.buttons || {}), ...(auto.buttons || {}) };
+  if (Object.keys(buttons).length) merged.buttons = buttons;
+  return merged;
 }
 
 function inferBodyVariables(automation, order, item) {
@@ -178,21 +199,24 @@ async function enrollSequence({ clientConfig, order, automation }) {
   const seqData = sequenceTemplates.find((s) => s.id === automation.sequenceId);
   if (!seqData) return;
   const { ensureLeadForSequence } = require('../messaging/ensureLeadForSequence');
+  const { mapStepsWithCumulativeSendAt } = require('../messaging/sequenceDelayUtils');
+  const { enqueueDueStepsForSequence } = require('../messaging/sequenceStepEnqueue');
   const lead = await ensureLeadForSequence({
     clientId: clientConfig.clientId,
     phone,
     source: 'commerce_automation',
   });
-  const mappedSteps = (seqData.steps || []).map((s) => ({
+  const scheduled = mapStepsWithCumulativeSendAt(seqData.steps || []);
+  const mappedSteps = scheduled.map((s) => ({
     type: s.type || 'whatsapp',
     templateName: s.templateName,
     content: s.content,
     delayValue: s.delayValue,
     delayUnit: s.delayUnit,
-    sendAt: new Date(Date.now() + (Number(s.delayValue || 0) * 60000)),
+    sendAt: s.sendAt,
     status: 'pending',
   }));
-  await FollowUpSequence.create({
+  const sequence = await FollowUpSequence.create({
     clientId: clientConfig.clientId,
     leadId: lead._id,
     phone: lead.phoneNumber,
@@ -200,12 +224,14 @@ async function enrollSequence({ clientConfig, order, automation }) {
     name: seqData.name,
     steps: mappedSteps,
     status: 'active',
+    cancelOnReply: seqData.cancelOnReply !== false,
     metadata: {
       source: 'commerce_automation',
       automationId: automation.id,
       sku: automation.sku || '',
     },
   });
+  await enqueueDueStepsForSequence(sequence).catch(() => {});
 }
 
 async function sendAutomationTemplate({ clientConfig, order, automation, item }) {
@@ -661,6 +687,14 @@ async function ensureSystemAutomationsPersisted(clientConfig = {}) {
           )
         );
       }
+      if (cartPatch.cartRecoveryConfig && Object.keys(cartPatch.cartRecoveryConfig).length) {
+        Object.assign(
+          clientUpdate,
+          Object.fromEntries(
+            Object.entries(cartPatch.cartRecoveryConfig).map(([k, v]) => [`cartRecoveryConfig.${k}`, v])
+          )
+        );
+      }
     }
     try {
       await withMongoRetry(() =>
@@ -921,6 +955,11 @@ async function upsertAutomation(clientId, automation = {}) {
   if (cartPatch.nicheData && Object.keys(cartPatch.nicheData).length) {
     Object.assign(clientUpdate, Object.fromEntries(
       Object.entries(cartPatch.nicheData).map(([k, v]) => [`nicheData.${k}`, v])
+    ));
+  }
+  if (cartPatch.cartRecoveryConfig && Object.keys(cartPatch.cartRecoveryConfig).length) {
+    Object.assign(clientUpdate, Object.fromEntries(
+      Object.entries(cartPatch.cartRecoveryConfig).map(([k, v]) => [`cartRecoveryConfig.${k}`, v])
     ));
   }
   /** WS-2 H4 — only sync the legacy 5-status nicheData map when the rule

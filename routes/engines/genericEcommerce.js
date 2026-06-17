@@ -1379,17 +1379,33 @@ const updateOrderStatus = async (req, res) => {
         }
 
         const { dispatchOrderStatusAutomation } = require('../../utils/commerce/orderEventDispatcher');
-        const dispatchResult = await dispatchOrderStatusAutomation({
-            clientConfig: req.clientConfig,
-            order: order.toObject ? order.toObject() : order,
-            previousStatus: oldStatus,
-            newStatus: status,
-            trackingNumber: trackingNumber || order.trackingNumber,
-            trackingUrl: trackingUrl || order.trackingUrl,
-            io,
-            source: 'dashboard_manual',
-            options: { force: true },
-        });
+        const { shouldSkipLegacyOrderDispatch } = require('../../utils/commerce/canonicalOrderMessages');
+        const { processLocalOrderStatusAutomations } = require('../../utils/commerce/orderStatusAutomationHandler');
+
+        let dispatchResult;
+        if (shouldSkipLegacyOrderDispatch(req.clientConfig)) {
+            dispatchResult = await processLocalOrderStatusAutomations({
+                client: req.clientConfig,
+                order: order.toObject ? order.toObject() : order,
+                status,
+                trackingUrl: trackingUrl || order.trackingUrl,
+                trackingNumber: trackingNumber || order.trackingNumber,
+                source: 'dashboard_manual',
+            });
+            dispatchResult = { skipped: false, canonical: dispatchResult };
+        } else {
+            dispatchResult = await dispatchOrderStatusAutomation({
+                clientConfig: req.clientConfig,
+                order: order.toObject ? order.toObject() : order,
+                previousStatus: oldStatus,
+                newStatus: status,
+                trackingNumber: trackingNumber || order.trackingNumber,
+                trackingUrl: trackingUrl || order.trackingUrl,
+                io,
+                source: 'dashboard_manual',
+                options: { force: true },
+            });
+        }
 
         const refreshed = await Order.findById(order._id).lean();
 
@@ -1584,6 +1600,25 @@ const getOrderMessagesOverview = async (req, res) => {
     }
 };
 
+const getRuleStatsDetail = async (req, res) => {
+    try {
+        const { buildRuleStatsDetail } = require('../../utils/commerce/ruleStatsDetailService');
+        const ruleId = String(req.params.ruleId || '').trim();
+        if (!ruleId) {
+            return res.status(400).json({ success: false, error: 'ruleId required' });
+        }
+        const daysRaw = req.query.days ?? req.query.statsDays ?? '7';
+        const data = await buildRuleStatsDetail(req.clientConfig, ruleId, { days: daysRaw });
+        if (data.notFound) {
+            return res.status(404).json({ success: false, error: 'Rule not found', ruleId });
+        }
+        res.json(data);
+    } catch (error) {
+        console.error('[RuleStatsDetail] Error:', error);
+        res.status(500).json({ success: false, error: 'Failed to load rule stats' });
+    }
+};
+
 const getCustomerRefundCount = async (req, res) => {
     try {
         const { normalizePhone } = require('../../utils/core/helpers');
@@ -1629,5 +1664,6 @@ module.exports = {
     sendMappedOrderStatusWhatsApp,
     sendOrderStatusWhatsAppManual,
     getOrderMessagesOverview,
+    getRuleStatsDetail,
     syncOrderStatusToShopifyAPI,
 };

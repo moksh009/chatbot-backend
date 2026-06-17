@@ -3,7 +3,6 @@
 const axios = require("axios");
 const MetaTemplate = require("../models/MetaTemplate");
 const Client = require("../models/Client");
-const { decrypt } = require("../utils/core/encryption");
 const log = require("../utils/core/logger")("TemplateLifecycle");
 const {
   getSlotByMetaName,
@@ -283,14 +282,19 @@ async function reconcileSyncedTemplatesWithCatalog(clientId, syncedTemplates = [
 }
 
 async function getClientMetaCredentials(clientId) {
+  const {
+    WHATSAPP_CREDENTIAL_SELECT,
+    getEffectiveWhatsAppAccessToken,
+    getEffectiveWhatsAppWabaId,
+  } = require('../meta/clientWhatsAppCreds');
   const client = await Client.findOne({ clientId })
-    .select("wabaId whatsapp whatsappToken whatsapp.accessToken")
+    .select(WHATSAPP_CREDENTIAL_SELECT)
     .lean();
   if (!client) return null;
-  const wabaId = client.wabaId || client.whatsapp?.wabaId;
-  const raw = client.whatsappToken || client.whatsapp?.accessToken;
-  if (!wabaId || !raw) return null;
-  return { wabaId, token: decrypt(raw) || raw };
+  const wabaId = getEffectiveWhatsAppWabaId(client);
+  const token = getEffectiveWhatsAppAccessToken(client);
+  if (!wabaId || !token) return null;
+  return { wabaId, token };
 }
 
 /**

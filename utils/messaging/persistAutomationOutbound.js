@@ -2,11 +2,12 @@
 
 const Conversation = require('../../models/Conversation');
 const { createMessage } = require('../core/createMessage');
+const { normalizePhone } = require('../core/helpers');
 const log = require('../core/logger')('PersistAutomationOutbound');
 
 /**
  * Persist an automation / template outbound to Message + socket so Live Chat shows it.
- * Mirrors dualBrainEngine.saveOutboundMessage without importing the full engine.
+ * Ensures a Conversation exists (upsert) so inbox threads are never orphaned.
  */
 async function persistAutomationOutbound({
   clientId,
@@ -17,10 +18,31 @@ async function persistAutomationOutbound({
   channel = 'whatsapp',
   metadata = {},
 }) {
-  if (!clientId || !phone) return null;
+  const phoneNorm = normalizePhone(phone);
+  if (!clientId || !phoneNorm) {
+    log.debug('skip persist — missing tenant or phone', {
+      clientId: clientId || null,
+      hasPhone: Boolean(phone),
+    });
+    return null;
+  }
 
   try {
-    const convo = await Conversation.findOne({ clientId, phone })
+    const convo = await Conversation.findOneAndUpdate(
+      { clientId, phone: phoneNorm },
+      {
+        $setOnInsert: {
+          phone: phoneNorm,
+          clientId,
+          botPaused: false,
+          status: 'BOT_ACTIVE',
+        },
+        $set: {
+          lastInteraction: new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    )
       .select('_id')
       .lean();
 
@@ -31,18 +53,23 @@ async function persistAutomationOutbound({
     const savedMessage = await createMessage({
       clientId,
       conversationId: convo?._id || null,
-      phone,
+      phone: phoneNorm,
       from: 'BOT',
-      to: phone,
+      to: phoneNorm,
       direction: 'outbound',
-      type: 'template',
+      type: channel === 'email' ? 'email' : 'template',
       body: content,
       messageId: messageId || '',
       channel,
       metadata: {
-        source: 'automation',
-        templateName: templateName || undefined,
+        source: metadata.source || 'automation',
+        templateName: templateName || metadata.templateName || undefined,
         ...metadata,
+        automation_rule_id:
+          metadata.automation_rule_id || metadata.automationSlotId || undefined,
+        contextType:
+          metadata.contextType ||
+          (metadata.cart_step != null ? 'abandoned_cart' : undefined),
       },
     });
 
@@ -54,16 +81,30 @@ async function persistAutomationOutbound({
           .populate('assignedTo', 'name')
           .lean();
         if (updatedConvo) {
-          io.to(`client_${clientId}`).emit('conversation_update', updatedConvo);
+          io.to(`client_${clientId}`).emit('conversation_update', {
+            ...updatedConvo,
+            lastMessage: content.substring(0, 100),
+            lastMessageAt: new Date(),
+          });
         }
       }
     }
+
+    log.info('automation outbound persisted to inbox', {
+      clientId,
+      conversationId: convo?._id ? String(convo._id) : null,
+      templateName: templateName || null,
+      channel,
+      messageId: messageId || null,
+      automationSource: metadata?.source || metadata?.automation_rule_id || null,
+    });
 
     return savedMessage;
   } catch (err) {
     log.warn('persistAutomationOutbound failed', {
       clientId,
-      phone,
+      phone: phoneNorm,
+      templateName: templateName || null,
       error: err.message,
     });
     return null;

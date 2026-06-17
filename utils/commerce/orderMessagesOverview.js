@@ -18,6 +18,7 @@ const ZERO_RULE_STATS = {
   read: 0,
   clicked: 0,
   recovered: 0,
+  purchased: 0,
   recoveryRevenue: 0,
   lastSendAt: null,
   deliveryRate: null,
@@ -187,6 +188,7 @@ async function mergeCartPerformanceIntoRuleStats(clientId, automations, stats, s
         read: perf?.read || 0,
         clicked: perf?.clicked || 0,
         recovered: perf?.recovered || 0,
+        purchased: perf?.purchased || 0,
         recoveryRevenue: perf?.recoveryRevenue || 0,
         deliveryRate: perf?.deliveryRate ?? null,
         readRate: perf?.readRate ?? null,
@@ -371,4 +373,7 @@ module.exports = {
   mergeCartPerformanceIntoRuleStats,
   ensureAllRuleStats,
   buildOrderMessagesAlerts,
+  buildRuleLookupIds,
+  ZERO_RULE_STATS,
+  resolveStatsSince,
 };

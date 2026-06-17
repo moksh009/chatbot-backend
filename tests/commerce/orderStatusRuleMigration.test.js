@@ -9,10 +9,10 @@ const {
 } = require('../../utils/commerce/commerceAutomationPresets');
 const { syncSystemOrderRulesFromNicheMap } = require('../../utils/commerce/commerceAutomationService');
 
-test('mergeSystemAutomations exposes exactly six order-status rules', () => {
+test('mergeSystemAutomations exposes exactly seven order-status rules (6 delivery + COD)', () => {
   const merged = mergeSystemAutomations([]);
   const orderRules = merged.filter((r) => r.meta?.category === 'order_notification');
-  assert.equal(orderRules.length, 6);
+  assert.equal(orderRules.length, 7);
   assert.deepEqual(
     orderRules.map((r) => r.id),
     [
@@ -22,6 +22,7 @@ test('mergeSystemAutomations exposes exactly six order-status rules', () => {
       'sys_shipment_delivered',
       'sys_shipment_attempted_delivery',
       'sys_shipment_failure',
+      'sys_commerce_cod_confirm',
     ]
   );
 });

@@ -30,10 +30,19 @@ function withinWaAttributionWindow(
   recoveredAt = new Date(),
   attributionWindowMs = WA_RECOVERY_ATTRIBUTION_WINDOW_MS
 ) {
-  if (!attempt?.whatsappMessageSentAt) return false;
-  const sentAt = new Date(attempt.whatsappMessageSentAt).getTime();
+  let sentAtMs = null;
+  if (attempt?.whatsappMessageSentAt) {
+    sentAtMs = new Date(attempt.whatsappMessageSentAt).getTime();
+  } else {
+    const tplTimes = (attempt?.whatsappTemplatesSent || [])
+      .map((t) => t?.sentAt)
+      .filter(Boolean)
+      .map((d) => new Date(d).getTime());
+    if (tplTimes.length) sentAtMs = Math.min(...tplTimes);
+  }
+  if (!sentAtMs) return false;
   const recoveredMs = new Date(recoveredAt).getTime();
-  return recoveredMs - sentAt <= attributionWindowMs && recoveredMs >= sentAt;
+  return recoveredMs - sentAtMs <= attributionWindowMs && recoveredMs >= sentAtMs;
 }
 
 /**
@@ -286,8 +295,16 @@ async function findPendingAttemptForOrder(clientId, orderData, contactPhone) {
       clientId,
       contactPhone,
       status: 'pending',
-    }).sort({ createdAt: -1 });
+    }).sort({ whatsappMessageSentAt: -1, createdAt: -1 });
     if (byPhone) return byPhone;
+
+    const byMessagedPhone = await CartRecoveryAttempt.findOne({
+      clientId,
+      contactPhone,
+      messaged: true,
+      status: 'pending',
+    }).sort({ whatsappMessageSentAt: -1, createdAt: -1 });
+    if (byMessagedPhone) return byMessagedPhone;
   }
 
   const orderEmail = normalizeEmail(
@@ -354,9 +371,15 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     patch.organicRecovery = false;
     patch.attributedRevenue = orderTotal;
     patch.attributedAt = now;
+    patch.attributionSource = 'topedge_whatsapp';
+  } else if (attempt.messaged || (attempt.whatsappTemplatesSent || []).length > 0) {
+    patch.organicRecovery = true;
+    patch.recoveredViaWhatsapp = false;
+    patch.attributionSource = 'organic_after_message';
   } else {
     patch.organicRecovery = true;
     patch.recoveredViaWhatsapp = false;
+    patch.attributionSource = 'organic';
   }
 
   const updated = await CartRecoveryAttempt.findByIdAndUpdate(attempt._id, { $set: patch }, { new: true });
@@ -969,6 +992,7 @@ async function getCartRecoveryTemplatePerformance(clientId, from, to) {
           read: 0,
           clicked: 0,
           recovered: 0,
+          purchased: 0,
           recoveryRevenue: 0,
         };
       }
@@ -980,15 +1004,22 @@ async function getCartRecoveryTemplatePerformance(clientId, from, to) {
   }
 
   for (const att of attempts) {
-    if (att.status !== 'recovered' || !att.recoveredViaWhatsapp) continue;
+    if (att.status !== 'recovered') continue;
     const sent = att.whatsappTemplatesSent || [];
     const last = sent[sent.length - 1];
     const name = String(last?.templateName || '').trim();
     if (!name || !byTemplate[name]) continue;
-    byTemplate[name].recovered += 1;
-    byTemplate[name].recoveryRevenue += Number(
-      att.recoveredOrderValue || att.recoveredOrderAmount || 0
-    );
+    if (att.recoveredViaWhatsapp) {
+      byTemplate[name].recovered += 1;
+      byTemplate[name].recoveryRevenue += Number(
+        att.recoveredOrderValue || att.recoveredOrderAmount || 0
+      );
+    } else {
+      byTemplate[name].purchased += 1;
+      byTemplate[name].recoveryRevenue += Number(
+        att.recoveredOrderValue || att.recoveredOrderAmount || 0
+      );
+    }
   }
 
   return Object.values(byTemplate)

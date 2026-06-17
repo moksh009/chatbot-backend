@@ -20,6 +20,10 @@ const {
     applyWarrantyVoidFromOrder,
     parseRefundedProductIds,
 } = require('../utils/commerce/warrantyVoidAutomation');
+const {
+    enrichLineItemsForCommerce,
+    formatLineItemsBullets,
+} = require('../utils/commerce/orderLineItemEnrichment');
 
 /** Push reconciled order to dashboard (Orders page) without manual refresh */
 function emitOrderUpdatedToDashboard(io, clientId, orderDoc) {
@@ -314,6 +318,10 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   payload: data,
                   source: 'shopify_webhook:orders/create',
                 }).catch((e) => log.error(`OrderStatus automation orders/create failed: ${e.message}`));
+                const fin = String(data.financial_status || '').toLowerCase();
+                const isPaid = fin === 'paid' || fin === 'partially_paid';
+                const { shouldSkipLegacyOrderDispatch } = require('../utils/commerce/canonicalOrderMessages');
+                if (!shouldSkipLegacyOrderDispatch(client)) {
                 const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
                 const lineItems = (data.line_items || []).map((i) => ({
                   sku: i.sku,
@@ -331,8 +339,6 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   paymentMethod: data.gateway || data.payment_gateway_names?.[0],
                   isCOD: (data.payment_gateway_names || []).some((g) => /cod|cash/i.test(String(g))),
                 };
-                const fin = String(data.financial_status || '').toLowerCase();
-                const isPaid = fin === 'paid' || fin === 'partially_paid';
                 const statusEvent = isPaid ? 'paid' : 'pending';
 
                 await dispatchOrderStatusAutomation({
@@ -349,6 +355,7 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   order: orderPayload,
                   options: { skipOrderStatusRules: true },
                 }).catch((e) => log.error(`Commerce automations ${statusEvent} SKU failed:`, e.message));
+                }
 
                 if (isPaid) {
                     const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
@@ -550,41 +557,6 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
         log.error(`Error processing webhook ${topic}:`, { error: err.message });
     }
 });
-
-/**
- * Enrich Shopify line items with product images (checkout + order payloads).
- */
-async function enrichLineItemsForCommerce(client, lineItems = []) {
-  const items = Array.isArray(lineItems) ? lineItems : [];
-  return Promise.all(items.map(async (item) => {
-    let imageUrl = item.image_url || item.imageUrl || null;
-    if (!imageUrl && item.product_id && client.shopifyAccessToken && client.shopDomain) {
-      try {
-        const res = await axios.get(
-          `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${item.product_id}.json`,
-          { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-        );
-        imageUrl = res.data.product?.images?.[0]?.src || null;
-      } catch (_) { /* omit */ }
-    }
-    const title = item.title || item.name || 'Item';
-    const qty = item.quantity || 1;
-    return {
-      title,
-      quantity: qty,
-      price: item.price || item.line_price || '',
-      imageUrl,
-      variant_title: item.variant_title || '',
-    };
-  }));
-}
-
-function formatLineItemsBullets(enriched) {
-  if (!enriched.length) return '';
-  return enriched
-    .map((i) => `• ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} × ${i.quantity}`)
-    .join('\n');
-}
 
 /**
  * Flat fields merged into `conversation.metadata` so flow nodes can use {{first_name}}, {{line_items_list}}, etc.
@@ -1047,26 +1019,46 @@ async function handleOrder(client, data, storeKey = '') {
       log.warn(`[ShopifyWebhook] ledger adjustment skipped: ${ledgerErr.message}`);
     }
 
-    // Order confirmation / COD confirmation via unified templateSender
-    try {
-      const { sendByTrigger } = require('../services/templateSender');
-      const orderTrigger = isCODOrder ? 'cod_order_placed' : 'order_placed';
-      await sendByTrigger({
-        clientId: client.clientId,
-        phone: cleanPhone,
-        trigger: orderTrigger,
-        contextData: {
-          order: data,
+    // Legacy template auto-triggers — skip when canonical SAC order rules handle sends.
+    const {
+      shouldSkipLegacyOrderDispatch,
+      isActiveOrderRule,
+    } = require('../utils/commerce/canonicalOrderMessages');
+    const canonical = shouldSkipLegacyOrderDispatch(client);
+
+    if (!canonical) {
+      try {
+        const { sendByTrigger } = require('../services/templateSender');
+        const orderTrigger = isCODOrder ? 'cod_order_placed' : 'order_placed';
+        await sendByTrigger({
+          clientId: client.clientId,
+          phone: cleanPhone,
+          trigger: orderTrigger,
+          contextData: {
+            order: data,
+            email: data.email || data.customer?.email,
+          },
           email: data.email || data.customer?.email,
-        },
-        email: data.email || data.customer?.email,
-      });
-    } catch (tplErr) {
-      log.warn(`[ShopifyWebhook] order template send skipped: ${tplErr.message}`);
+        });
+      } catch (tplErr) {
+        log.warn(`[ShopifyWebhook] order template send skipped: ${tplErr.message}`);
+      }
+    } else if (isCODOrder && !isActiveOrderRule(client, 'sys_commerce_cod_confirm')) {
+      try {
+        const { sendByTrigger } = require('../services/templateSender');
+        await sendByTrigger({
+          clientId: client.clientId,
+          phone: cleanPhone,
+          trigger: 'cod_order_placed',
+          contextData: { order: data, email: data.email || data.customer?.email },
+          email: data.email || data.customer?.email,
+        });
+      } catch (tplErr) {
+        log.warn(`[ShopifyWebhook] COD template send skipped: ${tplErr.message}`);
+      }
     }
 
-    // Commerce automation: COD confirmation rule (sys_order_cod)
-    if (isCODOrder) {
+    if (isCODOrder && !canonical && !isActiveOrderRule(client, 'sys_commerce_cod_confirm')) {
       try {
         const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
         const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
@@ -1084,24 +1076,25 @@ async function handleOrder(client, data, storeKey = '') {
       }
     }
 
-    // Eco order-status templates (paid / confirmed) — same pipeline as shipped/fulfilled webhooks
-    try {
-      const fin = String(data.financial_status || '').toLowerCase();
-      if (!isCODOrder && (fin === 'paid' || fin === 'partially_paid')) {
-        const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
-        const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
-        await dispatchOrderStatusAutomation({
-          clientConfig: client,
-          order: orderPlain,
-          previousStatus: 'pending',
-          newStatus: 'paid',
-          io: null,
-          source: 'shopify_webhook:orders/create',
-          options: { force: true },
-        });
+    if (!canonical) {
+      try {
+        const fin = String(data.financial_status || '').toLowerCase();
+        if (!isCODOrder && (fin === 'paid' || fin === 'partially_paid')) {
+          const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
+          const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
+          await dispatchOrderStatusAutomation({
+            clientConfig: client,
+            order: orderPlain,
+            previousStatus: 'pending',
+            newStatus: 'paid',
+            io: null,
+            source: 'shopify_webhook:orders/create',
+            options: { force: true },
+          });
+        }
+      } catch (dispatchErr) {
+        log.warn(`[ShopifyWebhook] paid order status dispatch skipped: ${dispatchErr.message}`);
       }
-    } catch (dispatchErr) {
-      log.warn(`[ShopifyWebhook] paid order status dispatch skipped: ${dispatchErr.message}`);
     }
 
     // Legacy productTriggers evaluator removed after unified commerce automation cutover.
@@ -1185,7 +1178,7 @@ async function handleOrder(client, data, storeKey = '') {
 
     // 5. Feature 5: Shopify Order Tagging for WhatsApp attribution
     const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
-    if (orderTaggingEnabled && lead && lead.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
+    if (orderTaggingEnabled && recoveryAttempt?.recoveredViaWhatsapp && data.id && client.shopifyAccessToken) {
         try {
             const baseUrl = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}`;
             const existingOrderRes = await axios.get(`${baseUrl}/orders/${data.id}.json`, {

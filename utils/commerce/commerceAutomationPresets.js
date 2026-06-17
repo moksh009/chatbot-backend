@@ -290,6 +290,54 @@ function orderMessageStatusRule(def) {
   return shipmentStatusRule(def);
 }
 
+function codConfirmationRule() {
+  const ruleId = 'sys_commerce_cod_confirm';
+  return {
+    id: ruleId,
+    name: 'COD confirmation',
+    triggerType: 'order_status',
+    triggerStatusType: 'payment',
+    triggerStatus: 'cod',
+    event: 'cod',
+    matchType: 'exact',
+    sku: '',
+    triggerScope: 'every_order',
+    targetProductIds: [],
+    productIds: [],
+    productId: '',
+    productTitle: '',
+    variantId: '',
+    actionType: 'send_template',
+    templateName: 'cod_confirmation_v1',
+    sequenceId: '',
+    language: 'en',
+    delayMinutes: 0,
+    imageUrl: '',
+    isActive: false,
+    variableMappings: {
+      body: {
+        1: 'first_name',
+        2: 'order_id',
+        3: 'order_items',
+        4: 'order_total',
+        5: 'shipping_address',
+      },
+    },
+    customVariableValues: {},
+    isDeletable: false,
+    meta: {
+      system: true,
+      category: 'order_notification',
+      group: 'merchant_journey',
+      syntheticKind: 'cod_confirm',
+      tooltip:
+        'WhatsApp with Confirm/Cancel buttons for cash-on-delivery orders. Cuts RTO — toggle here; template is cod_confirmation_v1 in Meta Manager.',
+      locked: true,
+    },
+    ...dualChannelDefaults(ruleId),
+  };
+}
+
 function abandonedCartRule(slot, stepNum) {
   const ruleId = `sys_cart_${slot}`;
   const labels = {
@@ -334,6 +382,7 @@ function abandonedCartRule(slot, stepNum) {
 function buildSystemAutomations() {
   return [
     ...ORDER_MESSAGE_STATUS_RULES.map(orderMessageStatusRule),
+    codConfirmationRule(),
     ...ABANDONED_CART_SLOTS.map((slot, i) => abandonedCartRule(slot, i + 1)),
   ];
 }
@@ -412,15 +461,18 @@ function cartFollowupSyncPatch(automation) {
   const tpl = automation.templateName || '';
   const delay = Number(automation.delayMinutes || 0);
 
-  const patch = { wizardFeatures: {}, nicheData: {} };
+  const patch = { wizardFeatures: {}, nicheData: {}, cartRecoveryConfig: {} };
   if (slot === 'followup_1') {
     patch.wizardFeatures.cartNudgeMinutes1 = delay;
+    patch.cartRecoveryConfig.step1DelayMinutes = delay;
     if (tpl) patch.nicheData.abandonedTpl15m = tpl;
   } else if (slot === 'followup_2') {
     patch.wizardFeatures.cartNudgeHours2 = Math.max(2, Math.round(delay / 60));
+    patch.cartRecoveryConfig.step2DelayMinutes = delay;
     if (tpl) patch.nicheData.abandonedTpl2h = tpl;
   } else if (slot === 'followup_3') {
     patch.wizardFeatures.cartNudgeHours3 = Math.max(24, Math.round(delay / 60));
+    patch.cartRecoveryConfig.step3DelayMinutes = delay;
     if (tpl) patch.nicheData.abandonedTpl24h = tpl;
   }
   return patch;

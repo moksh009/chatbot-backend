@@ -32,6 +32,15 @@ const {
   ruleHasEmailConfig,
   normalizeRuleChannels,
 } = require('../core/orderEmailMergeFields');
+const {
+  enrichLineItemsForCommerce,
+  formatLineItemsSummary,
+} = require('./orderLineItemEnrichment');
+const {
+  resolveOrderRecipientPhone,
+  phoneLookupVariants,
+} = require('./resolveOrderRecipientPhone');
+const { isCodShopifyOrder } = require('./canonicalOrderMessages');
 const log = require('../core/logger')('OrderStatusAutomation');
 const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 const Client = require('../../models/Client');
@@ -67,6 +76,8 @@ const SHIPMENT_VALUES = new Set([
   'attempted_delivery',
   'failure',
 ]);
+
+const PAYMENT_VALUES = new Set(['cod']);
 
 function normalizeProductId(id) {
   const s = String(id || '').trim();
@@ -135,7 +146,11 @@ function ruleProductMatch(rule, payload) {
 async function isPhoneOptedOut(clientId, phone) {
   if (!phone) return false;
   try {
-    const lead = await AdLead.findOne({ clientId, phoneNumber: phone })
+    const variants = phoneLookupVariants(phone);
+    const lead = await AdLead.findOne({
+      clientId,
+      phoneNumber: variants.length ? { $in: variants } : phone,
+    })
       .select('optStatus')
       .lean();
     return lead?.optStatus === 'opted_out';
@@ -224,7 +239,7 @@ async function recordSent({ clientId, orderId, statusKey, ruleId, phone, email, 
   }
 }
 
-function buildContextOrder(payload) {
+async function buildContextOrderForSend(client, payload) {
   const cust = payload.customer || {};
   const ship = payload.shipping_address || {};
   const phone = payload.phone
@@ -233,6 +248,13 @@ function buildContextOrder(payload) {
     || ship.phone
     || '';
   const orderName = payload.name || payload.order_number || `#${payload.id}`;
+  const enriched = await enrichLineItemsForCommerce(client, payload.line_items || []);
+  const first = enriched[0];
+  const payGw = (payload.payment_gateway_names || []).join(', ')
+    || payload.gateway
+    || payload.processing_method
+    || '';
+
   return {
     name: orderName,
     orderNumber: orderName,
@@ -243,17 +265,18 @@ function buildContextOrder(payload) {
     },
     customerName: [cust.first_name, cust.last_name].filter(Boolean).join(' ') || cust.first_name || 'Customer',
     phone,
-    line_items: (payload.line_items || []).map((i) => ({
+    line_items: enriched.map((i) => ({
       title: i.title,
       name: i.title,
       sku: i.sku,
+      quantity: i.quantity,
       product_id: i.product_id,
+      image: i.imageUrl ? { src: i.imageUrl } : undefined,
     })),
+    itemsSummary: formatLineItemsSummary(enriched),
     total_price: payload.total_price,
     totalPrice: payload.total_price,
-    payment_method: (payload.payment_gateway_names && payload.payment_gateway_names[0])
-      || payload.gateway
-      || '',
+    payment_method: payGw,
     financial_status: payload.financial_status || '',
     fulfillment_status: payload.fulfillment_status || '',
     shipping_address: ship,
@@ -261,6 +284,7 @@ function buildContextOrder(payload) {
       tracking_url: f.tracking_url,
       tracking_number: f.tracking_number,
     })),
+    first_product_image: first?.imageUrl || '',
   };
 }
 
@@ -317,6 +341,7 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
   }
 
   const { sendForAutomation } = require('../../services/templateSender');
+  const orderContext = await buildContextOrderForSend(client, payload);
   const result = await sendForAutomation({
     clientId: client.clientId,
     phone: phoneNorm,
@@ -326,12 +351,13 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
     trigger: null,
     variableMappings: rule.variableMappings || undefined,
     contextData: {
-      order: buildContextOrder(payload),
+      order: orderContext,
       extra: {
         triggerStatusType: type,
         triggerStatus: status,
         ruleId: rule.id,
         customVariableValues: rule.customVariableValues || {},
+        first_product_image: orderContext.first_product_image || '',
       },
     },
     channel: 'whatsapp',
@@ -571,21 +597,28 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
     || payload.billing_address?.phone
     || payload.shipping_address?.phone
     || '';
-  const phoneNorm = normalizePhone(phoneRaw);
+  const phoneNorm = phoneRaw ? normalizePhone(phoneRaw) : await resolveOrderRecipientPhone(client, payload);
 
   const outcomes = [];
   const checks = [];
   if (financial) checks.push({ type: 'financial', status: financial });
   if (fulfillment) checks.push({ type: 'fulfillment', status: fulfillment });
 
+  const src = String(source || '');
+  if (src.includes('orders/create') && isCodShopifyOrder(payload)) {
+    checks.push({ type: 'payment', status: 'cod' });
+  }
+
   for (const { type, status } of checks) {
     /** Order placed — only on new-order webhooks (not every orders/updated while still unfulfilled). */
     if (type === 'fulfillment' && status === 'unfulfilled') {
       if (payload.cancelled_at) continue;
-      const src = String(source || '');
       const isNewOrder =
         src.includes('orders/create') || src.includes('order_status_reconcile');
       if (!isNewOrder) continue;
+    }
+    if (type === 'payment' && status === 'cod') {
+      if (!src.includes('orders/create') && !src.includes('order_status_reconcile')) continue;
     }
     const statusKey = buildStatusKey(type, status);
     const matching = rules.filter((r) => ruleMatchesStatus(r, type, status));
@@ -668,7 +701,7 @@ async function processShipmentStatusAutomations({ client, fulfillment, orderPayl
     || payload.billing_address?.phone
     || payload.shipping_address?.phone
     || '';
-  const phoneNorm = normalizePhone(phoneRaw);
+  const phoneNorm = phoneRaw ? normalizePhone(phoneRaw) : await resolveOrderRecipientPhone(client, payload);
 
   const statusKey = buildStatusKey('shipment', status);
   const outcomes = [];
@@ -700,9 +733,94 @@ async function processShipmentStatusAutomations({ client, fulfillment, orderPayl
   return { processed: outcomes.length, outcomes };
 }
 
+function localDashboardStatusToShipment(status) {
+  const st = String(status || '').toLowerCase();
+  if (st === 'shipped' || st === 'fulfilled') return 'in_transit';
+  if (st === 'out_for_delivery') return 'out_for_delivery';
+  if (st === 'delivered' || st === 'delivery') return 'delivered';
+  if (SHIPMENT_VALUES.has(st)) return st;
+  return '';
+}
+
+function buildShopifyLikePayloadFromLocalOrder(order, { trackingUrl, trackingNumber } = {}) {
+  const ship = order.shippingAddress || {};
+  const nameParts = String(order.customerName || 'Customer').trim().split(/\s+/);
+  const firstName = nameParts[0] || 'Customer';
+  const lastName = nameParts.slice(1).join(' ');
+  const trackUrl = trackingUrl || order.trackingUrl || '';
+  const trackNum = trackingNumber || order.trackingNumber || '';
+  return {
+    id: order.shopifyOrderId || order.orderId || order._id,
+    name: order.orderNumber || order.orderId || String(order.shopifyOrderId || ''),
+    financial_status: order.financialStatus || 'paid',
+    fulfillment_status: order.fulfillmentStatus || 'unfulfilled',
+    phone: order.customerPhone || order.phone,
+    email: order.customerEmail || order.email,
+    customer: {
+      first_name: firstName,
+      last_name: lastName,
+      phone: order.customerPhone || order.phone,
+    },
+    billing_address: { phone: order.customerPhone || order.phone },
+    shipping_address: ship,
+    line_items: (order.items || []).map((i) => ({
+      product_id: i.productId || i.product_id,
+      title: i.name || i.title,
+      sku: i.sku,
+      quantity: i.quantity || 1,
+    })),
+    fulfillments: trackUrl || trackNum
+      ? [{ tracking_url: trackUrl, tracking_number: trackNum }]
+      : order.fulfillments || [],
+    total_price: order.totalPrice,
+    payment_gateway_names: order.isCOD ? ['Cash on Delivery (COD)'] : [],
+  };
+}
+
+/**
+ * Dashboard manual status updates — route through canonical SAC rules when
+ * legacy `dispatchOrderStatusAutomation` is gated off.
+ */
+async function processLocalOrderStatusAutomations({
+  client,
+  order,
+  status,
+  trackingUrl = '',
+  trackingNumber = '',
+  source = 'dashboard_manual',
+}) {
+  if (!client || !order) return { processed: 0, outcomes: [] };
+  const payload = buildShopifyLikePayloadFromLocalOrder(order, { trackingUrl, trackingNumber });
+  const shipmentStatus = localDashboardStatusToShipment(status);
+  if (shipmentStatus) {
+    return processShipmentStatusAutomations({
+      client,
+      fulfillment: {
+        shipment_status: shipmentStatus,
+        tracking_url: trackingUrl || order.trackingUrl || '',
+        tracking_number: trackingNumber || order.trackingNumber || '',
+        tracking_urls: trackingUrl || order.trackingUrl ? [trackingUrl || order.trackingUrl] : [],
+      },
+      orderPayload: payload,
+      source,
+    });
+  }
+  const st = String(status || '').toLowerCase();
+  if (st === 'paid' || st === 'confirmed') {
+    payload.financial_status = st === 'confirmed' && order.isCOD ? 'pending' : 'paid';
+    return processOrderStatusAutomations({ client, payload, source });
+  }
+  if (st === 'cancelled') {
+    payload.financial_status = 'voided';
+    return processOrderStatusAutomations({ client, payload, source });
+  }
+  return { processed: 0, outcomes: [] };
+}
+
 module.exports = {
   processOrderStatusAutomations,
   processShipmentStatusAutomations,
+  processLocalOrderStatusAutomations,
   readStatusesFromPayload,
   buildStatusKey,
   ruleMatchesStatus,

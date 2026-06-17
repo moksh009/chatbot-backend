@@ -61,12 +61,12 @@ function isSequenceEligible(template) {
 
 function isOrderMessageEligible(template) {
   if (isSystemExcluded(template)) return false;
+  const { isWizardProductTemplate, isOrderMessageTemplateName } = require('./orderMessageTemplatePolicy');
+  if (isWizardProductTemplate(template)) return false;
+  if (isOrderMessageTemplateName(template?.name)) return normalizeStatus(template) === 'APPROVED';
   if (normalizeStatus(template) !== 'APPROVED') return false;
   if (templateCategory(template) !== 'UTILITY') return false;
-  return (
-    hasPurpose(template, 'order_status') ||
-    String(template?.name || '').toLowerCase().includes('eco_')
-  );
+  return hasPurpose(template, 'order_status');
 }
 
 function isCartRecoveryEligible(template) {
@@ -91,9 +91,14 @@ function filterTemplatesForContext(templates, contextPurpose) {
   } else if (purpose === 'sequence') {
     eligible = approved.filter(isSequenceEligible);
   } else if (purpose === 'order_status') {
-    eligible = approved.filter(isOrderMessageEligible);
+    const { filterTemplatesForOrderMessagesList } = require('./orderMessageTemplatePolicy');
+    eligible = filterTemplatesForOrderMessagesList(list);
   } else if (purpose === 'cart_recovery') {
-    eligible = list.filter((t) => !isSystemExcluded(t) && isCartRecoveryEligible(t));
+    const { filterTemplatesForCartRecoveryList } = require('./orderMessageTemplatePolicy');
+    eligible = filterTemplatesForCartRecoveryList(list);
+    if (!eligible.length) {
+      eligible = list.filter((t) => !isSystemExcluded(t) && isCartRecoveryEligible(t));
+    }
   } else {
     eligible = approved.filter((t) => hasPurpose(t, purpose) || primaryPurpose(t) === purpose);
   }

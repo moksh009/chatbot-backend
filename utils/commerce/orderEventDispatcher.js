@@ -14,6 +14,9 @@ const Order = require('../../models/Order');
 const OrderStatusSent = require('../../models/OrderStatusSent');
 const commerceAutomationService = require('./commerceAutomationService');
 const { sendWhatsAppText } = require('../meta/whatsappHelpers');
+const { shouldSkipLegacyOrderDispatch } = require('./canonicalOrderMessages');
+const log = require('../core/logger')('OrderEventDispatcher');
+const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 
 function dispatchSignature(newStatus, trackingUrl, trackingNumber) {
   return `${String(newStatus || '').toLowerCase()}|${String(trackingUrl || '').trim()}|${String(trackingNumber || '').trim()}`;
@@ -61,6 +64,21 @@ async function dispatchOrderStatusAutomation({
   source = 'unknown',
   options = {},
 }) {
+  if (shouldSkipLegacyOrderDispatch(clientConfig)) {
+    logDispatchEvent('OrderEventDispatcher', 'legacy_dispatch_skipped', {
+      clientId: clientConfig?.clientId || null,
+      newStatus,
+      source,
+      reason: 'commerce_canonical_only',
+    });
+    return {
+      skipped: true,
+      reason: 'commerce_canonical_only',
+      whatsapp: { skipped: true, reason: 'commerce_canonical_only' },
+      automations: { matched: 0 },
+    };
+  }
+
   const force = !!options.force;
   const trackingOnlyRefresh = !!options.trackingOnlyRefresh;
   const prev = String(previousStatus || '').toLowerCase();
@@ -127,7 +145,7 @@ async function dispatchOrderStatusAutomation({
         io,
       });
     } catch (e) {
-      console.error('[OrderEventDispatcher] sendMappedOrderStatusWhatsApp:', e.message);
+      log.error('sendMappedOrderStatusWhatsApp failed', { error: e.message, source });
     }
   } else {
     wa = { ok: false, templateAttempted: false, templateName: null, skipped: true, reason: 'auto_shopify_shipped_wa_disabled' };
@@ -153,7 +171,7 @@ async function dispatchOrderStatusAutomation({
       options: { skipOrderStatusRules: true },
     });
   } catch (e) {
-    console.error('[OrderEventDispatcher] runAutomationsForEvent:', e.message);
+    log.error('runAutomationsForEvent failed', { error: e.message, source });
   }
 
   const shouldTextFallback =
@@ -188,7 +206,7 @@ async function dispatchOrderStatusAutomation({
         textFallbackSent = true;
       }
     } catch (e) {
-      console.error('[OrderEventDispatcher] text fallback:', e.message);
+      log.error('text fallback failed', { error: e.message, source });
     }
   }
 
@@ -226,7 +244,7 @@ async function dispatchOrderStatusAutomation({
       }
     }
   } catch (logErr) {
-    console.warn('[OrderEventDispatcher] activity log:', logErr.message);
+    log.warn('activity log failed', { error: logErr.message, source });
   }
 
   if (oid && isWebhook) {
@@ -248,7 +266,7 @@ async function dispatchOrderStatusAutomation({
         sentAt: new Date(),
       }).catch((err) => {
         if (err?.code !== 11000) {
-          console.warn('[OrderEventDispatcher] dedup ledger write failed:', err.message);
+          log.warn('dedup ledger write failed', { error: err.message, source });
         }
       });
     }

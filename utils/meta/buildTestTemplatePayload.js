@@ -13,8 +13,8 @@ const { buildMetaTemplateComponents, buildSendContext } = require('../../service
 const CART_RECOVERY_TEMPLATE_RE = /cart_recovery|abandoned_cart_r[123]/i;
 
 const ORDER_INFER_PRESETS = {
-  paid: ['first_name', 'order_id', 'order_total', 'payment_method'],
-  pending: ['first_name', 'order_id', 'order_total', 'payment_method'],
+  paid: ['first_name', 'order_id', 'order_items', 'payment_method'],
+  pending: ['first_name', 'order_id', 'order_items', 'payment_method'],
   shipped: ['first_name', 'order_id', 'tracking_url'],
   delivered: ['first_name', 'order_id'],
   cancelled: ['first_name', 'order_id', 'order_total', 'brand_name'],

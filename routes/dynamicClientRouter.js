@@ -116,6 +116,35 @@ router.post('/webhook', metaPayloadReplayGuard(), async (req, res) => {
       touchInboundWebhook(clientId).catch(() => {});
     }
 
+    const inboundReplyTypes = new Set(['text', 'button', 'interactive', 'image', 'audio', 'video', 'document']);
+    if (inboundReplyTypes.has(message.type)) {
+      try {
+        const { cancelSequencesOnInboundReply } = require('../utils/messaging/cancelSequencesOnInboundReply');
+        await cancelSequencesOnInboundReply({
+          clientId,
+          phone: message.from,
+          reason: 'customer_replied',
+        });
+      } catch (seqCancelErr) {
+        console.debug(`[Webhook Router] cancel-on-reply skipped: ${seqCancelErr.message}`);
+      }
+    }
+
+    if (message.type === 'button' || message.type === 'interactive') {
+      const contextMessageId = message.context?.id;
+      if (contextMessageId) {
+        try {
+          const { recordTemplateSendLogClick } = require('../utils/commerce/templateSendLogStatus');
+          await recordTemplateSendLogClick({
+            messageId: contextMessageId,
+            timestamp: new Date(),
+          });
+        } catch (clickErr) {
+          console.debug(`[Webhook Router] template click log skipped: ${clickErr.message}`);
+        }
+      }
+    }
+
     console.log(`[Webhook Router] INCOMING POST -> Client: ${clientId} | Type: ${businessType} | Flow: EcommerceEngine`);
     await genericEcommerceEngine.handleWebhook(req, res);
   } catch (error) {
@@ -801,6 +830,20 @@ router.get('/order-messages/overview', ...secure, apiCache(60), async (req, res)
     }
   } catch (error) {
     console.error('Error loading order messages overview:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+router.get('/order-messages/rules/:ruleId/stats', ...secure, apiCache(30), async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.getRuleStatsDetail(req, res);
+    } else {
+      res.status(400).json({ error: 'Order messages not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error loading rule stats detail:', error);
     res.status(500).json({ error: 'Failed' });
   }
 });

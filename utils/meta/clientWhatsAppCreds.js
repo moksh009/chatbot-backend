@@ -31,7 +31,13 @@ function maybeDecryptSecret(value) {
  * Includes legacy nested paths (whatsapp.*, config.*) and premium overrides.
  */
 const WHATSAPP_CREDENTIAL_SELECT =
-  "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp whatsappConnectionType whatsappConnectionMethod config complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
+  "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp.phoneNumberId whatsapp.wabaId whatsapp.accessToken config.phoneNumberId config.wabaId config.whatsappToken whatsappConnectionType whatsappConnectionMethod config complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
+
+/** For connection health / status routes — includes display fields + credentials (no parent+child path collision). */
+const WHATSAPP_CONNECTION_STATUS_SELECT =
+  WHATSAPP_CREDENTIAL_SELECT +
+  " whatsappDisplayPhoneNumber whatsappVerifiedName whatsappQualityRating whatsappWebhookSubscribed " +
+  "whatsappCoexistence whatsappConnectedAt whatsappAccountStatus whatsappRestricted whatsappMessagingLimit whatsappOnboardingCompleted";
 
 /** Mongoose .select() for outbound email / envelope dispatch (Gmail OAuth + SMTP). */
 const EMAIL_CREDENTIAL_SELECT =
@@ -166,6 +172,7 @@ function getMetaCatalogAccessTokens(client) {
 
 module.exports = {
   WHATSAPP_CREDENTIAL_SELECT,
+  WHATSAPP_CONNECTION_STATUS_SELECT,
   EMAIL_CREDENTIAL_SELECT,
   maybeDecryptSecret,
   getEffectiveWhatsAppAccessToken,

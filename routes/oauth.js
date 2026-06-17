@@ -516,6 +516,22 @@ router.get("/meta-ads/callback", async (req, res) => {
 // Google / Gmail OAuth Flow — Used for direct Gmail email sending
 // Uses GCAL_CLIENT_ID / GCAL_CLIENT_SECRET env vars (shared Google Cloud project)
 // ─────────────────────────────────────────────────────────────────────────────
+function sanitizeOAuthReturnTo(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const t = raw.trim();
+  if (!t.startsWith("/") || t.startsWith("//") || /^https?:/i.test(t)) return "";
+  return t.slice(0, 500);
+}
+
+function gmailOAuthFrontendRedirect(returnTo, { success = false, errorCode = "" } = {}) {
+  const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
+  const safe = sanitizeOAuthReturnTo(returnTo) || "/marketing-hub?tab=email";
+  const u = new URL(safe, `${frontendUrl}/`);
+  if (success) u.searchParams.set("google_connected", "true");
+  else if (errorCode) u.searchParams.set("google_error", errorCode);
+  return `${u.pathname}${u.search}`;
+}
+
 router.get("/google/start/:clientId", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -524,7 +540,8 @@ router.get("/google/start/:clientId", protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now() })).toString("base64");
+    const returnTo = sanitizeOAuthReturnTo(req.query.returnTo);
+    const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now(), returnTo })).toString("base64");
     const redirectUri = getGmailOAuthRedirectUri();
 
     if (!process.env.GCAL_CLIENT_ID) {
@@ -561,24 +578,26 @@ router.get("/google/callback", async (req, res) => {
 
   if (error) {
     console.error("[Google OAuth] Auth denied:", error);
-    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=${encodeURIComponent(error)}`);
+    return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect("", { errorCode: encodeURIComponent(error) })}`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=missing_params`);
+    return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect("", { errorCode: "missing_params" })}`);
   }
 
   let clientId;
+  let oauthReturnTo = "";
   try {
     const decoded = JSON.parse(Buffer.from(state, "base64").toString());
     clientId = decoded.clientId;
+    oauthReturnTo = decoded.returnTo || "";
   } catch (_) {
-    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=invalid_state`);
+    return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect("", { errorCode: "invalid_state" })}`);
   }
 
   try {
     if (!process.env.GCAL_CLIENT_ID || !process.env.GCAL_CLIENT_SECRET) {
-      return res.redirect(`${frontendUrl}/settings?tab=email&google_error=config_error`);
+      return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect(oauthReturnTo, { errorCode: "config_error" })}`);
     }
 
     const redirectUri = getGmailOAuthRedirectUri();
@@ -618,10 +637,10 @@ router.get("/google/callback", async (req, res) => {
     await bustGmailConnectionCaches(clientId);
 
     console.log(`[Google OAuth] Gmail connected for ${clientId}: ${gmailAddress}`);
-    return res.redirect(`${frontendUrl}/marketing-hub?tab=email&google_connected=true`);
+    return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect(oauthReturnTo, { success: true })}`);
   } catch (err) {
     console.error("[Google OAuth] Callback error:", err.response?.data || err.message);
-    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=callback_failed`);
+    return res.redirect(`${frontendUrl}${gmailOAuthFrontendRedirect(oauthReturnTo, { errorCode: "callback_failed" })}`);
   }
 });
 

@@ -27,6 +27,8 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     blueprint: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   status: { type: String, enum: ["active", "completed", "cancelled", "paused"], default: "active" },
+  /** When true (default), inbound customer reply cancels remaining steps. */
+  cancelOnReply: { type: Boolean, default: true },
   cancelledReason: { type: String },
   cancelledAt: { type: Date },
   steps: [{

@@ -19,7 +19,11 @@ router.get('/track/open/:token', async (req, res) => {
   const decoded = verifyTrackingToken(token);
 
   if (decoded?.envelopeId && decoded?.clientId && decoded.type === 'open') {
-    await recordEmailOpen(decoded.envelopeId, decoded.clientId, req);
+    try {
+      await recordEmailOpen(decoded.envelopeId, decoded.clientId, req);
+    } catch (_) {
+      /* recordEmailOpen handles + logs internally */
+    }
   }
 
   res.set({

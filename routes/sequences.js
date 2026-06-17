@@ -150,7 +150,7 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { leads, name, steps, type } = req.body; // leads is [{ leadId, phone, email }]
+    const { leads, name, steps, type, cancelOnReply } = req.body; // leads is [{ leadId, phone, email }]
 
     if (isLegacyNicheAutomationBlocked() && isLegacyFollowUpSequence({ name, steps })) {
       return res.status(400).json({
@@ -301,6 +301,7 @@ router.post('/:clientId', protect, async (req, res) => {
         email,
         name: name || 'Untitled Sequence',
         type: type || 'custom',
+        cancelOnReply: cancelOnReply !== false,
         steps: mappedSteps
       });
 
@@ -357,7 +358,6 @@ router.get('/:clientId', protect, async (req, res) => {
   }
 });
 
-// STATIC PATHS BEFORE /:sequenceId — do not reorder below this block
 router.get('/:clientId/templates', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
@@ -365,6 +365,48 @@ router.get('/:clientId/templates', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     res.json({ success: true, templates: filterSequenceTemplates(SEQUENCE_TEMPLATES) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/:clientId/hub-stats', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const sequences = await FollowUpSequence.find({ clientId })
+      .select('status steps meta')
+      .lean();
+
+    let messagesSent = 0;
+    let failedSteps = 0;
+    let recovered = 0;
+    for (const seq of sequences) {
+      for (const step of seq.steps || []) {
+        if (step.status === 'sent' || step.status === 'skipped') messagesSent += 1;
+        if (step.status === 'failed') failedSteps += 1;
+      }
+      if (seq.meta?.recovered) recovered += 1;
+    }
+
+    const estCostInr = Math.round(messagesSent * 0.115 * 100) / 100;
+
+    res.json({
+      success: true,
+      stats: {
+        active: sequences.filter((s) => s.status === 'active').length,
+        completed: sequences.filter((s) => s.status === 'completed').length,
+        paused: sequences.filter((s) => s.status === 'paused').length,
+        cancelled: sequences.filter((s) => s.status === 'cancelled').length,
+        messagesSent,
+        failedSteps,
+        estCostInr,
+        recovered,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -913,6 +955,14 @@ router.patch('/:clientId/:sequenceId/status', protect, async (req, res) => {
       { $set: { status } },
       { new: true }
     );
+    if (!seq) {
+      return res.status(404).json({ success: false, message: 'Sequence not found' });
+    }
+
+    if (status === 'active') {
+      const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
+      await enqueueDueStepsForSequence(seq).catch(() => {});
+    }
     
     res.json({ success: true, sequence: seq });
   } catch (error) {

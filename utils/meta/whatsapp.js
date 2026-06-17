@@ -1044,13 +1044,17 @@ const WhatsApp = {
    * Internal helper to extract credentials with validation
    */
   getCredentials(client) {
-    const token =
-      getEffectiveWhatsAppAccessToken(client) || process.env.WHATSAPP_TOKEN;
+    const clientToken = getEffectiveWhatsAppAccessToken(client);
+    const clientPhoneId = getEffectiveWhatsAppPhoneNumberId(client);
+    const allowGlobal = process.env.WHATSAPP_ALLOW_GLOBAL_FALLBACK === 'true';
+    const token = clientToken || (allowGlobal ? process.env.WHATSAPP_TOKEN : null);
     const phoneNumberId =
-      getEffectiveWhatsAppPhoneNumberId(client) || process.env.WHATSAPP_PHONENUMBER_ID;
+      clientPhoneId || (allowGlobal ? process.env.WHATSAPP_PHONENUMBER_ID : null);
 
     if (!token || !phoneNumberId) {
-      throw new Error(`[WhatsApp] Missing credentials for client ${client.clientId}`);
+      throw new Error(
+        `[WhatsApp] Missing tenant credentials for client ${client?.clientId || 'unknown'} — connect WhatsApp in Settings`
+      );
     }
     return { token, phoneNumberId };
   },

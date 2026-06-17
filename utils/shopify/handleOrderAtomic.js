@@ -148,7 +148,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
   const orderOptInFields = buildOrderPlacedOptInSetFields(existingLead?.optStatus);
 
   const recoveryStep = Number(existingLead?.recoveryStep || 0);
-  let recoveredViaWhatsApp = recoveryStep > 0;
+  let recoveredViaWhatsApp = false;
   let recoveredByStep = null;
 
   let lead = null;

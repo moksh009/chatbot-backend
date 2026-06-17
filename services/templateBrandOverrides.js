@@ -238,6 +238,16 @@ function resolveHeaderImageUrl(context = {}, template, client, slotId) {
   if (ov?.headerImageUrl) return ov.headerImageUrl;
   if (template?._headerImageOverride) return template._headerImageOverride;
 
+  const mappings = template?.variableMappings || template?.variableMapping || {};
+  const headerKey = mappings.header || mappings.headerVariable || template?.headerVariable;
+  if (headerKey) {
+    const key = String(headerKey);
+    const fromContext = context[key];
+    if (fromContext && /^https?:\/\//i.test(String(fromContext))) return fromContext;
+    if (key === "first_product_image" && context.first_product_image) return context.first_product_image;
+    if (key === "brand_logo_url" && context.brand_logo_url) return context.brand_logo_url;
+  }
+
   if (context.first_product_image) return context.first_product_image;
   if (context.brand_logo_url) return context.brand_logo_url;
 

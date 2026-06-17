@@ -2,6 +2,7 @@
 
 const { VARIABLE_REGISTRY, resolveSourcePath } = require('../utils/core/variableRegistry');
 const { buildVariableContext, injectVariables } = require('../utils/core/variableInjector');
+const { formatLineItemsSummary } = require('../utils/commerce/orderLineItemEnrichment');
 
 /**
  * Resolve {{variable_name}} placeholders using the master registry + live context.
@@ -20,13 +21,30 @@ async function buildSendContext({ client, phone, convo = null, lead = null, orde
   const merged = { ...base, ...(extra || {}) };
 
   if (order) {
-    const line0 = order.line_items?.[0] || order.lineItems?.[0];
-    if (line0) {
-      merged.product_name = line0.title || line0.name || merged.product_name || "";
+    const lineItems = order.line_items || order.lineItems || [];
+    const line0 = lineItems[0];
+    if (lineItems.length) {
+      merged.product_name = line0?.title || line0?.name || merged.product_name || "";
       merged.first_product_title = merged.product_name;
-      merged.order_items = merged.product_name;
-      if (line0.image?.src) merged.first_product_image = line0.image.src;
+      merged.order_items =
+        order.itemsSummary ||
+        formatLineItemsSummary(
+          lineItems.map((i) => ({
+            title: i.title || i.name,
+            quantity: i.quantity || 1,
+            variant_title: i.variant_title || '',
+          }))
+        ) ||
+        merged.product_name;
+      const img =
+        line0?.image?.src ||
+        line0?.image_url ||
+        line0?.imageUrl ||
+        order.first_product_image ||
+        null;
+      if (img) merged.first_product_image = img;
     }
+    merged.order = order;
     const cust = order.customer || {};
     merged.first_name = cust.first_name || (order.customerName || "").split(" ")[0] || merged.first_name;
     merged.customer_name = order.customerName || cust.name || merged.customer_name;
@@ -34,7 +52,9 @@ async function buildSendContext({ client, phone, convo = null, lead = null, orde
       merged.order_id = order.name || order.orderNumber || `#${order.orderId}`;
       merged.order_number = merged.order_id;
     }
-    if (order.total_price != null) merged.order_total = `₹${Number(order.total_price).toLocaleString("en-IN")}`;
+    if (order.total_price != null) {
+      merged.order_total = `₹${Number(order.total_price).toLocaleString("en-IN")}`;
+    }
     if (order.payment_method) merged.payment_method = order.payment_method;
     if (order.shipping_address) {
       const a = order.shipping_address;
@@ -65,6 +85,7 @@ function buildPositionalBodyParams(variableMappings = {}, context = {}) {
       const custom =
         context.extra?.customVariableValues ||
         context._customVariableValues ||
+        context.customVariableValues ||
         {};
       const text = custom[String(pos)] ?? custom[pos] ?? "";
       return { type: "text", text: String(text || "-").slice(0, 1024) };

@@ -206,6 +206,16 @@ async function processStatuses(statuses) {
               timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
             });
           }
+          try {
+            const { updateTemplateSendLogStatus } = require('../utils/commerce/templateSendLogStatus');
+            await updateTemplateSendLogStatus({
+              messageId,
+              status,
+              timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
+            });
+          } catch (_) {
+            /* non-fatal */
+          }
         } catch (cartStatErr) {
           log.debug(`Cart recovery status hook skipped: ${cartStatErr.message}`);
         }
@@ -303,6 +313,19 @@ async function processMessages(messages, metadata, contacts) {
       log.info(`Incoming from ${from}: ${message.type}`, { messageId });
       const clientDocForEnvelope = clientDocForDedup;
       if (clientDocForEnvelope?.clientId) {
+        const inboundReplyTypes = new Set(['text', 'button', 'interactive', 'image', 'audio', 'video', 'document']);
+        if (inboundReplyTypes.has(message.type)) {
+          try {
+            const { cancelSequencesOnInboundReply } = require('../utils/messaging/cancelSequencesOnInboundReply');
+            await cancelSequencesOnInboundReply({
+              clientId: clientDocForEnvelope.clientId,
+              phone: from,
+              reason: 'customer_replied',
+            });
+          } catch (seqCancelErr) {
+            log.debug(`Sequence cancel-on-reply skipped: ${seqCancelErr.message}`);
+          }
+        }
         const envelope = buildEventEnvelope({
           channel: 'whatsapp',
           eventType: 'inbound_message',
@@ -354,6 +377,18 @@ async function processMessages(messages, metadata, contacts) {
           message.type === 'button' || interactiveType === 'button_reply' || interactiveType === 'list_reply'
             ? 'button'
             : 'link';
+        const contextMessageId = message.context?.id;
+        if (contextMessageId) {
+          try {
+            const { recordTemplateSendLogClick } = require('../utils/commerce/templateSendLogStatus');
+            await recordTemplateSendLogClick({
+              messageId: contextMessageId,
+              timestamp: new Date(),
+            });
+          } catch (tplClickErr) {
+            log.debug(`TemplateSendLog click hook skipped: ${tplClickErr.message}`);
+          }
+        }
         CampaignMessage.findOneAndUpdate(
           { phone: from, status: { $in: ['sent', 'delivered', 'read', 'replied'] } },
           { $set: { 'metadata.clickedAt': new Date(), 'metadata.clickType': clickType } },

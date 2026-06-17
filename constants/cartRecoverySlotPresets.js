@@ -45,6 +45,7 @@ function cartRecoveryVariableMappings(stepNum) {
     if (idx != null) body[String(idx)] = field;
   }
   return {
+    header: 'first_product_image',
     body,
     buttons: { 0: 'checkout_url' },
   };

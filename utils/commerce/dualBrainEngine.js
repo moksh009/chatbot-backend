@@ -1622,30 +1622,14 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Wallet/Redeem existing logic would go here
   }
   
-  const defaultOptOutKeywords = [
-    'stop',
-    'unsubscribe',
-    'opt out',
-    'optout',
-    'cancel',
-    'no',
-    'quit',
-    'end',
-    'remove me',
-    'do not contact',
-    'halt',
-    'block bot',
-    'nahi',
-    'band karo',
-    'band karo.',
-  ];
-  const customStopKeywords = Array.isArray(client?.growthCompliance?.stopKeywords)
-    ? client.growthCompliance.stopKeywords
-        .map((k) => String(k || '').trim().toLowerCase())
-        .filter(Boolean)
-    : [];
-  const optOutKeywords = [...new Set([...defaultOptOutKeywords, ...customStopKeywords])];
-  const optInKeywords  = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'resume', 'unpause'];
+  const {
+    matchesOptOutKeyword,
+    matchesOptInKeyword,
+    getOptOutAutoReply,
+    getOptInAutoReply,
+    resolveOptOutKeywordsLower,
+  } = require('./marketingConsentConfig');
+  const compliance = client?.growthCompliance || {};
   const {
     buildKeywordOptInSetFields,
     buildKeywordOptInHistoryEntry,
@@ -1788,7 +1772,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  if (optOutKeywords.some(k => userTextLower === k || userTextLower.startsWith(`${k} `))) {
+  if (matchesOptOutKeyword(userTextRaw, compliance)) {
     log.info(`🛑 Opt-out detected for ${phone}. Running global kill switch.`);
 
     const { executeGlobalOptOut } = require('./optOutKillSwitch');
@@ -1799,6 +1783,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       keyword: userTextRaw,
       conversationId: convo._id,
       sendConfirmation: true,
+      confirmationMessage: getOptOutAutoReply(client),
       io,
     });
 
@@ -1813,7 +1798,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  if (optInKeywords.some(k => userTextLower === k)) {
+  if (matchesOptInKeyword(userTextRaw)) {
     const updatedLead = await AdLead.findOneAndUpdate(
       { phoneNumber: phone, clientId: client.clientId },
       {
@@ -1845,7 +1830,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Broadcast update
     if (io) io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone });
 
-    await sendWhatsAppText(client, phone, "Welcome back! Automations have been resumed. How can I help you today?", 'whatsapp', { complianceExempt: true });
+    await sendWhatsAppText(client, phone, getOptInAutoReply(client), 'whatsapp', { complianceExempt: true });
     return true; // Stop execution
   }
 
@@ -1989,18 +1974,25 @@ async function runDualBrainEngine(parsedMessage, client) {
   // SAFETY NET: Before any flow processing, check if user is requesting abort.
   // This prevents users from being trapped in infinite loops or multi-step flows.
   const _globalInterruptKeywords = {
-    optOut: ['stop', 'unsubscribe', 'opt out', 'halt', 'block bot'],
+    optOut: resolveOptOutKeywordsLower(compliance),
     humanHandoff: ['talk to human', 'talk to agent', 'talk to person', 'agent', 'human', 'real person', 'customer care', 'support']
   };
   const _isInActiveFlow = !!(convo.lastStepId || convo.status === 'WAITING_FOR_INPUT');
   if (_isInActiveFlow && userTextLower) {
-    // Check opt-out interrupts
-    if (_globalInterruptKeywords.optOut.some(k => userTextLower === k)) {
+    // Check opt-out interrupts — full global opt-out (not just pause)
+    if (matchesOptOutKeyword(userTextRaw, compliance)) {
       log.info(`🛑 [GlobalInterrupt] Opt-out "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
-      await Conversation.findByIdAndUpdate(convo._id, {
-        $set: { botPaused: true, isBotPaused: true, botStatus: 'paused', status: 'OPTED_OUT', lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
+      const { executeGlobalOptOut } = require('./optOutKillSwitch');
+      await executeGlobalOptOut({
+        client,
+        phone,
+        source: 'keyword_stop',
+        keyword: userTextRaw,
+        conversationId: convo._id,
+        sendConfirmation: true,
+        confirmationMessage: getOptOutAutoReply(client),
+        io,
       });
-      await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.", 'whatsapp', { complianceExempt: true });
       try {
         const { recordNegativeOutcome } = require('../../services/training/trainingOutcomeTracker');
         await recordNegativeOutcome(client.clientId, phone);

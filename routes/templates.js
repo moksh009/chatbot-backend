@@ -434,8 +434,20 @@ async function handleGetTemplateList(req, res) {
         // Purpose pre-filter only for legacy /list — unified context uses filterTemplatesForContext.
         if (contextPurpose && !isUnified) {
           const { isCartRecoveryEligible } = require('../utils/meta/templatePolicy');
+          const {
+            filterTemplatesForOrderMessagesList,
+            filterTemplatesForCartRecoveryList,
+            filterTemplatesForFlowPicker,
+          } = require('../utils/meta/orderMessageTemplatePolicy');
           if (contextPurpose === 'cart_recovery') {
-            merged = merged.filter((tpl) => isCartRecoveryEligible(tpl));
+            merged = filterTemplatesForCartRecoveryList(merged);
+            if (!merged.length) {
+              merged = Array.from(mergedMap.values()).filter((tpl) => isCartRecoveryEligible(tpl));
+            }
+          } else if (contextPurpose === 'order_status') {
+            merged = filterTemplatesForOrderMessagesList(merged);
+          } else if (contextPurpose === 'flow') {
+            merged = filterTemplatesForFlowPicker(merged);
           } else {
             merged = merged.filter((tpl) => {
               const primary = normalizePurpose(tpl.primaryPurpose || 'utility');

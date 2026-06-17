@@ -8,10 +8,10 @@ const {
   phoneVariants,
   mapOptOutSourceToCancelReason,
 } = require('../messaging/cancelAllAutomationsFor');
+const { getOptOutAutoReply, DEFAULT_OPT_OUT_AUTO_REPLY } = require('./marketingConsentConfig');
 const log = require('../core/logger')('OptOutKillSwitch');
 
-const STOP_CONFIRMATION =
-  "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.";
+const STOP_CONFIRMATION = DEFAULT_OPT_OUT_AUTO_REPLY;
 
 /**
  * Cancel all schedulable outbound work — delegates to cancelAllAutomationsFor (Slice 5).
@@ -52,6 +52,7 @@ async function executeGlobalOptOut({
   keyword = '',
   conversationId = null,
   sendConfirmation = true,
+  confirmationMessage = null,
   io = null,
 }) {
   if (!client?.clientId || !phone) {
@@ -142,13 +143,22 @@ async function executeGlobalOptOut({
   if (sendConfirmation) {
     try {
       const WhatsApp = require('../meta/whatsapp');
-      await WhatsApp.sendText(client, phone, STOP_CONFIRMATION);
+      const confirmationText =
+        confirmationMessage && String(confirmationMessage).trim()
+          ? String(confirmationMessage).trim()
+          : getOptOutAutoReply(client);
+      await WhatsApp.sendText(client, phone, confirmationText);
     } catch (e) {
       log.warn(`[OptOutKillSwitch] Confirmation send failed: ${e.message}`);
     }
   }
 
-  return { success: true, cancelSummary, confirmation: STOP_CONFIRMATION };
+  const confirmationUsed =
+    confirmationMessage && String(confirmationMessage).trim()
+      ? String(confirmationMessage).trim()
+      : getOptOutAutoReply(client);
+
+  return { success: true, cancelSummary, confirmation: confirmationUsed };
 }
 
 async function executeGlobalOptOutForClient(client, phoneRaw, options = {}) {

@@ -1618,6 +1618,16 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (waPatchRequested) {
       updateFields.whatsappConnectionType = 'manual';
       updateFields.whatsappConnectionMethod = 'manual';
+      updateFields.whatsappConnectedAt = new Date();
+      if (_waVerifySnapshot?.display_phone_number) {
+        updateFields.whatsappDisplayPhoneNumber = _waVerifySnapshot.display_phone_number;
+      }
+      if (_waVerifySnapshot?.verified_name) {
+        updateFields.whatsappVerifiedName = _waVerifySnapshot.verified_name;
+      }
+      if (_waVerifySnapshot?.quality_rating) {
+        updateFields.whatsappQualityRating = _waVerifySnapshot.quality_rating;
+      }
     }
 
     if (waPatchRequested && _waVerifySnapshot && _waVerifySnapshot.ok) {

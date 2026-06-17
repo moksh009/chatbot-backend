@@ -36,7 +36,7 @@ const {
   isWhatsAppClientConnected,
 } = require('../utils/core/connectionStatus');
 const { invalidateClientCache } = require('../utils/core/clientCache');
-const { buildWhatsAppCredentialMirror } = require('../utils/meta/clientWhatsAppCreds');
+const { buildWhatsAppCredentialMirror, WHATSAPP_CONNECTION_STATUS_SELECT } = require('../utils/meta/clientWhatsAppCreds');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -359,12 +359,7 @@ router.get('/status', protect, async (req, res) => {
   if (!clientId) return res.status(401).json({ success: false });
 
   const client = await Client.findOne({ clientId })
-    .select(
-      'wabaId phoneNumberId whatsappDisplayPhoneNumber whatsappVerifiedName ' +
-      'whatsappQualityRating whatsappWebhookSubscribed whatsappConnectionType ' +
-      'whatsappCoexistence whatsappConnectedAt whatsappConnectionMethod ' +
-      'whatsappAccountStatus whatsappRestricted whatsappMessagingLimit whatsappOnboardingCompleted'
-    )
+    .select(WHATSAPP_CONNECTION_STATUS_SELECT)
     .lean();
 
   if (!client) return res.status(404).json({ success: false });
@@ -385,6 +380,7 @@ router.get('/status', protect, async (req, res) => {
     connectionType: connectionType || (isConnected ? 'manual' : null),
     phoneNumberId: resolved.phoneNumberId || null,
     wabaId: resolved.wabaId || null,
+    tokenConfigured: !!(resolved.tokenPlain && resolved.tokenPlain.length > 5),
     coexistence: client.whatsappCoexistence || false,
     qualityRating: client.whatsappQualityRating || null,
     webhookSubscribed: client.whatsappWebhookSubscribed || false,
@@ -395,6 +391,59 @@ router.get('/status', protect, async (req, res) => {
     verifiedName: client.whatsappVerifiedName || null,
     connectedAt: client.whatsappConnectedAt || null,
   });
+});
+
+// ─── POST /test-send — tenant test text message (manual + embedded) ───────────
+
+router.post('/test-send', protect, async (req, res) => {
+  const clientId = req.user?.clientId;
+  if (!clientId) return res.status(401).json({ success: false, message: 'Not authorised.' });
+
+  try {
+    const client = await Client.findOne({ clientId })
+      .select(`${WHATSAPP_CONNECTION_STATUS_SELECT} adminPhone adminAlertWhatsapp defaultCountry`)
+      .lean();
+
+    if (!client || !isWhatsAppClientConnected(client)) {
+      return res.status(400).json({
+        success: false,
+        message: 'WhatsApp is not connected. Finish Setup with valid credentials first.',
+      });
+    }
+
+    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
+    const toRaw =
+      req.body?.phoneNumber || req.body?.phone || client.adminAlertWhatsapp || client.adminPhone;
+    const to = normalizePhoneWithCountry(toRaw, client.defaultCountry || 'IN');
+    if (!to || String(to).replace(/\D/g, '').length < 10) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Add your mobile number under Settings → Alerts (Admin phone), or pass phone in the request.',
+      });
+    }
+
+    const message =
+      String(req.body?.message || '').trim() ||
+      `✅ TopEdge AI test — your WhatsApp Cloud API connection is working. (${new Date().toLocaleString('en-IN')})`;
+
+    const WhatsApp = require('../utils/meta/whatsapp');
+    const data = await WhatsApp.sendText(client, to, message);
+    const waMessageId = data?.messages?.[0]?.id || null;
+
+    return res.json({
+      success: true,
+      message: 'Test message sent',
+      waMessageId,
+      to,
+    });
+  } catch (err) {
+    log.warn('WhatsApp test-send failed', { clientId, error: err.message });
+    return res.status(502).json({
+      success: false,
+      message: err.friendlyMessage || err.message || 'Test send failed',
+    });
+  }
 });
 
 module.exports = router;

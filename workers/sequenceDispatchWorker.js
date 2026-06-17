@@ -162,6 +162,20 @@ async function processSequenceDispatchJob(job) {
   const phone = normalizePhone(lead, seq);
   const email = normalizeEmail(lead, seq);
 
+  const { evaluateSequenceStepCondition } = require('../utils/messaging/evaluateSequenceStepCondition');
+  const conditionResult = await evaluateSequenceStepCondition({
+    clientId,
+    phone,
+    step,
+    sequence: seq,
+  });
+  if (!conditionResult.proceed) {
+    await markStepSkipped(sequenceId, stepIdx, fromStatus, conditionResult.reason || 'condition_not_met');
+    await maybeFinalizeSequence(sequenceId, clientId);
+    await emitSequenceProgress(clientId, sequenceId);
+    return;
+  }
+
   if (stepChannel === 'email' && (!email || !email.includes('@'))) {
     await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
       lockedBy: WORKER_ID,
@@ -278,6 +292,30 @@ async function processSequenceDispatchJob(job) {
         outcome: 'sent',
         messageId: result?.messageId || null,
       });
+      if (stepChannel === 'whatsapp') {
+        try {
+          const { normalizePhone } = require('../utils/core/helpers');
+          const { persistAutomationOutbound } = require('../utils/messaging/persistAutomationOutbound');
+          const sendPhone = normalizePhone(lead?.phoneNumber || seq.phone || phone);
+          const tplName = step?.templateName || step?.template || '';
+          if (sendPhone) {
+            await persistAutomationOutbound({
+              clientId,
+              phone: sendPhone,
+              templateName: tplName,
+              bodyPreview: `[Sequence · ${seq.name || 'step'}] ${tplName ? `Template: ${tplName}` : ''}`.trim(),
+              messageId: result?.messageId || '',
+              metadata: {
+                source: 'follow_up_sequence',
+                sequence_id: String(sequenceId),
+                sequence_step: stepIdx,
+              },
+            });
+          }
+        } catch (persistErr) {
+          log.warn(`Sequence inbox persist ${sequenceId}:${stepIdx}: ${persistErr.message}`);
+        }
+      }
     } else if (outcome.action === 'skipped') {
       await markStepSkipped(sequenceId, stepIdx, 'processing', outcome.reason || 'skipped');
       await maybeFinalizeSequence(sequenceId, clientId);
