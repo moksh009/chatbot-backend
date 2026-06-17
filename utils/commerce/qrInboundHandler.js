@@ -19,9 +19,10 @@ async function recordQrScanStats(qrId, phone) {
   return { isUnique };
 }
 
-async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique }) {
+async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique, io }) {
   const AdLead = require('../../models/AdLead');
   const tags = [...(qr.config?.tags || [])];
+  tags.push('QR scan');
   if (qr.config?.utmSource) tags.push(`Source: ${qr.config.utmSource}`);
   tags.push(`qr:${qr.name || shortCode}`);
   tags.push(`Scanned_${shortCode}`);
@@ -30,17 +31,54 @@ async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique
     ? { _id: lead._id, clientId: client.clientId }
     : { phoneNumber: phone, clientId: client.clientId };
 
+  const now = new Date();
+  const existing =
+    lead && lead._id
+      ? lead
+      : await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId })
+          .select('channelConsent tags _id')
+          .lean();
+
   const update = {
     $addToSet: { tags: { $each: [...new Set(tags.filter(Boolean))] } },
+    $inc: { inboundMessageCount: 1 },
     $set: {
       'meta.lastQRCode': shortCode,
       'meta.lastQRCodeName': qr.name || shortCode,
+      'meta.lastQRScannedAt': now,
+      source: 'qr_scan',
+      optInSource: 'qr_scan',
+      lastInteraction: now,
+      lastActivityAt: now,
+      lastInboundAt: now,
     },
   };
+
+  const waStatus = existing?.channelConsent?.whatsapp?.status;
+  if (waStatus !== 'opted_out') {
+    update.$set['channelConsent.whatsapp.status'] = 'opted_in';
+    update.$set['channelConsent.whatsapp.source'] = 'qr_scan';
+    update.$set['channelConsent.whatsapp.lastUpdated'] = now;
+  }
+
   if (qr.config?.discountCode) {
     update.$set.activeDiscountCode = qr.config.discountCode;
   }
-  await AdLead.findOneAndUpdate(leadFilter, update);
+
+  const updated = await AdLead.findOneAndUpdate(leadFilter, update, { new: true })
+    .select('_id phoneNumber tags source meta channelConsent')
+    .lean();
+
+  try {
+    await AdLead.pushJourneyEvent(client.clientId, phone, 'qr_scan', {
+      shortCode,
+      qrName: qr.name || shortCode,
+      qrType: qr.type,
+      isFirstScan: isUnique,
+    });
+  } catch (_) {
+    /* optional */
+  }
 
   try {
     const { fireWebhookEvent } = require('../core/webhookDelivery');
@@ -53,6 +91,36 @@ async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique
   } catch (_) {
     /* optional */
   }
+
+  const socketIo = io || global.io;
+  const leadId = updated?._id ? String(updated._id) : lead?._id ? String(lead._id) : null;
+  if (socketIo) {
+    socketIo.to(`client_${client.clientId}`).emit('lead_tags_updated', {
+      phone,
+      leadId,
+      tags: updated?.tags || [],
+    });
+    socketIo.to(`client_${client.clientId}`).emit('lead_qr_scanned', {
+      phone,
+      leadId,
+      qrName: qr.name || shortCode,
+      shortCode,
+      source: 'qr_scan',
+      isFirstScan: isUnique,
+    });
+  }
+
+  return updated;
+}
+
+/**
+ * Record scan stats + CRM tags when customer sends the prefilled wa.me message.
+ * Does not start flows — keyword / Flow Builder rules handle the reply.
+ */
+async function handleQrInboundMessage({ client, phone, lead, qr, shortCode, io }) {
+  const { isUnique } = await recordQrScanStats(qr._id, phone);
+  await applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique, io });
+  return { isUnique };
 }
 
 function extractQrShortCodeFromText(text) {
@@ -94,6 +162,7 @@ async function maybeAttributeQrConversion(clientId, phone, leadDoc) {
 module.exports = {
   recordQrScanStats,
   applyQrLeadEffects,
+  handleQrInboundMessage,
   extractQrShortCodeFromText,
   maybeAttributeQrConversion,
 };

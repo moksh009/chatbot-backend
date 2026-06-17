@@ -1128,11 +1128,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   await incrementUsage(client._id, 'messages', 1);
 
   // ── QR scan (wa.me Ref: QR_* or bare QR_XXXXXXXX) ────────────────────────────────
-  const {
-    recordQrScanStats,
-    applyQrLeadEffects,
-    extractQrShortCodeFromText,
-  } = require('./qrInboundHandler');
+  const { handleQrInboundMessage, extractQrShortCodeFromText } = require('./qrInboundHandler');
   const qrShortCode = extractQrShortCodeFromText(incomingText);
   if (qrShortCode) {
     const QRCodeModel = require('../../models/QRCode');
@@ -1144,42 +1140,25 @@ async function runDualBrainEngine(parsedMessage, client) {
     });
 
     if (scannedQr) {
-      log.info(`[DualBrain] 📷 QR Scan Detected for lead ${lead.phoneNumber}: ${scannedQr.name}`);
-
-      const { isUnique } = await recordQrScanStats(scannedQr._id, phone);
-      await applyQrLeadEffects({
+      log.info(
+        `[DualBrain] 📷 QR message from ${lead.phoneNumber || phone}: ${scannedQr.name} — tagged, continuing to automations`
+      );
+      await handleQrInboundMessage({
         client,
         phone,
         lead,
         qr: scannedQr,
         shortCode: qrShortCode,
-        isUnique,
+        io,
       });
 
-      if (scannedQr.config?.flowId && scannedQr.config.flowId !== '') {
-        log.info(`[QR Logic] Redirecting ${lead.phoneNumber} to flow ${scannedQr.config.flowId}`);
-        const targetFlow =
-          (await loadPublishedFlowByRef(client.clientId, scannedQr.config.flowId)) ||
-          (client.visualFlows || []).find((f) => f.id === scannedQr.config.flowId);
-        if (targetFlow) {
-          const { findFlowStartNode } = require('../flow/triggerEngine');
-          const startNodeId = findFlowStartNode(targetFlow.nodes || []);
-          if (startNodeId) {
-            const preMsg = scannedQr.config?.welcomeMessage;
-            if (preMsg) await sendWhatsAppText(client, phone, preMsg);
-            return await runFlow(client, phone, targetFlow, startNodeId, {
-              channel,
-              triggerSource: `QR_${scannedQr.shortCode}`,
-            });
-          }
+      if (scannedQr.type === 'contact_capture') {
+        const welcomeMsg = String(scannedQr.config?.welcomeMessage || '').trim();
+        if (welcomeMsg) {
+          await sendWhatsAppText(client, phone, welcomeMsg);
         }
       }
-
-      const welcomeMsg = scannedQr.config?.welcomeMessage;
-      if (welcomeMsg) {
-        await sendWhatsAppText(client, phone, welcomeMsg);
-      }
-      return true;
+      // Fall through — keyword triggers, Smart rules, and Flow Builder handle replies.
     }
   }
 

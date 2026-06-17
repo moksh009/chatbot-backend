@@ -43,3 +43,30 @@ test('buildActivityTimeline dedupes identical keys', () => {
   const leadCreated = events.filter((e) => e.eventName === 'Lead created');
   assert.equal(leadCreated.length, 1);
 });
+
+test('buildActivityTimeline includes QR scan from journey log and meta fallback', () => {
+  const scannedAt = new Date('2024-09-01T10:00:00Z');
+  const lead = {
+    meta: {
+      lastQRCode: 'QR_A1B2C3D4',
+      lastQRCodeName: 'Storefront window',
+      lastQRScannedAt: scannedAt,
+    },
+    journeyLog: [
+      {
+        eventName: 'qr_scan',
+        timestamp: scannedAt,
+        metadata: {
+          shortCode: 'QR_A1B2C3D4',
+          qrName: 'Storefront window',
+          isFirstScan: true,
+        },
+      },
+    ],
+  };
+  const events = buildActivityTimeline({ lead, orders: [], messages: [], marketingLogs: [], sequences: [] });
+  const qrEvents = events.filter((e) => e.action === 'qr_scan');
+  assert.equal(qrEvents.length, 1);
+  assert.match(qrEvents[0].eventName, /Scanned via QR/);
+  assert.equal(qrEvents[0].meta.qrName, 'Storefront window');
+});

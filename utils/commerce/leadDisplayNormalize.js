@@ -91,6 +91,15 @@ function resolveAudienceChannels(lead) {
 }
 
 function formatAudienceSourceLabel(lead) {
+  const qrName = lead?.meta?.lastQRCodeName;
+  const acquisition = resolveAcquisitionSource(lead);
+  if (
+    qrName &&
+    (acquisition === 'qr_scan' || normalizeKey(lead?.source) === 'qr_scan')
+  ) {
+    return `QR · ${qrName}`;
+  }
+
   const channels = resolveAudienceChannels(lead);
   if (channels.includes('shopify') && channels.includes('whatsapp')) {
     return 'Shopify · WhatsApp';

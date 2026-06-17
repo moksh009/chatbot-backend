@@ -118,6 +118,49 @@ function buildActivityTimeline({
     push('Cart recovered', lead.abandonedCartRecoveredAt, { action: 'cart_recovered', source: 'cart' });
   }
 
+  const qrJourneySeen = new Set();
+  for (const entry of lead.journeyLog || []) {
+    if (String(entry.eventName || '').toLowerCase() !== 'qr_scan') continue;
+    const meta = entry.metadata || {};
+    const label = meta.qrName
+      ? `Scanned via QR · ${meta.qrName}`
+      : meta.shortCode
+        ? `Scanned via QR · ${meta.shortCode}`
+        : 'Scanned via QR';
+    const ts = entry.timestamp || meta.scannedAt;
+    const key = `${meta.shortCode || ''}|${new Date(ts).toISOString()}`;
+    if (qrJourneySeen.has(key)) continue;
+    qrJourneySeen.add(key);
+    push(label, ts, {
+      action: 'qr_scan',
+      source: 'qr_code',
+      meta: {
+        badge: 'qr_scan',
+        qrName: meta.qrName,
+        shortCode: meta.shortCode,
+        qrType: meta.qrType,
+        isFirstScan: meta.isFirstScan,
+      },
+    });
+  }
+
+  const lastQrAt = lead.meta?.lastQRScannedAt;
+  if (lastQrAt) {
+    const qrName = lead.meta?.lastQRCodeName || lead.meta?.lastQRCode;
+    const fallbackKey = `${lead.meta?.lastQRCode || ''}|${new Date(lastQrAt).toISOString()}`;
+    if (!qrJourneySeen.has(fallbackKey)) {
+      push(qrName ? `Scanned via QR · ${qrName}` : 'Scanned via QR', lastQrAt, {
+        action: 'qr_scan',
+        source: 'qr_code',
+        meta: {
+          badge: 'qr_scan',
+          qrName: lead.meta?.lastQRCodeName,
+          shortCode: lead.meta?.lastQRCode,
+        },
+      });
+    }
+  }
+
   events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   const seen = new Set();
