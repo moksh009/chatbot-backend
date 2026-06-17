@@ -65,7 +65,18 @@ async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique
     update.$set.activeDiscountCode = qr.config.discountCode;
   }
 
-  const updated = await AdLead.findOneAndUpdate(leadFilter, update, { new: true })
+  const updated = await AdLead.findOneAndUpdate(
+    leadFilter,
+    {
+      ...update,
+      $setOnInsert: {
+        phoneNumber: phone,
+        clientId: client.clientId,
+        createdAt: now,
+      },
+    },
+    { new: true, upsert: true }
+  )
     .select('_id phoneNumber tags source meta channelConsent')
     .lean();
 
