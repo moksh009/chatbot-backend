@@ -1509,7 +1509,14 @@ async function runDualBrainEngine(parsedMessage, client) {
   // --- SMART ALERT DETECTION: "Call Now" ---
   // --- SMART ALERT DETECTION: "Call Now" & Escalation (Phase 21) ---
   // --- PHASE 21: DUAL-BRAIN PRIORITY KEYWORDS (OPT-IN/OUT) ---
-  const userTextRaw   = (parsedMessage.text?.body || '').trim();
+  const userTextRaw   = (
+    parsedMessage.text?.body ||
+    parsedMessage.interactive?.button_reply?.title ||
+    parsedMessage.interactive?.list_reply?.title ||
+    parsedMessage.interactive?.button_reply?.id ||
+    parsedMessage.interactive?.list_reply?.id ||
+    ''
+  ).trim();
   const userTextLower = userTextRaw.toLowerCase();
 
   if (parsedMessage.type === 'text' && userTextRaw && convo?.metadata?.ndrFlow) {
@@ -1706,6 +1713,14 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.warn(`[DualBrain] Re-permission opt-in: lead not found for ${phone}`);
       return true;
     }
+    try {
+      const SuppressionList = require('../../models/SuppressionList');
+      const { phoneVariants } = require('./optOutKillSwitch');
+      await SuppressionList.deleteMany({
+        clientId: client.clientId,
+        phone: { $in: phoneVariants(phone) },
+      });
+    } catch (_) {}
     await sendWhatsAppText(client, phone, client?.growthWidgetConfig?.welcomeMessage || "You're subscribed to WhatsApp updates. Thank you!", 'whatsapp', { complianceExempt: true });
     return true;
   }
@@ -1772,8 +1787,6 @@ async function runDualBrainEngine(parsedMessage, client) {
       { phoneNumber: phone, clientId: client.clientId },
       {
         $set: buildKeywordOptInSetFields(),
-        $pull: { tags: 'Opted Out' },
-        $addToSet: { tags: 'Opted In' },
         $push: {
           optInHistory: buildKeywordOptInHistoryEntry(),
         },
@@ -1793,7 +1806,20 @@ async function runDualBrainEngine(parsedMessage, client) {
     });
     try {
       const SuppressionList = require('../../models/SuppressionList');
-      await SuppressionList.deleteOne({ clientId: client.clientId, phone });
+      const { phoneVariants } = require('./optOutKillSwitch');
+      await SuppressionList.deleteMany({
+        clientId: client.clientId,
+        phone: { $in: phoneVariants(phone) },
+      });
+    } catch (_) {}
+
+    try {
+      const { transitionLeadTags } = require('./leadTagOps');
+      await transitionLeadTags({
+        filter: { _id: updatedLead._id, clientId: client.clientId },
+        add: ['Opted In'],
+        remove: ['Opted Out'],
+      });
     } catch (_) {}
 
     // Broadcast update

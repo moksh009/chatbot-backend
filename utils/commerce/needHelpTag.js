@@ -1,4 +1,4 @@
-const AdLead = require('../../models/AdLead');
+const { transitionLeadTags } = require('./leadTagOps');
 
 const NEED_HELP_TAG = 'Need help';
 
@@ -27,9 +27,10 @@ function phoneLookupFilter(clientId, phone) {
 async function applyNeedHelpTag(clientId, phone) {
   const filter = phoneLookupFilter(clientId, phone);
   if (!filter) return;
-  await AdLead.updateMany(filter, {
-    $addToSet: { tags: NEED_HELP_TAG },
-    $pull: { tags: { $in: LEGACY_HUMAN_TAGS } },
+  await transitionLeadTags({
+    filter,
+    add: [NEED_HELP_TAG],
+    remove: LEGACY_HUMAN_TAGS,
   });
 }
 

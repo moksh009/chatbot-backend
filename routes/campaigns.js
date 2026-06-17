@@ -1339,6 +1339,22 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
     });
   }
   try {
+    if (req.body.scheduledDate) {
+      const scheduledAt = new Date(req.body.scheduledDate);
+      if (Number.isNaN(scheduledAt.getTime())) {
+        return res.status(400).json({
+          message: 'Invalid scheduledDate value.',
+          code: 'campaign_schedule_invalid',
+        });
+      }
+      if (scheduledAt.getTime() < Date.now() + 60 * 1000) {
+        return res.status(400).json({
+          message: 'Scheduled send time must be at least 1 minute in the future.',
+          code: 'campaign_schedule_past',
+        });
+      }
+    }
+
     const tenantId = tenantClientId(req);
     if (!tenantId) {
       return res.status(403).json({ message: 'Unauthorized', code: 'unauthorized' });

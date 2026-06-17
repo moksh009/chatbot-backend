@@ -57,4 +57,51 @@ describe('09 — STOP / global opt-out', () => {
     const seq = await FollowUpSequence.findOne({ clientId, leadId: lead._id }).lean();
     assert.strictEqual(seq.status, 'cancelled');
   });
+
+  it('executeGlobalOptOut sends confirmation before suppression write path', async () => {
+    await clearCollections();
+    const Client = require('../../models/Client');
+    const AdLead = require('../../models/AdLead');
+    const SuppressionList = require('../../models/SuppressionList');
+    const { executeGlobalOptOut } = require('../../utils/commerce/optOutKillSwitch');
+    const WhatsApp = require('../../utils/meta/whatsapp');
+
+    const clientId = `optout_confirm_${Date.now()}`;
+    const phone = '919877665544';
+    await Client.create({ clientId, businessName: 'OptOut Confirm Test' });
+    await AdLead.create({
+      clientId,
+      phoneNumber: phone,
+      name: 'Confirm Lead',
+      optStatus: 'opted_in',
+    });
+
+    const originalSendText = WhatsApp.sendText;
+    let capturedMessage = null;
+    try {
+      WhatsApp.sendText = async (_client, to, body) => {
+        capturedMessage = { to, body };
+        return { messages: [{ id: 'wamid.confirm.mock' }] };
+      };
+
+      const client = await Client.findOne({ clientId }).lean();
+      const result = await executeGlobalOptOut({
+        client,
+        phone,
+        source: 'keyword_stop',
+        keyword: 'STOP',
+        sendConfirmation: true,
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(capturedMessage, 'expected STOP confirmation send to be attempted');
+      assert.equal(capturedMessage.to, phone);
+      assert.match(String(capturedMessage.body || ''), /unsubscribe|subscribed|START|SUBSCRIBE/i);
+
+      const suppression = await SuppressionList.find({ clientId }).lean();
+      assert.ok(suppression.length >= 1, 'expected suppression records after confirmation send');
+    } finally {
+      WhatsApp.sendText = originalSendText;
+    }
+  });
 });

@@ -20,6 +20,7 @@ const {
   getCartRecoveryConfig,
   computeNextPromotionAt,
 } = require('./cartRecoveryConfigService');
+const { transitionLeadTags } = require('./leadTagOps');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
@@ -412,15 +413,6 @@ async function upsertAbandonedCartLeadCore(client, data = {}, clientId) {
     $setOnInsert.checkoutInitiatedAt = now;
   }
 
-  const tagOps = isPurchased
-    ? {
-        $pull: { tags: ABANDONED_CART_TAG },
-        $addToSet: { tags: RECOVERED_CART_TAG },
-      }
-    : resolvedCartStatus === 'abandoned' && phoneE164
-      ? { $addToSet: { tags: ABANDONED_CART_TAG } }
-      : {};
-
   const isNewCheckoutSession =
     !existing ||
     (checkoutToken &&
@@ -430,7 +422,6 @@ async function upsertAbandonedCartLeadCore(client, data = {}, clientId) {
   const updateDoc = {
     $set,
     $setOnInsert,
-    ...tagOps,
   };
   if (isNewCheckoutSession) {
     updateDoc.$inc = {
@@ -440,6 +431,19 @@ async function upsertAbandonedCartLeadCore(client, data = {}, clientId) {
   }
 
   const lead = await AdLead.findOneAndUpdate(leadQuery, updateDoc, { upsert: true, new: true });
+
+  if (isPurchased) {
+    await transitionLeadTags({
+      filter: { _id: lead?._id, clientId },
+      add: [RECOVERED_CART_TAG],
+      remove: [ABANDONED_CART_TAG],
+    }).catch(() => {});
+  } else if (resolvedCartStatus === 'abandoned' && phoneE164) {
+    await transitionLeadTags({
+      filter: { _id: lead?._id, clientId },
+      add: [ABANDONED_CART_TAG],
+    }).catch(() => {});
+  }
 
   /** Mark recovered + halt scheduler immediately if checkout completed. */
   if (isPurchased) {
@@ -572,11 +576,17 @@ async function markCartLeadPurchased(clientId, { phone, checkoutToken, cartToken
         recoveredAt: now,
         recoveredOrderId: orderId ? String(orderId) : undefined,
       },
-      $pull: { tags: ABANDONED_CART_TAG },
-      $addToSet: { tags: RECOVERED_CART_TAG },
     },
     { new: true }
   );
+
+  if (lead?._id) {
+    await transitionLeadTags({
+      filter: { _id: lead._id, clientId },
+      add: [RECOVERED_CART_TAG],
+      remove: [ABANDONED_CART_TAG],
+    }).catch(() => {});
+  }
 
   if (lead && phoneE164) {
     const { attributeOrderToRecoveryAttempt } = require('./cartRecoveryAttemptService');

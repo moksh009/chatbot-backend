@@ -31,6 +31,10 @@ describe('marketingConsentConfig', () => {
     assert.equal(matchesOptInKeyword('start'), true);
     assert.equal(matchesOptInKeyword('SUBSCRIBE'), true);
     assert.equal(matchesOptInKeyword('subscribe'), true);
+    assert.equal(matchesOptInKeyword('START please'), true);
+    assert.equal(matchesOptInKeyword('subscribe, me'), true);
+    assert.equal(matchesOptInKeyword('start_now'), true);
+    assert.equal(matchesOptInKeyword('subscribe-now'), true);
     assert.equal(matchesOptInKeyword('yes'), false);
     assert.equal(matchesOptInKeyword('opt in'), false);
   });

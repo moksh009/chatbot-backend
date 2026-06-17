@@ -831,11 +831,13 @@ const WhatsApp = {
 
       // 2. Process Body (Match variable count exactly)
       const body = template.components?.find(c => c.type === 'BODY');
+      let bodyParamCount = 0;
       if (body) {
         const paramMatches = body.text.match(/{{(\d+)}}/g) || [];
         const paramCount = paramMatches.length > 0 
           ? Math.max(...paramMatches.map(m => parseInt(m.match(/\d+/)[0]))) 
           : 0;
+        bodyParamCount = paramCount;
 
         const parameters = [];
         for (let i = 1; i <= paramCount; i++) {
@@ -848,6 +850,39 @@ const WhatsApp = {
         
         if (parameters.length > 0) {
           components.push({ type: 'body', parameters });
+        }
+      }
+
+      // 3. Process URL buttons that require a runtime parameter
+      const buttonsComp = template.components?.find(c => c.type === 'BUTTONS');
+      if (buttonsComp?.buttons?.length) {
+        const urlButtons = buttonsComp.buttons
+          .map((btn, idx) => ({ btn, idx }))
+          .filter(({ btn }) => String(btn?.type || '').toUpperCase() === 'URL' && String(btn?.url || '').includes('{{'));
+
+        if (urlButtons.length > 0) {
+          const explicitButtonVars = Array.isArray(opts?.buttonUrlParams)
+            ? opts.buttonUrlParams
+            : typeof opts?.buttonUrlParams === 'string'
+              ? opts.buttonUrlParams.split(',').map((v) => String(v || '').trim()).filter(Boolean)
+              : [];
+          const inferredButtonVars = variables.slice(bodyParamCount);
+          const buttonVars = [...explicitButtonVars, ...inferredButtonVars].filter((v) => String(v || '').trim());
+
+          if (buttonVars.length < urlButtons.length) {
+            throw new Error(
+              `[WhatsApp] Template ${templateName} requires ${urlButtons.length} URL button parameter(s), but only ${buttonVars.length} provided.`
+            );
+          }
+
+          urlButtons.forEach(({ idx }, i) => {
+            components.push({
+              type: 'button',
+              sub_type: 'url',
+              index: String(idx),
+              parameters: [{ type: 'text', text: String(buttonVars[i]).slice(0, 256) }],
+            });
+          });
         }
       }
     } else {

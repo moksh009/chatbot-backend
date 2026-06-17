@@ -97,14 +97,6 @@ async function executeGlobalOptOut({
     { upsert: false, new: true }
   );
 
-  for (const v of variants) {
-    await SuppressionList.findOneAndUpdate(
-      { clientId, phone: v },
-      { $set: { reason: 'opted_out', source, addedAt: now } },
-      { upsert: true }
-    );
-  }
-
   if (conversationId) {
     const Conversation = require('../../models/Conversation');
     await Conversation.findByIdAndUpdate(conversationId, {
@@ -151,6 +143,14 @@ async function executeGlobalOptOut({
     } catch (e) {
       log.warn(`[OptOutKillSwitch] Confirmation send failed: ${e.message}`);
     }
+  }
+
+  for (const v of variants) {
+    await SuppressionList.findOneAndUpdate(
+      { clientId, phone: v },
+      { $set: { reason: 'opted_out', source, addedAt: now } },
+      { upsert: true }
+    );
   }
 
   const confirmationUsed =

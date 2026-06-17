@@ -49,6 +49,27 @@ let vertexPlatformInstance = null;
 let vertexDeprecationLogged = false;
 let vertexDisabledUntilMs = 0;
 const VERTEX_AUTH_BACKOFF_MS = Number(process.env.VERTEX_AUTH_BACKOFF_MS || 10 * 60 * 1000);
+let vertexLastDisableLogAtMs = 0;
+
+function isVertexAuthFailure(message = '') {
+    return /Unable to authenticate|GoogleAuthError|permission|auth|UNAUTHENTICATED|PERMISSION_DENIED/i.test(
+        String(message || '')
+    );
+}
+
+function markVertexTemporarilyDisabled(reason = '') {
+    vertexDisabledUntilMs = Date.now() + VERTEX_AUTH_BACKOFF_MS;
+    // Force fresh init after cooldown to avoid stale auth context loops.
+    vertexPlatformInstance = null;
+    if (Date.now() - vertexLastDisableLogAtMs > 30_000) {
+        vertexLastDisableLogAtMs = Date.now();
+        logger.warn(
+            `Vertex temporarily disabled for ${Math.round(VERTEX_AUTH_BACKOFF_MS / 1000)}s due to auth failure: ${String(
+                reason || 'unknown'
+            ).slice(0, 200)}`
+        );
+    }
+}
 
 function getVertexInstance() {
     if (Date.now() < vertexDisabledUntilMs) return null;
@@ -230,12 +251,7 @@ async function generateText(prompt, apiKey, options = {}) {
 
             if (useVertex && attempt === 1 && isKeyValid(platformKey)) {
                 logger.warn(`Vertex AI failed, falling back to AI Studio: ${msg}`);
-                if (/Unable to authenticate|GoogleAuthError|permission|auth/i.test(msg)) {
-                    vertexDisabledUntilMs = Date.now() + VERTEX_AUTH_BACKOFF_MS;
-                    logger.warn(
-                      `Vertex temporarily disabled for ${Math.round(VERTEX_AUTH_BACKOFF_MS / 1000)}s due to auth failure`
-                    );
-                }
+                if (isVertexAuthFailure(msg)) markVertexTemporarilyDisabled(msg);
                 continue;
             }
 
@@ -485,6 +501,7 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
                 const msg = err.message || "";
                 if (useVertex && attempt === 1 && isKeyValid(platformKey)) {
                     logger.warn(`Vertex AI failed, falling back to AI Studio: ${msg}`);
+                    if (isVertexAuthFailure(msg)) markVertexTemporarilyDisabled(msg);
                     continue;
                 }
                 if (isQuotaOrBillingError(err)) {

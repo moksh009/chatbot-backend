@@ -21,6 +21,10 @@ function normalizeKeywordLower(raw) {
   return String(raw || '').trim().toLowerCase();
 }
 
+function escapeRegex(raw) {
+  return String(raw || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function isReservedOptOutKeyword(raw) {
   const u = normalizeKeywordUpper(raw);
   return DEFAULT_OPT_OUT_KEYWORDS.includes(u);
@@ -72,14 +76,18 @@ function matchesOptOutKeyword(text, compliance = {}) {
   const t = normalizeKeywordLower(text);
   if (!t) return false;
   const keywords = resolveOptOutKeywordsLower(compliance);
-  return keywords.some((k) => t === k || t.startsWith(`${k} `));
+  return keywords.some((k) =>
+    new RegExp(`^${escapeRegex(k)}(?:\\b|\\s|[_!.,?;:'"()\\-])`, 'i').test(t)
+  );
 }
 
-/** Case-insensitive exact match only. */
+/** Case-insensitive exact match or "{keyword} ..." */
 function matchesOptInKeyword(text) {
   const t = normalizeKeywordLower(text);
   if (!t) return false;
-  return resolveOptInKeywordsLower().includes(t);
+  return resolveOptInKeywordsLower().some((k) =>
+    new RegExp(`^${escapeRegex(k)}(?:\\b|\\s|[_!.,?;:'"()\\-])`, 'i').test(t)
+  );
 }
 
 function getOptOutAutoReply(client) {
