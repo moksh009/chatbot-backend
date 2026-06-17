@@ -17,7 +17,7 @@ router.get('/', protect, apiCache(60), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         const segments = await Segment.find({ clientId })
-            .select('name description conditions lastCount lastCountAt createdAt updatedAt')
+            .select('_id name description conditions lastCount lastCountAt createdAt updatedAt')
             .sort({ createdAt: -1 })
             .lean();
         timer.finish(`200 ok | count=${segments.length}`);

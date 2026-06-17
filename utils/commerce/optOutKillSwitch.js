@@ -13,6 +13,18 @@ const log = require('../core/logger')('OptOutKillSwitch');
 
 const STOP_CONFIRMATION = DEFAULT_OPT_OUT_AUTO_REPLY;
 
+async function broadcastConversationPatches({ clientId, phone, patch, io }) {
+  if (!io || !clientId || !phone) return;
+  const Conversation = require('../../models/Conversation');
+  const variants = phoneVariants(phone);
+  const convos = await Conversation.find({ clientId, phone: { $in: variants } })
+    .populate('assignedTo', 'name')
+    .lean();
+  for (const c of convos) {
+    io.to(`client_${clientId}`).emit('conversation_update', { ...c, ...patch });
+  }
+}
+
 /**
  * Cancel all schedulable outbound work — delegates to cancelAllAutomationsFor (Slice 5).
  */
@@ -137,7 +149,18 @@ async function executeGlobalOptOut({
   });
 
   if (io) {
-    io.to(`client_${clientId}`).emit('lead_opted_out', { phone });
+    await broadcastConversationPatches({
+      clientId,
+      phone,
+      patch: {
+        botPaused: true,
+        isBotPaused: true,
+        botStatus: 'paused',
+        status: 'OPTED_OUT',
+      },
+      io,
+    });
+    io.to(`client_${clientId}`).emit('lead_opted_out', { phone, optStatus: 'opted_out' });
   }
 
   if (sendConfirmation) {
@@ -186,6 +209,7 @@ module.exports = {
   executeGlobalOptOut,
   executeGlobalOptOutForClient,
   cancelPendingJobsForContact,
+  broadcastConversationPatches,
   phoneVariants,
   STOP_CONFIRMATION,
 };

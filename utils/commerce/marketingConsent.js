@@ -6,9 +6,24 @@ const AdLead = require('../../models/AdLead');
 
 const { normalizePhone } = require('../core/helpers');
 
+/** Map env dial codes (e.g. "91") and ISO codes (e.g. "IN") to libphonenumber region. */
+function resolvePhoneRegion(defaultCc = process.env.DEFAULT_COUNTRY_CODE || '91') {
+  const raw = String(defaultCc || '').trim().toUpperCase();
+  if (raw === 'IN' || raw === 'IND' || raw === 'INDIA') return 'IN';
+  // Numeric dial codes (91, 1, …) — TopEdge V1 defaults to Indian merchants
+  if (/^\d{1,3}$/.test(raw)) return 'IN';
+  if (raw.length === 2 && /^[A-Z]{2}$/.test(raw)) return raw;
+  return 'IN';
+}
+
 function normalizePhoneDigits(p, defaultCc = process.env.DEFAULT_COUNTRY_CODE || '91') {
-  const country = String(defaultCc).length === 2 ? String(defaultCc).toUpperCase() : 'IN';
-  return normalizePhone(p, country) || '';
+  const country = resolvePhoneRegion(defaultCc);
+  const normalized = normalizePhone(p, country);
+  if (normalized) return normalized;
+  // Fallback for already-normalized E.164 digits stored by legacy CSV upload paths
+  const digits = String(p || '').replace(/\D/g, '');
+  if (digits.length >= 10 && digits.length <= 15) return digits;
+  return '';
 }
 
 function normalizeEmail(raw) {
@@ -108,8 +123,20 @@ async function filterAudienceForEmailOptIn(clientId, audienceRows, campaign) {
   let excluded = 0;
   for (const row of rows) {
     const e = normalizeEmail(row?.email);
-    if (!e || !allowed.has(e)) excluded++;
-    else out.push(row);
+    if (!e) {
+      excluded++;
+      continue;
+    }
+    if (allowed.has(e)) {
+      out.push(row);
+      continue;
+    }
+    // Cold CSV / frozen-list emails with no AdLead yet — sendable when opt-in not required
+    if (!requireOptIn) {
+      out.push(row);
+      continue;
+    }
+    excluded++;
   }
   return {
     rows: out,

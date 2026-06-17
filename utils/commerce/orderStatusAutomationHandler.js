@@ -208,7 +208,7 @@ async function recordRuleSendOutcome(clientId, ruleId, outcome = {}) {
       { clientId, 'commerceAutomations.id': String(ruleId) },
       { $set: setFields }
     );
-    if (!outcome.sent && errorCode === 'TEMPLATE_NOT_APPROVED' && global.io) {
+    if (!outcome.sent && errorCode && global.io) {
       global.io.to(`client:${clientId}`).emit('automation_send_failed', {
         type: 'automation_send_failed',
         ruleId: String(ruleId),

@@ -1260,7 +1260,12 @@ async function runDualBrainEngine(parsedMessage, client) {
                 action.templateName,
                 [variableContext.first_name || 'Customer'],
                 null,
-                variableContext.detectedLanguage || 'en'
+                variableContext.detectedLanguage || 'en',
+                {
+                  source: 'smart_rule',
+                  contextType: 'automation',
+                  templateName: action.templateName,
+                }
               );
               ruleIntercepted = true;
             }
@@ -1806,7 +1811,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     await Conversation.findByIdAndUpdate(convo._id, {
       botPaused: false,
       isBotPaused: false,
-      status: 'BOT_ACTIVE'
+      botStatus: 'active',
+      status: 'BOT_ACTIVE',
     });
     try {
       const SuppressionList = require('../../models/SuppressionList');
@@ -1827,7 +1833,21 @@ async function runDualBrainEngine(parsedMessage, client) {
     } catch (_) {}
 
     // Broadcast update
-    if (io) io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone });
+    if (io) {
+      const { broadcastConversationPatches } = require('./optOutKillSwitch');
+      await broadcastConversationPatches({
+        clientId: client.clientId,
+        phone,
+        patch: {
+          botPaused: false,
+          isBotPaused: false,
+          botStatus: 'active',
+          status: 'BOT_ACTIVE',
+        },
+        io,
+      });
+      io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone, optStatus: 'opted_in' });
+    }
 
     await sendWhatsAppText(client, phone, getOptInAutoReply(client), 'whatsapp', { complianceExempt: true });
     return true; // Stop execution
@@ -4700,13 +4720,19 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       const headerImage = data.headerImageUrl || null;
       
       try {
-        await WhatsApp.sendSmartTemplate(
+        await sendWhatsAppSmartTemplate(
             client, 
             phone, 
             templateName, 
             templateVars, 
             headerImage, 
-            data.languageCode || 'en'
+            data.languageCode || 'en',
+            {
+              source: 'flow',
+              contextType: 'flow',
+              flow_id: convo?.activeFlowId || convo?.metadata?.activeFlowId || null,
+              flow_node_id: node?.id || null,
+            }
         );
       } catch (templateErr) {
         log.error(`[Template] META_REJECT: Template "${templateName}" failed for ${phone}: ${templateErr.message}`);
@@ -5822,10 +5848,42 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode, c
   } catch (err) { log.error('sendTemplate error:', { error: err.response?.data || err.message }); }
 }
 
-async function sendWhatsAppSmartTemplate(client, phone, templateName, variables = [], headerImage = null, languageCode = 'en') {
+async function persistSmartTemplateOutbound(client, phone, templateName, sendResult, metadata = {}) {
+  const messageId =
+    sendResult?.messages?.[0]?.id ||
+    sendResult?.messageId ||
+    '';
+  if (!client?.clientId || !phone || (!messageId && !sendResult)) return;
+  try {
+    const { persistAutomationOutbound } = require('../messaging/persistAutomationOutbound');
+    await persistAutomationOutbound({
+      clientId: client.clientId,
+      phone,
+      templateName,
+      bodyPreview: `[Template: ${templateName}]`,
+      messageId,
+      metadata: {
+        templateName,
+        ...metadata,
+      },
+    });
+  } catch (persistErr) {
+    log.warn(`[SmartTemplate] inbox persist failed: ${persistErr.message}`);
+  }
+}
+
+async function sendWhatsAppSmartTemplate(
+  client,
+  phone,
+  templateName,
+  variables = [],
+  headerImage = null,
+  languageCode = 'en',
+  persistMeta = null
+) {
   try {
     const WhatsApp = require('../meta/whatsapp');
-    return await WhatsApp.sendSmartTemplate(
+    const sendResult = await WhatsApp.sendSmartTemplate(
       client,
       phone,
       templateName,
@@ -5833,6 +5891,10 @@ async function sendWhatsAppSmartTemplate(client, phone, templateName, variables 
       headerImage,
       languageCode || 'en'
     );
+    if (persistMeta) {
+      await persistSmartTemplateOutbound(client, phone, templateName, sendResult, persistMeta);
+    }
+    return sendResult;
   } catch (err) {
     if (
       (err.message || "").includes("132001") ||

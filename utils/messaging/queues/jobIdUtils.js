@@ -27,10 +27,20 @@ function signupWelcomeJobId(userId) {
   return sanitizeBullMqJobId('signup-welcome', userId);
 }
 
+function inboundEngineJobId(clientId, phone) {
+  return sanitizeBullMqJobId('inbound', clientId, phone);
+}
+
+function nlpProcessJobId(clientId, phone) {
+  return sanitizeBullMqJobId('nlp', clientId, phone);
+}
+
 module.exports = {
   sanitizeBullMqJobId,
   campaignMessageJobId,
   sequenceStepJobId,
   webhookDeliveryJobId,
   signupWelcomeJobId,
+  inboundEngineJobId,
+  nlpProcessJobId,
 };

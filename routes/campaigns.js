@@ -121,20 +121,10 @@ try {
 const BATCH_SIZE = 10;
 const BATCH_DELAY_MS = 1000;
 
+const { normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
+
 function normalizePhone(p) {
-  if (!p) return '';
-  let digits = String(p).replace(/[^\d]/g, '');
-  if (!digits) return '';
-  const cc = process.env.DEFAULT_COUNTRY_CODE || '91';
-  // Handle 11-digit numbers starting with 0 (strip leading 0)
-  if (digits.length === 11 && digits.startsWith('0')) {
-    digits = digits.substring(1);
-  }
-  // Prepend country code for 10-digit local numbers
-  if (digits.length === 10) return cc + digits;
-  // Reject numbers that are too short after normalization
-  if (digits.length < 10) return '';
-  return digits;
+  return normalizePhoneDigits(p);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -1170,12 +1160,24 @@ router.post('/:id/send-winner', ...campaignMutate, async (req, res) => {
 router.post('/preflight', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const { campaignId, audienceCount: rawCount, channel: rawChannel, templateName } = req.body || {};
+    const { campaignId, audienceCount: rawCount, channel: rawChannel, templateName, leadIds } = req.body || {};
     const Campaign = require('../models/Campaign');
     const Client = require('../models/Client');
     let campaign = null;
     let audienceRows = [];
-    if (campaignId) {
+    if (Array.isArray(leadIds) && leadIds.length > 0) {
+      const AdLead = require('../models/AdLead');
+      const ids = leadIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id)));
+      const leads = await AdLead.find({ clientId, _id: { $in: ids } })
+        .select('phone phoneNumber email optStatus optInSource')
+        .lean();
+      audienceRows = leads.map((l) => ({
+        phone: l.phoneNumber || l.phone,
+        email: l.email,
+        optStatus: l.optStatus,
+        optInSource: l.optInSource,
+      }));
+    } else if (campaignId) {
       campaign = await Campaign.findOne({ _id: campaignId, clientId }).lean();
       if (!campaign) {
         return res.status(404).json({ success: false, blocked: true, message: 'Campaign not found' });
@@ -1192,11 +1194,11 @@ router.post('/preflight', protect, async (req, res) => {
     const blockers = [];
     let eligibleCount = audienceCount;
 
-    if (campaign && audienceRows.length > 0) {
+    if (audienceRows.length > 0) {
       const optFiltered = await filterAudienceForMarketingOptIn(
         clientId,
         audienceRows,
-        { ...campaign, channel }
+        { ...(campaign || {}), channel, clientId }
       );
       eligibleCount = optFiltered.rows.length;
       if (eligibleCount === 0) {

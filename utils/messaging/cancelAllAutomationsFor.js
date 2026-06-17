@@ -6,6 +6,7 @@ const { getAppRedis, getQueueRedis } = require('../core/redisFactory');
 const { writeAuditLog } = require('./writeAuditLog');
 const { emitToClient } = require('../core/socket');
 const log = require('../core/logger')('CancelAutomations');
+const { nlpProcessJobId } = require('./queues/jobIdUtils');
 
 function phoneVariants(phone) {
   const raw = String(phone || '').replace(/\D/g, '');
@@ -219,7 +220,7 @@ async function drainBullMqForContact(clientId, phone) {
     const { Queue } = require('bullmq');
     const nlpQueue = new Queue('nlp-queue', { connection: queueRedis });
     for (const v of variants) {
-      const jobId = `process_nlp:${clientId}:${v}`;
+      const jobId = nlpProcessJobId(clientId, v);
       try {
         const job = await nlpQueue.getJob(jobId);
         if (job) {

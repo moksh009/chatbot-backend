@@ -129,7 +129,7 @@ async function buildCampaignAudienceSnapshot(campaign, { templateCategory = 'MAR
         Boolean(normalizePhoneDigits(row?.phone || row?.phoneNumber || ''))
       );
 
-  const invalidPhone = Math.max(0, rawRows.length - validRows.length);
+  const invalidContact = Math.max(0, rawRows.length - validRows.length);
 
   const optFiltered = await filterAudienceForMarketingOptIn(
     campaign.clientId,
@@ -137,58 +137,89 @@ async function buildCampaignAudienceSnapshot(campaign, { templateCategory = 'MAR
     campaign
   );
 
-  const phoneSet = new Set();
-  for (const row of validRows) {
-    const p = normalizePhoneDigits(row?.phone || row?.phoneNumber || '');
-    if (p) phoneSet.add(p);
-  }
-
-  let suppressedPhones = new Set();
-  let leadByPhone = new Map();
-  if (phoneSet.size > 0) {
-    const [suppressedDocs, leads] = await Promise.all([
-      SuppressionList.find({
-        clientId: campaign.clientId,
-        phone: { $in: [...phoneSet] },
-      })
-        .select('phone')
-        .lean(),
-      AdLead.find({
-        clientId: campaign.clientId,
-        phoneNumber: { $in: [...phoneSet] },
-      })
-        .select('phoneNumber optStatus optInSource')
-        .lean(),
-    ]);
-    suppressedPhones = new Set(suppressedDocs.map((d) => d.phone));
-    leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
-  }
-
   let willSend = 0;
   let optedOut = 0;
   let suppressed = 0;
   const willSendRows = [];
 
-  for (const row of optFiltered.rows) {
-    const p = normalizePhoneDigits(row?.phone || row?.phoneNumber || '');
-    if (!p) continue;
-    if (suppressedPhones.has(p)) {
-      suppressed += 1;
-      continue;
+  if (isEmail) {
+    const emailSet = new Set();
+    for (const row of validRows) {
+      const e = normalizeEmail(row?.email);
+      if (e) emailSet.add(e);
     }
-    const lead = leadByPhone.get(p);
-    const status = String(lead?.optStatus || row?.optStatus || 'unknown').toLowerCase();
-    if (status === 'opted_out') {
-      optedOut += 1;
-      continue;
+    let leadByEmail = new Map();
+    if (emailSet.size > 0) {
+      const leads = await AdLead.find({
+        clientId: campaign.clientId,
+        email: { $in: [...emailSet] },
+      })
+        .select('email optStatus channelConsent optInSource')
+        .lean();
+      leadByEmail = new Map(leads.map((l) => [normalizeEmail(l.email), l]));
     }
-    willSend += 1;
-    willSendRows.push(row);
+    for (const row of optFiltered.rows) {
+      const e = normalizeEmail(row?.email);
+      if (!e) continue;
+      const lead = leadByEmail.get(e);
+      const emailStatus = String(lead?.channelConsent?.email?.status || '').toLowerCase();
+      const optStatus = String(lead?.optStatus || row?.optStatus || 'unknown').toLowerCase();
+      if (emailStatus === 'opted_out' || optStatus === 'opted_out') {
+        optedOut += 1;
+        continue;
+      }
+      willSend += 1;
+      willSendRows.push(row);
+    }
+  } else {
+    const phoneSet = new Set();
+    for (const row of validRows) {
+      const p = normalizePhoneDigits(row?.phone || row?.phoneNumber || '');
+      if (p) phoneSet.add(p);
+    }
+
+    let suppressedPhones = new Set();
+    let leadByPhone = new Map();
+    if (phoneSet.size > 0) {
+      const [suppressedDocs, leads] = await Promise.all([
+        SuppressionList.find({
+          clientId: campaign.clientId,
+          phone: { $in: [...phoneSet] },
+        })
+          .select('phone')
+          .lean(),
+        AdLead.find({
+          clientId: campaign.clientId,
+          phoneNumber: { $in: [...phoneSet] },
+        })
+          .select('phoneNumber optStatus optInSource')
+          .lean(),
+      ]);
+      suppressedPhones = new Set(suppressedDocs.map((d) => d.phone));
+      leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
+    }
+
+    for (const row of optFiltered.rows) {
+      const p = normalizePhoneDigits(row?.phone || row?.phoneNumber || '');
+      if (!p) continue;
+      if (suppressedPhones.has(p)) {
+        suppressed += 1;
+        continue;
+      }
+      const lead = leadByPhone.get(p);
+      const status = String(lead?.optStatus || row?.optStatus || 'unknown').toLowerCase();
+      if (status === 'opted_out') {
+        optedOut += 1;
+        continue;
+      }
+      willSend += 1;
+      willSendRows.push(row);
+    }
   }
 
   const policy = evaluateAudiencePolicySummary(
     willSendRows.map((row) => ({
-      optStatus: row.optStatus || leadByPhone.get(normalizePhoneDigits(row?.phone || ''))?.optStatus || 'unknown',
+      optStatus: row.optStatus || 'unknown',
       optInSource: row.optInSource,
     })),
     cat
@@ -209,7 +240,7 @@ async function buildCampaignAudienceSnapshot(campaign, { templateCategory = 'MAR
     willSend,
     optedOut,
     suppressed,
-    invalidPhone,
+    invalidPhone: invalidContact,
     unknownBlocked: Math.max(0, validRows.length - willSend - optedOut - suppressed),
     bySource: [...sourceMap.entries()].map(([source, count]) => ({ source, count })),
     recommendedRepermission: policy.unknownBlocked > 0 ? policy.unknownBlocked : 0,

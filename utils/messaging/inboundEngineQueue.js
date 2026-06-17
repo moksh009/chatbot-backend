@@ -3,6 +3,7 @@
 const { Queue, Worker } = require('bullmq');
 const { getQueueRedis, isRedisReady } = require('../core/redisFactory');
 const log = require('../core/logger')('InboundEngineQueue');
+const { inboundEngineJobId } = require('./queues/jobIdUtils');
 
 let inboundQueue = null;
 let inboundWorker = null;
@@ -22,7 +23,7 @@ function getInboundEngineQueue() {
 async function enqueueInboundEngineRetry({ clientId, phone, parsedMessage, delayMs = 1500 }) {
   const q = getInboundEngineQueue();
   if (!q) return false;
-  const jobId = `inbound:${clientId}:${phone}`;
+  const jobId = inboundEngineJobId(clientId, phone);
   try {
     const existing = await q.getJob(jobId);
     if (existing) await existing.remove();

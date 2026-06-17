@@ -1,5 +1,6 @@
 const { Queue } = require('bullmq');
 const { getQueueRedis, isRedisReady } = require('../utils/core/redisFactory');
+const { nlpProcessJobId } = require('../utils/messaging/queues/jobIdUtils');
 
 let nlpQueueSingleton = null;
 
@@ -29,7 +30,7 @@ class MessageBufferService {
 
     try {
       const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
-      const jobId = `process_nlp:${clientId}:${phoneNumber}`;
+      const jobId = nlpProcessJobId(clientId, phoneNumber);
 
       const existingText = await redisConnection.get(redisKey);
       const updatedText = existingText ? `${existingText} ${incomingText}` : incomingText;

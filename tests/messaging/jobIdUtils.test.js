@@ -8,6 +8,8 @@ const {
   sequenceStepJobId,
   webhookDeliveryJobId,
   signupWelcomeJobId,
+  inboundEngineJobId,
+  nlpProcessJobId,
 } = require('../../utils/messaging/queues/jobIdUtils');
 
 test('sanitizeBullMqJobId removes colons and joins with hyphen', () => {
@@ -36,4 +38,16 @@ test('webhookDeliveryJobId never contains colon', () => {
 test('signupWelcomeJobId never contains colon', () => {
   const id = signupWelcomeJobId('user:123');
   assert.ok(!id.includes(':'));
+});
+
+test('inboundEngineJobId never contains colon', () => {
+  const id = inboundEngineJobId('client1', '+919876543210');
+  assert.ok(!id.includes(':'));
+  assert.match(id, /^inbound-client1-/);
+});
+
+test('nlpProcessJobId never contains colon', () => {
+  const id = nlpProcessJobId('client1', '919876543210');
+  assert.ok(!id.includes(':'));
+  assert.equal(id, 'nlp-client1-919876543210');
 });

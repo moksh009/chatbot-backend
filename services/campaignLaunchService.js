@@ -4,7 +4,7 @@ const AdLead = require('../models/AdLead');
 const { bulkEnqueueCampaignJobs } = require('../utils/messaging/queues/campaignDispatchQueue');
 const { predictOptimalHour } = require('./predictive/heuristic');
 const { assignAbVariant, incrCampaignProgress } = require('../utils/messaging/dispatch/campaignProgress');
-const { normalizeEmail } = require('../utils/commerce/marketingConsent');
+const { normalizeEmail, normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
 const log = require('../utils/core/logger')('CampaignLaunch');
 
 function buildVariants(campaign) {
@@ -60,7 +60,7 @@ async function launchCampaignDispatch(campaign, audienceRows = []) {
       if (!email) continue;
       phone = `email:${email}`;
     } else {
-      phone = row.phone || row.phoneNumber;
+      phone = normalizePhoneDigits(row.phone || row.phoneNumber);
       if (!phone) continue;
     }
     const leadKey = row._id ? String(row._id) : phone;

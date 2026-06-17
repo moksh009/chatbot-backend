@@ -4,25 +4,30 @@ const Message = require('../../models/Message');
 const Campaign = require('../../models/Campaign');
 const CampaignMessage = require('../../models/CampaignMessage');
 const CampaignRevenueAttribution = require('../../models/CampaignRevenueAttribution');
-const { normalizePhone } = require('../core/helpers');
 const log = require('../core/logger')('CampaignStats');
 const { BILLABLE_STATUSES } = require('./campaignOverviewMetrics');
+const { normalizePhoneDigits } = require('./marketingConsent');
 
 const ATTRIBUTION_WINDOW_DAYS = 7;
 
 function buildPhoneVariants(phone = '') {
-  const normalized = normalizePhone(phone || '');
+  const raw = String(phone || '').trim();
+  const normalized = normalizePhoneDigits(raw);
   if (!normalized) return [];
-  const variants = new Set([normalized]);
+  const variants = new Set([normalized, raw]);
+  const rawDigits = raw.replace(/\D/g, '');
+  if (rawDigits) variants.add(rawDigits);
+
   if (normalized.length === 12 && normalized.startsWith('91')) {
     variants.add(normalized.slice(2));
     variants.add(`+${normalized}`);
+    variants.add(`+91${normalized.slice(2)}`);
   }
   if (normalized.length === 10) {
     variants.add(`91${normalized}`);
     variants.add(`+91${normalized}`);
   }
-  return [...variants];
+  return [...variants].filter(Boolean);
 }
 
 /**
@@ -176,4 +181,5 @@ module.exports = {
   updateCampaignStats,
   attributeRevenueToCampaign,
   buildPhoneVariants,
+  ATTRIBUTION_WINDOW_DAYS,
 };

@@ -96,6 +96,40 @@ async function testReassignAttributionToNewLastTouch() {
   assert.strictEqual(Number(freshB.attributedOrders || 0), 1);
 }
 
+async function testPhoneVariantMatching() {
+  const Campaign = require('../../models/Campaign');
+  const CampaignMessage = require('../../models/CampaignMessage');
+  const { attributeRevenueToCampaign } = require('../../utils/commerce/campaignStatsHelper');
+
+  const clientId = `attr_variant_${Date.now()}`;
+  const canonical = '919876543210';
+  const campaign = await Campaign.create({
+    clientId,
+    name: 'Variant match',
+    status: 'COMPLETED',
+  });
+  await CampaignMessage.create({
+    clientId,
+    campaignId: campaign._id,
+    phone: canonical,
+    status: 'sent',
+    sentAt: new Date(Date.now() - 60 * 60 * 1000),
+  });
+
+  const order = {
+    clientId,
+    orderId: `ORD_VARIANT_${Date.now()}`,
+    customerPhone: '9876543210',
+    totalPrice: 2500,
+    createdAt: new Date(),
+  };
+  await attributeRevenueToCampaign(order, null);
+
+  const fresh = await Campaign.findById(campaign._id).lean();
+  assert.strictEqual(Number(fresh.revenueAttributed || 0), 2500);
+  assert.strictEqual(Number(fresh.attributedOrders || 0), 1);
+}
+
 async function main() {
   await startMemoryMongo();
   try {
@@ -103,6 +137,8 @@ async function main() {
     await testIdempotentAttribution();
     await clearCollections();
     await testReassignAttributionToNewLastTouch();
+    await clearCollections();
+    await testPhoneVariantMatching();
     console.log('✓ campaignRevenueAttribution tests passed');
   } finally {
     await stopMemoryMongo();
