@@ -11,8 +11,8 @@ const FEATURE_KEYS = {
 
 /**
  * Product rollout env toggles (global — not per-tenant wizard flags).
- * @see docs/internal/SMART-RULES-ENGINE-PAUSED.md
- * @see docs/internal/WEBSITE-CHAT-WIDGET-PAUSED.md
+ * @see docs/_archive/2026-06-pre-reference-docs/chatbot-backend-main/docs/internal/SMART-RULES-ENGINE-PAUSED.md
+ * @see docs/_archive/2026-06-pre-reference-docs/chatbot-backend-main/docs/internal/WEBSITE-CHAT-WIDGET-PAUSED.md
  */
 function envFlag(name, defaultValue = false) {
   const raw = process.env[name];

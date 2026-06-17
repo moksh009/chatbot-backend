@@ -136,7 +136,7 @@ router.put('/:clientId/website-chat-widget', protect, verifyClientAccess, async 
       return res.status(503).json({
         success: false,
         code: 'WEBSITE_WIDGET_SETTINGS_DISABLED',
-        message: 'Website chat widget settings are coming soon. See docs/internal/WEBSITE-CHAT-WIDGET-PAUSED.md',
+        message: 'Website chat widget settings are coming soon. See docs/TOPEDGE-SYSTEM-REFERENCE.md Part K.',
       });
     }
 

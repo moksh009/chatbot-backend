@@ -11,7 +11,7 @@ function requireSmartRulesEnabled(req, res, next) {
     return res.status(503).json({
         success: false,
         code: 'SMART_RULES_DISABLED',
-        message: 'Smart message rules are temporarily disabled. See docs/internal/SMART-RULES-ENGINE-PAUSED.md',
+        message: 'Smart message rules are temporarily disabled. See docs/TOPEDGE-SYSTEM-REFERENCE.md Part G.',
     });
 }
 
