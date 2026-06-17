@@ -17,9 +17,17 @@ const CART_TEMPLATE_KEYS = ['cart_recovery_1', 'cart_recovery_2', 'cart_recovery
 const THIRD_PARTY_PROVIDERS = [
   { id: 'gokwik', label: 'GoKwik', path: 'gokwik', integrationKey: 'gokwik' },
   { id: 'razorpay', label: 'Razorpay Magic', path: 'razorpay-magic', integrationKey: 'razorpay_magic' },
-  { id: 'cashfree', label: 'Cashfree Payments', path: 'cashfree-checkout', integrationKey: 'cashfree_checkout' },
   { id: 'shiprocket', label: 'Shiprocket Checkout', path: 'shiprocket-checkout', integrationKey: 'shiprocket_checkout' },
 ];
+
+const RETIRED_CHECKOUT_PROVIDERS = new Set(['cashfree', 'cashfree_checkout', 'other_third_party']);
+
+function normalizeCheckoutProviderId(id) {
+  const raw = String(id || '').trim() || 'shopify_native';
+  if (RETIRED_CHECKOUT_PROVIDERS.has(raw)) return 'shopify_native';
+  if (raw === 'razorpay') return 'razorpay_magic';
+  return raw;
+}
 
 function getPublicApiBase() {
   const raw =
@@ -177,11 +185,12 @@ async function buildAbandonedCartReadiness(clientId) {
     approvedCount >= 3;
 
   const ac = client.audienceContext || {};
-  const checkoutProvider =
+  const checkoutProvider = normalizeCheckoutProviderId(
     ac.manualOverrides?.thirdPartyCheckout ||
-    ac.thirdPartyCheckout ||
-    wf.thirdPartyCheckout ||
-    'shopify_native';
+      ac.thirdPartyCheckout ||
+      wf.thirdPartyCheckout ||
+      'shopify_native'
+  );
   const usesThirdPartyCheckout =
     checkoutProvider && checkoutProvider !== 'shopify_native' && checkoutProvider !== 'shopify';
   const checkoutConfigured = ac.checkoutSignal === 'merchant_declared';

@@ -29,9 +29,12 @@ function maybeDecryptSecret(value) {
 /**
  * Mongoose .select() for any outbound WhatsApp send / envelope dispatch.
  * Includes legacy nested paths (whatsapp.*, config.*) and premium overrides.
+ *
+ * Never include bare `config` here — Client.config is Schema.Types.Mixed and
+ * selecting both `config` + `config.*` throws "Path collision at config".
  */
 const WHATSAPP_CREDENTIAL_SELECT =
-  "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp.phoneNumberId whatsapp.wabaId whatsapp.accessToken config.phoneNumberId config.wabaId config.whatsappToken whatsappConnectionType whatsappConnectionMethod config complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
+  "clientId phoneNumberId wabaId whatsappToken premiumAccessToken premiumPhoneId whatsapp.phoneNumberId whatsapp.wabaId whatsapp.accessToken config.phoneNumberId config.wabaId config.whatsappToken whatsappConnectionType whatsappConnectionMethod complianceConfig flags syncedMetaTemplates instagramAccessToken igAccessToken social.instagram.accessToken name email translationConfig geminiApiKey";
 
 /** For connection health / status routes — includes display fields + credentials (no parent+child path collision). */
 const WHATSAPP_CONNECTION_STATUS_SELECT =

@@ -27,6 +27,7 @@ const {
 } = require('../utils/auth/loginSecurity');
 const {
   getGoogleAuthRedirectUri,
+  getGoogleOAuthConfigHealth,
   getGoogleOAuthPublicConfig,
 } = require('../utils/auth/googleOAuthConfig');
 
@@ -809,10 +810,15 @@ router.get('/google/login', (req, res) => {
   const { mode, businessName, legalAccepted, docsVersion } = req.query;
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
   const REDIRECT_URI = getGoogleAuthRedirectUri();
+  const oauthHealth = getGoogleOAuthConfigHealth();
 
   if (!GOOGLE_CLIENT_ID) {
     console.error('[Google OAuth] Missing GOOGLE_CLIENT_ID in environment variables.');
     return res.status(500).json({ message: 'Google OAuth not configured' });
+  }
+  if (!oauthHealth.ok) {
+    console.error('[Google OAuth] Login blocked due to config issues:', oauthHealth.issues);
+    return res.redirect(googleOAuthFrontendPath(mode || 'login', 'error=google_oauth_misconfigured'));
   }
 
   if (String(process.env.DEBUG_GOOGLE_OAUTH || '').trim() === '1') {
@@ -861,7 +867,6 @@ function googleOAuthFrontendPath(mode, query = '') {
 }
 
 router.get('/google/callback', async (req, res) => {
-  const FRONTEND_URL = process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
   let oauthMode = 'login';
   try {
     const { code, state } = req.query;
@@ -885,8 +890,13 @@ router.get('/google/callback', async (req, res) => {
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
     const REDIRECT_URI = getGoogleAuthRedirectUri();
+    const oauthHealth = getGoogleOAuthConfigHealth();
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
       return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_auth_failed'));
+    }
+    if (!oauthHealth.ok) {
+      console.error('[Google OAuth] Callback blocked due to config issues:', oauthHealth.issues);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_oauth_misconfigured'));
     }
 
     // Exchange code for tokens

@@ -95,9 +95,11 @@ function getGoogleOAuthPublicConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID || '';
   const redirectUri = getGoogleAuthRedirectUri();
   const gmailRedirectUri = getGmailOAuthRedirectUri();
+  const health = getGoogleOAuthConfigHealth();
   const configured = Boolean(clientId && process.env.GOOGLE_CLIENT_SECRET);
   return {
     configured,
+    health,
     redirectUri,
     gmailRedirectUri,
     clientIdSuffix: clientId ? clientId.slice(-20) : null,
@@ -109,6 +111,53 @@ function getGoogleOAuthPublicConfig() {
   };
 }
 
+function getGoogleOAuthConfigHealth() {
+  const issues = [];
+  const warnings = [];
+  const isProd = process.env.NODE_ENV === 'production';
+  const redirectUri = getGoogleAuthRedirectUri();
+  const explicitRedirect = String(process.env.GOOGLE_OAUTH_REDIRECT_URI || '').trim();
+
+  if (!String(process.env.GOOGLE_CLIENT_ID || '').trim()) {
+    issues.push('GOOGLE_CLIENT_ID is missing');
+  }
+  if (!String(process.env.GOOGLE_CLIENT_SECRET || '').trim()) {
+    issues.push('GOOGLE_CLIENT_SECRET is missing');
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(redirectUri);
+  } catch (_) {
+    issues.push('GOOGLE_OAUTH_REDIRECT_URI is invalid URL');
+  }
+
+  if (parsed) {
+    if (isProd && parsed.protocol !== 'https:') {
+      issues.push('Google login redirect URI must be https in production');
+    }
+    if (parsed.pathname !== LOGIN_CALLBACK_PATH) {
+      issues.push(`Google login redirect URI path must be ${LOGIN_CALLBACK_PATH}`);
+    }
+  }
+
+  if (isProd && !explicitRedirect) {
+    warnings.push(
+      'GOOGLE_OAUTH_REDIRECT_URI is not explicitly set; inferred fallback can drift from Google Console config'
+    );
+  }
+
+  if (!String(process.env.FRONTEND_URL || '').trim()) {
+    warnings.push('FRONTEND_URL is not set; OAuth callback fallback URL will be used');
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    warnings,
+  };
+}
+
 module.exports = {
   LOGIN_CALLBACK_PATH,
   CALENDAR_CALLBACK_PATH,
@@ -117,5 +166,6 @@ module.exports = {
   getGoogleAuthRedirectUri,
   getGmailOAuthRedirectUri,
   getGoogleOAuthRedirectUriChecklist,
+  getGoogleOAuthConfigHealth,
   getGoogleOAuthPublicConfig,
 };
