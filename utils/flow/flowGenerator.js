@@ -1756,134 +1756,33 @@ function buildReturnsBranch(ctx, IDS, content) {
 }
 
 function buildWarrantyBranch(ctx, IDS, content) {
-  const { F, adminPhone, client } = ctx;
-  const nodes = [];
-  const edges = [];
-
-  nodes.push(
-    {
-      id: IDS.war_ask,
-      type: "capture_input",
-      position: flowPos(5, 11),
-      data: {
-        label: "Warranty — identifier",
-        variable: "warranty_identifier",
-        question:
-          "🛡️ *Warranty check*\n\nShare your *Order ID* or *registered mobile number* to look up coverage.",
-        text:
-          "🛡️ *Warranty check*\n\nShare your *Order ID* or *registered mobile number* to look up coverage.",
-        heatmapCount: 0,
-      },
-    },
+  void content;
+  const nodes = [
     {
       id: IDS.war_engine,
       type: "warranty_check",
       position: flowPos(6, 11),
       data: {
-        label: "Warranty lookup",
-        action: "WARRANTY_CHECK",
-        queryVariable: "warranty_identifier",
+        label: "Warranty Lookup",
         heatmapCount: 0,
       },
     },
-    {
-      id: IDS.war_active_hub,
-      type: "interactive",
-      position: flowPos(7, 11),
-      data: {
-        label: "Warranty active",
-        interactiveType: "button",
-        text:
-          "✅ *Your warranty is active!*\n\n📦 Product: *{{_warranty_product_name|your product}}*\n📅 Purchased: {{_warranty_purchase_date|N/A}}\n⏳ Expires: *{{_warranty_expires_display|N/A}}*\n🔖 Order: {{_warranty_order_ref|-}}",
-        buttonsList: [
-          { id: "war_claim", title: "🔧 Raise a claim" },
-          { id: "war_menu", title: "🏠 Main menu" },
-        ],
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_claim_cap,
-      type: "capture_input",
-      position: flowPos(8, 12),
-      data: {
-        label: "Warranty claim",
-        variable: "warranty_claim_issue",
-        question: "Describe the issue with your product (damage, defect, not working, etc.).",
-        text: "Describe the issue with your product (damage, defect, not working, etc.).",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_claim_alert,
-      type: "admin_alert",
-      position: flowPos(9, 12),
-      data: {
-        label: "Warranty claim alert",
-        priority: "high",
-        alertChannel: "both",
-        topic: "Warranty claim — {{_warranty_order_ref}}",
-        customMessage:
-          "Warranty claim from {{phone}}.\nProduct: {{_warranty_product_name}}\nOrder: {{_warranty_order_ref}}\nIssue: {{warranty_claim_issue}}",
-        phone: adminPhone || client.adminPhone || "",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_claim_done,
-      type: "message",
-      position: flowPos(10, 12),
-      data: {
-        label: "Claim received",
-        text: "✅ *Claim received.* Our team will review and contact you on WhatsApp within 24 hours.",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_expired,
-      type: "message",
-      position: flowPos(7, 12),
-      data: {
-        label: "Warranty expired",
-        text:
-          content.warranty_expired_msg ||
-          "⚠️ *Warranty expired* for {{_warranty_product_name|your product}}.\n\nExpiry: {{_warranty_expires_display|N/A}}\n\nOur team may still help — contact *{{support_phone|our support line}}*.",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.war_none,
-      type: "message",
-      position: flowPos(7, 13),
-      data: {
-        label: "No warranty",
-        text: withMenuHint(
-          content.warranty_none_msg ||
-            "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{support_phone|our support line}}* and we'll link your purchase."
-        ),
-        heatmapCount: 0,
-      },
-    }
-  );
+  ];
 
-  edges.push(
-    { id: `e_${IDS.war_ask}_eng`, source: IDS.war_ask, target: IDS.war_engine },
-    { id: `e_${IDS.war_engine}_a`, source: IDS.war_engine, target: IDS.war_active_hub, sourceHandle: "active" },
-    { id: `e_${IDS.war_engine}_x`, source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
-    { id: `e_${IDS.war_engine}_n`, source: IDS.war_engine, target: IDS.war_none, sourceHandle: "none" },
-    { id: `e_${IDS.war_active_hub}_cl`, source: IDS.war_active_hub, target: IDS.war_claim_cap, sourceHandle: "war_claim" },
-    { id: `e_${IDS.war_active_hub}_mm`, source: IDS.war_active_hub, target: IDS.main_menu, sourceHandle: "war_menu" },
-    { id: `e_${IDS.war_claim_cap}_al`, source: IDS.war_claim_cap, target: IDS.war_claim_alert },
-    { id: `e_${IDS.war_claim_alert}_dn`, source: IDS.war_claim_alert, target: IDS.war_claim_done },
-    { id: `e_${IDS.war_claim_done}_mm`, source: IDS.war_claim_done, target: IDS.main_menu },
-    { id: `e_${IDS.war_expired}_mm`, source: IDS.war_expired, target: IDS.main_menu }
-  );
+  const edges = [
+    {
+      id: `e_${IDS.war_engine}_mm`,
+      source: IDS.war_engine,
+      target: IDS.main_menu,
+      sourceHandle: "bottom",
+    },
+  ];
 
   return {
     nodes,
     edges,
     menuRow: { id: "mnu_warranty", title: "🛡️ Warranty Details" },
-    entryNodeId: IDS.war_ask,
+    entryNodeId: IDS.war_engine,
     sourceHandle: "mnu_warranty",
   };
 }

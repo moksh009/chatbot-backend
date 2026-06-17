@@ -553,6 +553,8 @@ async function handleWhatsAppMessage(arg1, arg2, phoneNumberId, profileName = ''
       mediaUrl: parsed.mediaUrl,
     };
 
+    const { normalizeInboundButtonMessage } = require('../messaging/templateButtonResolver');
+    normalizeInboundButtonMessage(parsedMessage);
 
     // run engine (lock and deduplication handled inside)
     await runDualBrainEngine(parsedMessage, client);
@@ -786,14 +788,22 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
     }
 
-    // If a user messages us again after opting out, treat that inbound as renewed consent.
-    // This is tenant-scoped and applies only to WhatsApp inbound traffic.
+    // Re-opt-in only on explicit START/SUBSCRIBE keywords (not every inbound).
     if (channel === "whatsapp") {
       const waConsentStatus = String(
         lead?.channelConsent?.whatsapp?.status || lead?.optStatus || ""
       ).toLowerCase();
       const wasOptedOut = waConsentStatus === "opted_out";
-      if (wasOptedOut) {
+      const inboundText = String(
+        parsedMessage.text?.body ||
+          parsedMessage.button?.text ||
+          parsedMessage.interactive?.button_reply?.title ||
+          ""
+      )
+        .trim()
+        .toLowerCase();
+      const { matchesOptInKeyword } = require("./marketingConsentConfig");
+      if (wasOptedOut && inboundText && matchesOptInKeyword(inboundText)) {
         try {
           const now = new Date();
           await Promise.all([
@@ -820,7 +830,7 @@ async function runDualBrainEngine(parsedMessage, client) {
                     source: "inbound_message",
                     method: "single",
                     timestamp: now,
-                    note: "Auto re-opt-in on inbound user message",
+                    note: "Re-opt-in via START/SUBSCRIBE keyword",
                   },
                 },
               }
@@ -850,7 +860,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           convo.botStatus = "active";
 
           log.info(
-            `[DualBrain] Auto re-opted-in on inbound for ${client.clientId}:${phone}`
+            `[DualBrain] Keyword re-opted-in for ${client.clientId}:${phone} (${inboundText})`
           );
         } catch (reoptErr) {
           log.warn(
@@ -2334,6 +2344,66 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // STEP 4b: SAC / template quick-reply routing from last outbound context
+  try {
+    const { resolveTemplateButtonAction } = require('../messaging/templateButtonResolver');
+    const btnAction = await resolveTemplateButtonAction({
+      client,
+      convo,
+      parsedMessage,
+    });
+    if (btnAction?.type === 'start_flow' && btnAction.flowId) {
+      const loaded = await loadPublishedFlowByRef(client.clientId, String(btnAction.flowId));
+      const flowNodes = loaded?.nodes?.length ? loaded.nodes : [];
+      const flowEdges = loaded?.edges || [];
+      const startNodeId =
+        btnAction.entryNodeId ||
+        flowNodes.find((n) => n.type === 'trigger')?.id ||
+        flowNodes[0]?.id;
+      if (startNodeId && flowNodes.length) {
+        await Conversation.findByIdAndUpdate(convo._id, {
+          activeFlowId: String(btnAction.flowId),
+          lastStepId: null,
+        });
+        const freshConvo = await Conversation.findById(convo._id);
+        const handled = await executeNode(
+          startNodeId,
+          flowNodes,
+          flowEdges,
+          client,
+          freshConvo,
+          lead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+        if (handled !== false) {
+          perf.checkpoint('template_button_flow');
+          perf.finish();
+          return true;
+        }
+      }
+    }
+    if (btnAction?.type === 'handoff') {
+      const { applyNeedHelpTag } = require('./needHelpTag');
+      await applyNeedHelpTag(client.clientId, phone);
+      await Conversation.findByIdAndUpdate(convo._id, {
+        status: 'HUMAN_SUPPORT',
+        requiresAttention: true,
+        botPaused: true,
+      });
+      perf.finish('template_button_handoff');
+      return true;
+    }
+    if (btnAction?.type === 'keyword' && btnAction.keyword) {
+      if (!parsedMessage.text) parsedMessage.text = {};
+      parsedMessage.text.body = String(btnAction.keyword);
+    }
+  } catch (tplBtnErr) {
+    log.warn(`[TemplateButton] routing skipped: ${tplBtnErr.message}`);
+  }
+
   // STEP 5: PRIORITY 1 — Graph Traversal
   const graphHandled = await tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel);
   if (graphHandled) {
@@ -2470,6 +2540,54 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
                 || parsedMessage.button?.payload 
                 || '';
 
+  // Warranty interaction — exclusive router (blocks keyword jumps, graph fallthrough, global menu)
+  {
+    const freshConvoForWarranty = await Conversation.findById(convo._id);
+    const warrantyConvo = freshConvoForWarranty || convo;
+    const {
+      isWarrantyInteractionActive,
+      handleWarrantyLookupReply,
+      findWarrantyOutputEdge,
+    } = require('./warrantyFlowLookup');
+    if (isWarrantyInteractionActive(warrantyConvo)) {
+      const warrantyStepId = warrantyConvo.lastStepId;
+      const replyTitle =
+        parsedMessage.interactive?.button_reply?.title ||
+        parsedMessage.interactive?.list_reply?.title ||
+        '';
+      const replyResult = await handleWarrantyLookupReply({
+        nodeId: warrantyStepId,
+        client,
+        phone,
+        convo: warrantyConvo,
+        flowEdges,
+        buttonId,
+        buttonTitle: replyTitle,
+        userText: userTextLower,
+      });
+      if (replyResult?.advanceToNext) {
+        const outEdge = findWarrantyOutputEdge(flowEdges, warrantyStepId);
+        if (outEdge) {
+          const freshConvo = await Conversation.findById(convo._id);
+          return await executeNode(
+            outEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            freshConvo || warrantyConvo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
+        log.warn(`[WarrantyFlow] Menu tapped but no output edge on node ${warrantyStepId}`);
+      }
+      return true;
+    }
+  }
+
   if (buttonId && /^(resend|resend_checkout)$/i.test(String(buttonId))) {
     try {
       const { resendCheckoutToCustomer } = require('./commerceCheckoutService');
@@ -2575,7 +2693,18 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   const menuBid = normalizeHandleId(buttonId).toLowerCase();
-  if (menuBid && /^(menu|main_menu|mainmenu|start_over|restart)$/i.test(menuBid)) {
+  const {
+    isWarrantyInteractionActive: isWarrantyPhaseActive,
+  } = require('./warrantyFlowLookup');
+  const onWarrantyStep =
+    isWarrantyPhaseActive(convo) ||
+    (currentStepId &&
+      flowNodes.some(
+        (n) =>
+          n.id === currentStepId &&
+          (n.type === 'warranty_check' || n.type === 'warranty_lookup')
+      ));
+  if (menuBid && /^(menu|main_menu|mainmenu|start_over|restart)$/i.test(menuBid) && !onWarrantyStep) {
     const menuNode = flowNodes.find((n) => {
       const role = String(n.data?.role || '').toLowerCase();
       return ['menu', 'welcome', 'main_menu', 'main'].includes(role);
@@ -2655,8 +2784,9 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // B) Handle CAPTURE_INPUT Node
   const currentNode = flowNodes.find(n => n.id === currentStepId);
+
+  // B) Handle CAPTURE_INPUT Node
   if (currentNode && (currentNode.type === 'capture_input' || currentNode.type === 'CaptureNode')) {
     const varName = currentNode.data?.variable || 'last_input';
     log.info(`Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
@@ -2776,6 +2906,20 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   if (matchingEdge) {
+    if (currentNode?.type === 'review' && bid === 'positive') {
+      const reviewUrl =
+        currentNode.data?.reviewUrl ||
+        client.googleReviewUrl ||
+        client.platformVars?.googleReviewUrl ||
+        '';
+      if (reviewUrl) {
+        await sendWhatsAppText(
+          client,
+          phone,
+          `Thank you so much! 🙏 We'd love a quick review:\n${reviewUrl}`
+        );
+      }
+    }
     log.info(`Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
     await logFlowEvent({
       clientId: client.clientId,
@@ -3176,7 +3320,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') {
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check' && node.type !== 'warranty_lookup') {
     await logFlowEvent({
       clientId: client.clientId,
       flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
@@ -3313,27 +3457,40 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     return true;
   }
 
-  if (node.type === 'delay') {
-    const rawDuration = node.data?.duration ?? node.data?.waitValue ?? 1;
-    const rawUnit = String(node.data?.unit || node.data?.waitUnit || 'minutes').toLowerCase();
-    const duration = Math.max(1, Number(rawDuration) || 1);
-    const unitMs =
-      rawUnit.startsWith('sec') ? 1000 :
-      rawUnit.startsWith('hour') ? 60 * 60 * 1000 :
-      rawUnit.startsWith('day') ? 24 * 60 * 60 * 1000 :
-      60 * 1000;
-    const wakeupAt = new Date(Date.now() + duration * unitMs);
+  if (node.type === 'delay' || node.type === 'WaitNode') {
+    let { duration, unit, waitValue, waitUnit } = node.data || {};
+    duration = duration ?? waitValue ?? 1;
+    unit = unit ?? waitUnit ?? 'minutes';
+    let delayMs = 60000;
 
+    if (typeof duration === 'string' && !unit) {
+      const val = parseInt(duration, 10);
+      if (duration.endsWith('m')) delayMs = val * 60000;
+      else if (duration.endsWith('h')) delayMs = val * 3600000;
+      else if (duration.endsWith('d')) delayMs = val * 86400000;
+      else if (duration.endsWith('s')) delayMs = val * 1000;
+    } else {
+      const n = Math.max(1, Number(duration) || 1);
+      const u = String(unit || 'minutes').toLowerCase();
+      if (u.startsWith('sec')) delayMs = n * 1000;
+      else if (u.startsWith('hour')) delayMs = n * 3600000;
+      else if (u.startsWith('day')) delayMs = n * 86400000;
+      else delayMs = n * 60000;
+    }
+
+    const resumeAt = new Date(Date.now() + delayMs);
     if (!parsedMessage?.suppressConversationPersistence) {
       await Conversation.findByIdAndUpdate(convo._id, {
-        status: 'DELAYED',
-        scheduledResumeAt: wakeupAt,
+        flowPausedUntil: resumeAt,
+        pausedAtNodeId: nodeId,
+        status: 'FLOW_PAUSED',
         lastStepId: nodeId,
-        lastInteraction: new Date()
+        lastInteraction: new Date(),
+        $unset: { scheduledResumeAt: 1 },
       });
     }
 
-    log.info(`[FlowEngine] Delay node scheduled resume for ${phone} at ${wakeupAt.toISOString()}`);
+    log.info(`⏳ Flow paused for ${phone} until ${resumeAt.toISOString()} (delay node ${nodeId})`);
     return true;
   }
 
@@ -3398,8 +3555,24 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     }
 
-    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === selectedSegment);
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    const handleId = selectedSegment || 'fallback';
+    const nextEdge = flowEdges.find(
+      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === handleId
+    );
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // 3. Abandoned Cart Node
@@ -3408,12 +3581,6 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     // If reached in flow (e.g. via direct link), we just proceed to recovery logic.
     const { handleNodeAction } = require('../flow/nodeActions');
     await handleNodeAction('CART_RECOVERY_START', node, client, phone, convo, lead);
-  }
-
-  // 5. COD to Prepaid Node
-  if (node.type === 'cod_prepaid') {
-    const { handleNodeAction } = require('../flow/nodeActions');
-    await handleNodeAction('CONVERT_COD_TO_PREPAID', node, client, phone, convo, lead);
   }
 
   // --- ENTERPRISE & COMMERCE NODES (Phase 3) ---
@@ -3487,54 +3654,31 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     }
   }
-  // 9. Warranty Check / Lookup — branches active | expired | none (see nodeActions WARRANTY_CHECK)
+  // 9. Warranty Lookup — fully automated; single output after customer taps Menu
   if (node.type === 'warranty_check' || node.type === 'warranty_lookup') {
-    const { handleNodeAction } = require('../flow/nodeActions');
-    const Conversation = require('../../models/Conversation');
-    await handleNodeAction('WARRANTY_CHECK', node, client, phone, convo, lead);
-
-    const fresh = await Conversation.findById(convo._id).select('metadata').lean();
-    const meta = fresh?.metadata || convo.metadata || {};
-    let targetHandle = 'none';
-    if (meta._warranty_branch === 'active') targetHandle = 'active';
-    else if (meta._warranty_branch === 'expired') targetHandle = 'expired';
-
-    if (!meta._warranty_branch) {
-      const cleanPhone = require('../core/helpers').normalizePhone(phone);
-      const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
-      const records = leadRecord?.warrantyRecords || [];
-      const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
-      if (records.length > 0) {
-        if (serialQuery) {
-          const matches = records.filter((r) => (r.serialNumber || '').toLowerCase() === serialQuery);
-          if (matches.length > 0) {
-            const isExpired = new Date(matches[0].expiryDate) < new Date();
-            targetHandle = isExpired ? 'expired' : 'active';
-          }
-        } else {
-          const activeOnes = records.filter((r) => new Date(r.expiryDate) > new Date());
-          targetHandle = activeOnes.length > 0 ? 'active' : 'expired';
+    const isInteractiveReply = !!(
+      parsedMessage?.interactive?.button_reply ||
+      parsedMessage?.interactive?.list_reply
+    );
+    if (!isInteractiveReply) {
+      const { runWarrantyLookupEntry } = require('./warrantyFlowLookup');
+      try {
+        const entryResult = await runWarrantyLookupEntry({
+          nodeId,
+          client,
+          phone,
+          convo,
+        });
+        if (entryResult?.convoPatch) {
+          convo.metadata = entryResult.convoPatch.metadata;
+          convo.lastStepId = entryResult.convoPatch.lastStepId;
+          convo.status = entryResult.convoPatch.status;
         }
+      } catch (err) {
+        log.error(`[WarrantyFlow] executeNode entry failed: ${err.message}`);
       }
     }
-
-    const nextEdge = flowEdges.find(
-      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
-    );
-    if (nextEdge) {
-      return await executeNode(
-        nextEdge.target,
-        flowNodes,
-        flowEdges,
-        client,
-        convo,
-        lead,
-        phone,
-        io,
-        channel,
-        parsedMessage
-      );
-    }
+    return true;
   }
 
   // 10. Intent Trigger Node (Execution part)
@@ -3593,15 +3737,31 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 17: AB Test Node
   if (node.type === 'ab_test' || node.type === 'ABTestNode') {
-    // Persistent split based on phone number hash
     const crypto = require('crypto');
     const hash = crypto.createHash('md5').update(phone).digest('hex');
     const firstChar = hash.charAt(0);
-    const variant = parseInt(firstChar, 16) < 8 ? 'A' : 'B'; // 50/50 split
-    
+    const splitRatio = Math.min(99, Math.max(1, Number(node.data?.splitRatio) || 50));
+    const threshold = Math.floor((splitRatio / 100) * 16);
+    const variant = parseInt(firstChar, 16) < threshold ? 'A' : 'B';
+
     await Conversation.findByIdAndUpdate(convo._id, { abVariant: variant });
-    const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === variant.toLowerCase());
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    const nextEdge = flowEdges.find(
+      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === variant.toLowerCase()
+    );
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // Phase 17: Tag Lead Node
@@ -3704,92 +3864,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // Enterprise Expansion: Warranty Lookup Engine
-  if (node.type === 'warranty_lookup') {
-    const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
-    const { normalizePhone } = require('../core/helpers');
-    const cleanPhone = normalizePhone(phone);
-    
-    // Fetch real records from DB
-    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
-    const records = leadRecord?.warrantyRecords || [];
-    
-    let message = '';
-    
-    if (serialQuery) {
-        // Search by Serial (Intelligent Match: Full or last N digits, case-insensitive)
-        // Match against Serial Number or Order ID
-        const matches = records.filter(r => {
-            const sn = (r.serialNumber || "").toLowerCase();
-            const oid = (r.orderId || "").toLowerCase();
-            return sn === serialQuery || 
-                   oid === serialQuery ||
-                   (serialQuery.length >= 4 && sn.endsWith(serialQuery));
-        });
-
-        if (matches.length === 1) {
-            const match = matches[0];
-            const expiryDate = new Date(match.expiryDate);
-            const isExpired = new Date() > expiryDate;
-            const dateStr = expiryDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-            
-            if (isExpired) {
-                message = `⚠️ *Warranty Expired*\n\nYour product *${match.productName}* (${match.serialNumber}) was covered until ${dateStr}. Please contact support for repair options.`;
-            } else {
-                message = `✅ *Active Warranty Found*\n\nProduct: *${match.productName}*\nSerial: *${match.serialNumber}*\nValid Until: *${dateStr}*\n\nYou are fully protected! 🛡️`;
-                if (client.brand?.warrantySupportPhone) {
-                    message += `\n\nSupport: ${client.brand.warrantySupportPhone}`;
-                }
-            }
-        } else if (matches.length > 1) {
-            message = `📋 *Multiple Matches Found*\n\nI found ${matches.length} products matching "${serialQuery}":\n\n${matches.map(r => `• *${r.productName}*\n  SN: ${r.serialNumber} | Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n\n')}\n\n_Please provide the full serial number for details on a specific unit._`;
-        } else {
-            message = `❌ *Serial Not Found*\n\nI couldn't find a warranty record for *${serialQuery}*. Please ensure the serial number is correct.`;
-        }
-    } else {
-        // Just show all active warranties if no serial provided
-        const activeOnes = records.filter(r => new Date(r.expiryDate) > new Date());
-        if (activeOnes.length > 0) {
-            message = `📋 *Your Active Warranties*\n\n${activeOnes.map(r => `• ${r.productName} (${r.serialNumber})\n  Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n')}`;
-        } else {
-            message = `📋 *Warranty Status*\n\nYou don't have any active warranties registered with this phone number. 🛡️`;
-        }
-    }
-    
-    await WhatsApp.sendText(client, phone, message);
-    const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'output'));
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
-  }
-
-  // Phase 17: Delay / Wait Node
-  if (node.type === 'delay' || node.type === 'WaitNode') {
-    let { duration, unit, waitValue, waitUnit } = node.data; // Support both formats
-    duration = duration ?? waitValue ?? 1;
-    unit     = unit     ?? waitUnit  ?? 'minutes';
-    let delayMs = 60000; // default 1 min
-    
-    if (typeof duration === 'string' && !unit) {
-      const val = parseInt(duration);
-      if (duration.endsWith('m')) delayMs = val * 60000;
-      else if (duration.endsWith('h')) delayMs = val * 3600000;
-      else if (duration.endsWith('d')) delayMs = val * 86400000;
-      else if (duration.endsWith('s')) delayMs = val * 1000;
-    } else {
-      if (unit === 'minutes') delayMs = duration * 60000;
-      else if (unit === 'hours') delayMs = duration * 3600000;
-      else if (unit === 'seconds') delayMs = duration * 1000;
-      else if (unit === 'days') delayMs = duration * 86400000;
-    }
-
-    const resumeAt = new Date(Date.now() + delayMs);
-    await Conversation.findByIdAndUpdate(convo._id, { 
-      flowPausedUntil: resumeAt,
-      pausedAtNodeId: nodeId 
-    });
-    
-    log.info(`⏳ Flow paused for ${phone} until ${resumeAt.toISOString()}`);
-    return true; // Stop traversal here, cron will resume
-  }
+  // Phase 17: Delay — handled earlier in executeNode (flowPausedUntil + flowResumptionCron)
 
   // New: Set Variable Node
   if (node.type === 'set_variable' || node.type === 'SetVariableNode') {
@@ -4030,6 +4105,84 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: prevMeta } });
         convo.metadata = prevMeta;
         resultData = { orders: ordersPayload };
+      }
+
+      // --- Semantic product search ---
+      else if (action === 'search_products') {
+        const searchQuery = resolvedQuery || String(node.data?.query || '').trim();
+        let products = [];
+        try {
+          products = await withShopifyRetry(client.clientId, async (shopify) => {
+            const endpoint = searchQuery
+              ? `/products.json?limit=5&title=${encodeURIComponent(searchQuery)}`
+              : '/products.json?limit=5&status=active';
+            const res = await shopify.get(endpoint);
+            return res.data.products || [];
+          });
+        } catch (shopErr) {
+          log.warn(`[shopify_call] search_products: ${shopErr.message}`);
+        }
+
+        if (products.length > 0) {
+          const lines = products.slice(0, 5).map((p, i) => {
+            const price = p.variants?.[0]?.price || 'N/A';
+            return `${i + 1}. *${p.title}* — ₹${price}`;
+          });
+          await sendWhatsAppText(
+            client,
+            phone,
+            `🔍 *Products matching "${searchQuery || 'catalog'}"*\n\n${lines.join('\n')}\n\nReply with a product name for details.`
+          );
+          resultData = { count: products.length, query: searchQuery };
+        } else {
+          const kbProducts = client.knowledgeBase?.products || [];
+          if (kbProducts.length > 0) {
+            const lines = kbProducts.slice(0, 5).map((p, i) => `${i + 1}. *${p.name}* — ₹${p.price || '—'}`);
+            await sendWhatsAppText(client, phone, `🔍 *From our catalog:*\n\n${lines.join('\n')}`);
+            resultData = { count: kbProducts.length, source: 'kb' };
+          } else {
+            await sendWhatsAppText(
+              client,
+              phone,
+              "I couldn't find products matching that search. Try a different keyword or browse our store."
+            );
+            resultData = { count: 0, query: searchQuery };
+          }
+        }
+      }
+
+      // --- Sync latest catalog items ---
+      else if (action === 'get_latest') {
+        let products = [];
+        try {
+          products = await withShopifyRetry(client.clientId, async (shopify) => {
+            const res = await shopify.get('/products.json?limit=5&status=active&order=created_at%20desc');
+            return res.data.products || [];
+          });
+        } catch (shopErr) {
+          log.warn(`[shopify_call] get_latest: ${shopErr.message}`);
+        }
+
+        if (products.length > 0) {
+          const lines = products.map((p, i) => {
+            const price = p.variants?.[0]?.price || 'N/A';
+            return `${i + 1}. *${p.title}* — ₹${price}`;
+          });
+          await sendWhatsAppText(
+            client,
+            phone,
+            `🆕 *Latest from our store*\n\n${lines.join('\n')}`
+          );
+          if (variable) {
+            const prevMeta = { ...(convo.metadata || {}), [variable]: products };
+            await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: prevMeta } });
+            convo.metadata = prevMeta;
+          }
+          resultData = { products: products.map((p) => p.title) };
+        } else {
+          await sendWhatsAppText(client, phone, 'Our catalog is being updated — check back soon!');
+          resultData = { count: 0 };
+        }
       }
 
       else if (action === 'CANCEL_ORDER') {
@@ -4406,6 +4559,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const waitsForUserChoice =
       node.type === 'interactive' ||
       node.type === 'InteractiveNode' ||
+      node.type === 'warranty_check' ||
+      node.type === 'warranty_lookup' ||
+      node.type === 'review' ||
+      node.type === 'cod_prepaid' ||
       (Array.isArray(nodeData.buttonsList) && nodeData.buttonsList.length > 0) ||
       (Array.isArray(nodeData.sections) &&
         nodeData.sections.some((s) => (s.rows || []).length > 0)) ||
@@ -5102,17 +5259,40 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         action: {
           buttons: [
             { type: 'reply', reply: { id: 'paid', title: '✅ Pay Online' } },
-            { type: 'reply', reply: { id: 'cod',  title: '❌ Keep COD' } }
-          ]
-        }
+            { type: 'reply', reply: { id: 'cod', title: '❌ Keep COD' } },
+          ],
+        },
       };
       await WhatsApp.sendInteractive(client, phone, interactive, String(bodyText).substring(0, 1024));
       return true;
     }
+    case 'review': {
+      const reviewUrl =
+        data.reviewUrl ||
+        client.googleReviewUrl ||
+        client.platformVars?.googleReviewUrl ||
+        (client.shopifyDomain ? `https://${client.shopifyDomain}` : '');
+      const bodyText =
+        data.text ||
+        `⭐ *How was your recent purchase?*\n\nYour feedback means a lot to us!`;
+      const interactive = {
+        type: 'button',
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'positive', title: '👍 Loved it' } },
+            { type: 'reply', reply: { id: 'negative', title: '👎 Not great' } },
+          ],
+        },
+      };
+      await WhatsApp.sendInteractive(client, phone, interactive, String(bodyText).substring(0, 1024));
+      if (reviewUrl && data.sendLinkOnPositive !== false) {
+        // Link sent after positive tap via graph traversal
+      }
+      return true;
+    }
     case 'warranty_check':
     case 'warranty_lookup': {
-      // This node is purely a logic branch — no user message sent directly.
-      // The branching in executeNode routes to active/expired/none message nodes.
+      // Outbound messages are sent by warrantyFlowLookup in executeNode.
       return true;
     }
 

@@ -51,6 +51,10 @@ const CANONICAL_NODE_TYPES = new Set([
   'schedule',
   'link',
   'sticky',
+  'whatsapp_flow',
+  'webhook',
+  'set_variable',
+  'warranty_lookup',
 ]);
 
 function normalizeNodeType(input) {

@@ -21,6 +21,23 @@ async function sendWhatsApp({ client, to, payload, skipSuppressionCheck = false 
     const response = await WhatsApp.sendImage(client, to, payload.media.url, payload.text || '');
     return { messageId: response?.messages?.[0]?.id || null, raw: response };
   }
+  if (payload.media?.type === 'video') {
+    const response = await WhatsApp.sendVideo(client, to, payload.media.url, payload.text || '');
+    return { messageId: response?.messages?.[0]?.id || null, raw: response };
+  }
+  if (payload.media?.type === 'document') {
+    const response = await WhatsApp.sendDocument(
+      client,
+      to,
+      payload.media.url,
+      payload.media.filename || 'document'
+    );
+    return { messageId: response?.messages?.[0]?.id || null, raw: response };
+  }
+  if (payload.media?.type === 'audio') {
+    const response = await WhatsApp.sendAudio(client, to, payload.media.url);
+    return { messageId: response?.messages?.[0]?.id || null, raw: response };
+  }
   const response = await WhatsApp.sendText(client, to, payload.text || '', {
     skipSuppressionCheck,
   });

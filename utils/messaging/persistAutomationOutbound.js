@@ -39,6 +39,9 @@ async function persistAutomationOutbound({
         },
         $set: {
           lastInteraction: new Date(),
+          ...(metadata.lastOutboundTemplate
+            ? { 'metadata.lastOutboundTemplate': metadata.lastOutboundTemplate }
+            : {}),
         },
       },
       { upsert: true, new: true }

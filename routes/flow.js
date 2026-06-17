@@ -239,8 +239,34 @@ router.post('/ai-build', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
+    let contextExtras = {};
+    try {
+      const personaTone = client.ai?.persona?.tone || client.platformVars?.defaultTone;
+      const personaLang = client.ai?.persona?.language || client.platformVars?.defaultLanguage;
+      const personaName = client.platformVars?.agentName || client.botName;
+      if (personaName || personaTone || personaLang) {
+        contextExtras.personaSummary = [personaName, personaTone, personaLang].filter(Boolean).join(' · ');
+      }
+      const faq = Array.isArray(client.faq) ? client.faq.slice(0, 3) : [];
+      if (faq.length) {
+        contextExtras.knowledgeSummary = faq
+          .map((f) => `Q: ${f.question || ''}\nA: ${(f.answer || '').slice(0, 120)}`)
+          .join('\n');
+      }
+      const MetaTemplate = require('../models/MetaTemplate');
+      const approved = await MetaTemplate.find({ clientId, status: 'APPROVED' })
+        .select('name slotId')
+        .limit(12)
+        .lean();
+      contextExtras.approvedTemplateSlots = approved
+        .map((t) => t.slotId || t.name)
+        .filter(Boolean);
+    } catch (ctxErr) {
+      console.warn('[POST /flow/ai-build] context enrichment skipped:', ctxErr.message);
+    }
+
     const { buildFlowFromPrompt } = require('../utils/flow/aiFlowBuilder');
-    const flow = await buildFlowFromPrompt(String(prompt).trim(), client);
+    const flow = await buildFlowFromPrompt(String(prompt).trim(), client, 0, null, contextExtras);
 
     return res.json({
       success: true,
@@ -364,10 +390,8 @@ router.post('/simulate', protect, async (req, res) => {
         } else {
           edgeUsed = outgoingEdges[0] || null;
         }
-      } else if (currentNode?.type === 'warranty_check') {
-        const branch = String(updatedVariables?._warranty_branch || 'active').toLowerCase();
-        const normalized = ['active', 'expired', 'none'].includes(branch) ? branch : 'none';
-        edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === normalized) || null;
+      } else if (currentNode?.type === 'warranty_check' || currentNode?.type === 'warranty_lookup') {
+        edgeUsed = null;
       } else if (currentNode?.type === 'capture_input' || currentNode?.type === 'CaptureNode') {
         const varName = currentNode.data?.variable || 'captured_input';
         updatedVariables[varName] = userInput;
@@ -421,15 +445,40 @@ router.post('/publish/:clientId', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/generate — canonical AI flow generation (Phase 4)
+// POST /api/flow/generate — delegates to tenant BYOK aiFlowBuilder (same as /ai-build)
 router.post('/generate', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    const { generateFlow } = require('../services/flowGeneration');
-    const io = req.app.get('socketio');
-    const out = await generateFlow({ clientId, ...req.body, user: req.user, io });
-    return res.json({ success: true, ...out });
+
+    const prompt = String(req.body?.prompt || req.body?.description || '').trim();
+    if (!prompt) {
+      return res.status(400).json({ success: false, message: 'Prompt is required.' });
+    }
+
+    const { resolveApiKeyForClient } = require('../services/ai/aiWalletService');
+    const aiKey = await resolveApiKeyForClient(clientId);
+    if (!aiKey.configured) {
+      return res.status(400).json({
+        success: false,
+        code: 'AI_NOT_CONFIGURED',
+        message: 'Add your Gemini or OpenAI API key in AI Brain → AI Setup before generating flows.',
+      });
+    }
+
+    const Client = require('../models/Client');
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { buildFlowFromPrompt } = require('../utils/flow/aiFlowBuilder');
+    const flow = await buildFlowFromPrompt(prompt, client);
+
+    return res.json({
+      success: true,
+      nodes: flow.nodes,
+      edges: flow.edges,
+      provider: aiKey.provider,
+    });
   } catch (e) {
     const { sendAiError } = require('../utils/core/aiProviderErrors');
     if (e?.code && e?.userMessage) {

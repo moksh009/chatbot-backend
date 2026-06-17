@@ -521,12 +521,37 @@ async function sendTemplatedMessage({
         templateName,
         bodyPreview,
         messageId: results.whatsapp.messageId,
-        metadata: {
-          automationSlotId: logMeta.automationSlotId || null,
-          automation_rule_id: logMeta.automationSlotId || logMeta.automationRuleId || null,
-          contextType: logMeta.contextType || null,
-          templateName: templateName || undefined,
-        },
+        metadata: (() => {
+          const { buildLastOutboundTemplateMetadata } = require('../utils/messaging/templateButtonResolver');
+          const buttons = [];
+          const comps = template?.components || template?.rawComponents || [];
+          for (const comp of comps) {
+            if (String(comp.type || '').toUpperCase() === 'BUTTONS' && Array.isArray(comp.buttons)) {
+              for (const b of comp.buttons) {
+                const label = b.text || b.title || '';
+                if (!label) continue;
+                buttons.push({
+                  id: label,
+                  label,
+                  action: logMeta.buttonActions?.[label] || logMeta.templateButtonAction || undefined,
+                });
+              }
+            }
+          }
+          return {
+            ...buildLastOutboundTemplateMetadata({
+              templateName,
+              messageId: results.whatsapp.messageId,
+              buttons,
+              action: logMeta.templateButtonAction || null,
+              automationSlotId: logMeta.automationSlotId || null,
+            }),
+            automationSlotId: logMeta.automationSlotId || null,
+            automation_rule_id: logMeta.automationSlotId || logMeta.automationRuleId || null,
+            contextType: logMeta.contextType || null,
+            templateName: templateName || undefined,
+          };
+        })(),
       });
     } catch (persistErr) {
       log.warn(`Inbox persist after template send failed: ${persistErr.message}`);

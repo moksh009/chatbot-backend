@@ -3,7 +3,7 @@
 const Client = require('../models/Client');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
 const FlowHistory = require('../models/FlowHistory');
-const { preflightValidateFlowGraph } = require('../utils/flow/flowPublishPreflight');
+const { preflightValidateFlowGraph, migrateWarrantyFlowGraph } = require('../utils/flow/flowPublishPreflight');
 const { stripEditorOnlyNodes, pruneFlowGraphToReachable } = require('../utils/flow/pruneFlowGraph');
 const { sanitizeFlowNodesMedia } = require('../utils/flow/sanitizeFlowMedia');
 const { clearTriggerCache } = require('../utils/flow/triggerEngine');
@@ -32,8 +32,12 @@ async function publishFlowForClient({
     ? await WhatsAppFlow.findOne({ clientId, flowId })
     : await WhatsAppFlow.findOne({ clientId, status: 'DRAFT' }).sort({ updatedAt: -1 });
 
-  const draftNodes = nodes || flow?.nodes || [];
-  const draftEdges = edges || flow?.edges || [];
+  let draftNodes = nodes || flow?.nodes || [];
+  let draftEdges = edges || flow?.edges || [];
+
+  const migration = migrateWarrantyFlowGraph({ nodes: draftNodes, edges: draftEdges });
+  draftNodes = migration.nodes;
+  draftEdges = migration.edges;
 
   const preflight = preflightValidateFlowGraph({
     nodes: draftNodes,
@@ -41,11 +45,13 @@ async function publishFlowForClient({
     client: client.toObject ? client.toObject() : client,
   });
 
+  const publishWarnings = [...(migration.warnings || []), ...(preflight.warnings || [])];
+
   if (!preflight.valid && !forcePublish) {
     const err = new Error('Flow publish blocked: validation failed.');
     err.status = 400;
     err.errors = preflight.errors;
-    err.warnings = preflight.warnings;
+    err.warnings = publishWarnings;
     throw err;
   }
 
@@ -108,14 +114,14 @@ async function publishFlowForClient({
       flowId: flow.flowId,
       versionNumber: flow.version,
       publishedAt: new Date().toISOString(),
-      warnings: preflight.warnings || [],
+      warnings: publishWarnings,
     });
   }
 
   return {
     versionNumber: flow.version,
     publishedAt: flow.lastSyncedAt,
-    warnings: preflight.warnings || [],
+    warnings: publishWarnings,
     flowId: flow.flowId,
   };
 }

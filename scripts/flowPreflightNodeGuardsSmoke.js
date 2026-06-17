@@ -57,10 +57,30 @@ function run() {
     ],
     edges: [
       { id: "e1", source: "trigger_1", target: "w_1" },
-      { id: "e2", source: "w_1", sourceHandle: "active", target: "after" },
     ],
   });
-  assert(hasErrorCode(warrantyBad, "WARRANTY_BRANCH_MISSING"), "Expected warranty branch validation error");
+  assert(hasErrorCode(warrantyBad, "WARRANTY_OUTPUT_MISSING"), "Expected warranty output validation error");
+
+  const warrantyLegacyOnly = preflightValidateFlowGraph({
+    ...base,
+    nodes: [
+      { id: "trigger_1", type: "trigger", data: {} },
+      { id: "w_1", type: "warranty_check", data: {} },
+      { id: "w_active", type: "message", data: { text: "active" } },
+      { id: "w_exp", type: "message", data: { text: "expired" } },
+      { id: "w_none", type: "message", data: { text: "none" } },
+    ],
+    edges: [
+      { id: "e1", source: "trigger_1", target: "w_1" },
+      { id: "e2", source: "w_1", sourceHandle: "active", target: "w_active" },
+      { id: "e3", source: "w_1", sourceHandle: "expired", target: "w_exp" },
+      { id: "e4", source: "w_1", sourceHandle: "none", target: "w_none" },
+    ],
+  });
+  assert(
+    hasErrorCode(warrantyLegacyOnly, "WARRANTY_OUTPUT_MISSING"),
+    "Expected warranty legacy-only edges to fail without bottom output"
+  );
 
   const good = preflightValidateFlowGraph({
     ...base,
@@ -68,17 +88,13 @@ function run() {
       { id: "trigger_1", type: "trigger", data: {} },
       { id: "review_1", type: "review", data: {} },
       { id: "w_1", type: "warranty_check", data: {} },
-      { id: "a", type: "message", data: { text: "A" } },
-      { id: "b", type: "message", data: { text: "B" } },
-      { id: "c", type: "message", data: { text: "C" } },
+      { id: "menu", type: "message", data: { text: "Menu" } },
     ],
     edges: [
       { id: "e1", source: "trigger_1", target: "review_1" },
       { id: "e4", source: "review_1", sourceHandle: "positive", target: "w_1" },
       { id: "e5", source: "review_1", sourceHandle: "negative", target: "w_1" },
-      { id: "e6", source: "w_1", sourceHandle: "active", target: "a" },
-      { id: "e7", source: "w_1", sourceHandle: "expired", target: "b" },
-      { id: "e8", source: "w_1", sourceHandle: "none", target: "c" },
+      { id: "e6", source: "w_1", sourceHandle: "bottom", target: "menu" },
     ],
   });
   assert(good.valid === true, "Expected valid graph for review/warranty guards");
@@ -87,10 +103,12 @@ function run() {
   console.log("--------------------------------");
   console.log("PASS: Loyalty nodes rejected");
   console.log("PASS: Review node branch validation");
-  console.log("PASS: Warranty node branch validation");
+  console.log("PASS: Warranty node output validation");
   console.log("PASS: Valid graph passes preflight");
   console.log("--------------------------------");
-  console.log("All 4 checks passed.");
+  console.log("PASS: Warranty legacy-only edges rejected");
+  console.log("--------------------------------");
+  console.log("All 5 checks passed.");
 }
 
 run();

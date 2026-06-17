@@ -1803,7 +1803,12 @@ router.post('/:id/upload-media', protect, upload.single('file'), async (req, res
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
     
-    const mediaUrl = await uploadToCloud(req.file.buffer, 'chat_media', 'auto');
+    const mediaUrl = await uploadToCloud(
+      req.file.buffer,
+      'chat_media',
+      'auto',
+      req.file.mimetype || ''
+    );
     res.json({ success: true, mediaUrl });
   } catch (error) {
     console.error('[UploadMedia] Error:', error);

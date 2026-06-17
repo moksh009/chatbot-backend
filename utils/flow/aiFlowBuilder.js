@@ -37,7 +37,7 @@ const NODE_TYPES = {
   abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery automation step.' },
   cod_prepaid:    { handles: { in: ['top'], out: ['paid','cod'] }, desc: 'COD conversion branch.' },
   review:         { handles: { in: ['top'], out: ['positive','negative'] }, desc: 'Review collection node.' },
-  warranty_check: { handles: { in: ['top'], out: ['active','expired','none'] }, desc: 'Warranty lookup node.' },
+  warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automated warranty lookup by WhatsApp number; single output after Menu.' },
   email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node.' },
   tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Tag lead. data: { tag, action }' },
   admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Alert admin.' },
@@ -73,7 +73,7 @@ ${businessCtx}
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-function buildBusinessContext(client) {
+function buildBusinessContext(client, extras = {}) {
   const lines = [];
   if (client?.businessName)       lines.push(`Business: ${client.businessName}`);
   if (client?.name)               lines.push(`Brand name: ${client.name}`);
@@ -81,6 +81,24 @@ function buildBusinessContext(client) {
   if (client?.razorpayKeyId)      lines.push(`Payments: Razorpay enabled`);
   if (client?.nicheData?.niche)   lines.push(`Industry: ${client.nicheData.niche}`);
   if (client?.nicheData?.storeUrl) lines.push(`Store URL: ${client.nicheData.storeUrl}`);
+  if (client?.platformVars?.brandName) lines.push(`Display brand: ${client.platformVars.brandName}`);
+  if (client?.platformVars?.agentName) lines.push(`Bot name: ${client.platformVars.agentName}`);
+  if (client?.ai?.persona?.tone || client?.platformVars?.defaultTone) {
+    lines.push(`Tone: ${client.ai?.persona?.tone || client.platformVars.defaultTone}`);
+  }
+  if (client?.ai?.persona?.language || client?.platformVars?.defaultLanguage) {
+    lines.push(`Language: ${client.ai?.persona?.language || client.platformVars.defaultLanguage}`);
+  }
+  if (extras.personaSummary) lines.push(`AI persona: ${extras.personaSummary}`);
+  if (extras.knowledgeSummary) lines.push(`Knowledge base:\n${extras.knowledgeSummary}`);
+  if (extras.approvedTemplateSlots?.length) {
+    lines.push(`Approved template slots: ${extras.approvedTemplateSlots.join(', ')}`);
+  }
+  const wf = client?.wizardFeatures;
+  if (wf && typeof wf === 'object') {
+    const enabled = Object.entries(wf).filter(([, v]) => v === true).map(([k]) => k);
+    if (enabled.length) lines.push(`Enabled automations: ${enabled.join(', ')}`);
+  }
   const integrations = [];
   if (client?.shopifyAccessToken) integrations.push('Shopify');
   if (client?.razorpayKeyId)      integrations.push('Razorpay');
@@ -263,11 +281,11 @@ function buildFallbackFlow(prompt, yOffset = 0) {
  * @param {number} yOffset  - Y pixels to offset all nodes (avoid overlap on existing canvas)
  * @param {string} strategy - Optional strategy hint injected at start of prompt
  */
-async function buildFlowFromPrompt(prompt, client, yOffset = 0, strategy = null) {
+async function buildFlowFromPrompt(prompt, client, yOffset = 0, strategy = null, contextExtras = {}) {
   const clientId = client?.clientId;
   if (!clientId) throw new Error("No client configured for AI flow builder");
 
-  const businessCtx = buildBusinessContext(client);
+  const businessCtx = buildBusinessContext(client, contextExtras);
   const systemPrompt = buildSystemPrompt(businessCtx);
 
   const fullPrompt = strategy

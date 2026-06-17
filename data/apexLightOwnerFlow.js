@@ -1269,44 +1269,7 @@ function buildFlow() {
       "y": -200
     },
     "data": {
-      "label": "Warranty lookup",
-      "action": "WARRANTY_CHECK"
-    }
-  },
-  {
-    "id": "n_w_active",
-    "type": "message",
-    "position": {
-      "x": 1460,
-      "y": -280
-    },
-    "data": {
-      "label": "Warranty active",
-      "text": "✅ Warranty is *active* for {{_warranty_product_name|your product}}.\n\nEnds: {{_warranty_expires_display|N/A}}\nOrder ref: {{_warranty_order_ref|-}}"
-    }
-  },
-  {
-    "id": "n_w_exp",
-    "type": "message",
-    "position": {
-      "x": 1460,
-      "y": -180
-    },
-    "data": {
-      "label": "Warranty expired",
-      "text": "Warranty has expired for {{_warranty_product_name|this product}}.\nExpiry: {{_warranty_expires_display|N/A}}"
-    }
-  },
-  {
-    "id": "n_w_none",
-    "type": "message",
-    "position": {
-      "x": 1460,
-      "y": -80
-    },
-    "data": {
-      "label": "Warranty not found",
-      "text": "No warranty on file for this number yet. Share your *order ID* on *9328613239* and we will help right away."
+      "label": "Warranty Lookup"
     }
   },
   ...apexLightOwnerFlowInstallPack.nodes,
@@ -2020,22 +1983,10 @@ function buildFlow() {
     "target": "n_govee_line"
   },
   {
-    "id": "e_w_a",
+    "id": "e_w_mm",
     "source": "n_warranty",
-    "sourceHandle": "active",
-    "target": "n_w_active"
-  },
-  {
-    "id": "e_w_e",
-    "source": "n_warranty",
-    "sourceHandle": "expired",
-    "target": "n_w_exp"
-  },
-  {
-    "id": "e_w_n",
-    "source": "n_warranty",
-    "sourceHandle": "none",
-    "target": "n_w_none"
+    "sourceHandle": "bottom",
+    "target": "n_service_menu"
   },
   {
     "id": "e_inst_intro_lookup",
@@ -2335,21 +2286,6 @@ function buildFlow() {
   {
     "id": "e_f_m20r",
     "source": "n_m20_restart",
-    "target": "n_footer"
-  },
-  {
-    "id": "e_f_w1",
-    "source": "n_w_active",
-    "target": "n_footer"
-  },
-  {
-    "id": "e_f_w2",
-    "source": "n_w_exp",
-    "target": "n_footer"
-  },
-  {
-    "id": "e_f_w3",
-    "source": "n_w_none",
     "target": "n_footer"
   },
   {

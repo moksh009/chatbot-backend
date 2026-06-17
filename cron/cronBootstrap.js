@@ -52,6 +52,7 @@ function registerAllCrons() {
 
   // ── High frequency (flow) — every 2 min by default (was every 1 min) ──
   require("./flowResumptionCron")();
+  require("./mediaRetentionCron")();
 
   // ── Legacy noop stubs (register runTick only; timers skipped when coordinator on) ──
   require("./abandonedCartScheduler")();

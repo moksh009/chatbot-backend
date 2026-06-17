@@ -2,6 +2,51 @@ const { normalizeNodeType } = require('./flowNodeContract');
 const { validateFlowNode } = require('../core/validator');
 const { lintCopyInFlow } = require('./flowCopyLint');
 const { analyzeFlowGraph } = require('./flowStaticAnalysis');
+const { findWarrantyOutputEdge } = require('../commerce/warrantyFlowLookup');
+
+const WARRANTY_LEGACY_HANDLES = new Set(['active', 'expired', 'none']);
+
+function isWarrantyNodeType(type) {
+  const t = normalizeNodeType(type);
+  return t === 'warranty_check' || t === 'warranty_lookup';
+}
+
+/**
+ * Publish-time cleanup: strip legacy active/expired/none edges from warranty nodes.
+ */
+function migrateWarrantyFlowGraph({ nodes = [], edges = [] } = {}) {
+  const safeNodes = Array.isArray(nodes) ? nodes : [];
+  const safeEdges = Array.isArray(edges) ? edges : [];
+  const warrantyIds = new Set(
+    safeNodes.filter((n) => isWarrantyNodeType(n?.type)).map((n) => n.id).filter(Boolean)
+  );
+  if (!warrantyIds.size) {
+    return { nodes: safeNodes, edges: safeEdges, warnings: [] };
+  }
+
+  const warnings = [];
+  const nextEdges = [];
+  for (const edge of safeEdges) {
+    if (!edge?.source || !warrantyIds.has(edge.source)) {
+      nextEdges.push(edge);
+      continue;
+    }
+    const handle = String(edge.sourceHandle || '').toLowerCase();
+    if (WARRANTY_LEGACY_HANDLES.has(handle)) {
+      warnings.push({
+        code: 'WARRANTY_LEGACY_BRANCHES_STRIPPED',
+        message: `Removed legacy "${handle}" branch from Warranty Lookup node "${edge.source}".`,
+        fix: 'Connect the bottom output to the node that runs after Menu.',
+        edgeId: edge.id,
+        nodeId: edge.source,
+      });
+      continue;
+    }
+    nextEdges.push(edge);
+  }
+
+  return { nodes: safeNodes, edges: nextEdges, warnings };
+}
 
 function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
   const errors = [];
@@ -106,14 +151,23 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
       });
     }
 
-    if (type === 'warranty_check') {
-      const requiredHandles = ['active', 'expired', 'none'];
-      const missing = requiredHandles.filter((h) => !hasHandle(node.id, h));
-      if (missing.length) {
+    if (type === 'warranty_check' || type === 'warranty_lookup') {
+      const outEdges = outgoingBySource.get(node.id) || [];
+      const legacyEdges = outEdges.filter((e) =>
+        WARRANTY_LEGACY_HANDLES.has(String(e.sourceHandle || '').toLowerCase())
+      );
+      if (legacyEdges.length > 0) {
+        warnings.push({
+          code: 'WARRANTY_LEGACY_BRANCHES',
+          message: `Warranty Lookup node "${node?.id || ''}" still has legacy active/expired/none branches.`,
+          fix: 'Remove legacy branch wires and connect only the bottom output to the node that runs after Menu.',
+        });
+      }
+      if (!findWarrantyOutputEdge(safeEdges, node.id)) {
         errors.push({
-          code: 'WARRANTY_BRANCH_MISSING',
-          message: `Warranty node "${node?.id || ''}" is missing branch(es): ${missing.join(', ')}.`,
-          fix: 'Connect active, expired, and none handles to downstream nodes.'
+          code: 'WARRANTY_OUTPUT_MISSING',
+          message: `Warranty Lookup node "${node?.id || ''}" needs one bottom output connected (e.g. main menu).`,
+          fix: 'Connect the bottom output handle to the node that should run after the warranty interaction ends.',
         });
       }
     }
@@ -125,5 +179,5 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
   return { valid: errors.length === 0, errors, warnings };
 }
 
-module.exports = { preflightValidateFlowGraph };
+module.exports = { preflightValidateFlowGraph, migrateWarrantyFlowGraph };
 
