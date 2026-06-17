@@ -1,5 +1,6 @@
 const { Queue } = require('bullmq');
 const { getConnection } = require('./queueConnection');
+const { signupWelcomeJobId } = require('./jobIdUtils');
 
 const QUEUE_NAME = 'signup-welcome';
 let queue;
@@ -27,7 +28,7 @@ async function enqueueSignupWelcomeJob(payload) {
   const userId = String(payload?.userId || '');
   if (!userId) throw new Error('signup_welcome_user_id_required');
   return q.add('welcome-email', payload, {
-    jobId: `signup-welcome:${userId}`,
+    jobId: signupWelcomeJobId(userId),
   });
 }
 

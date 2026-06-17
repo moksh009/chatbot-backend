@@ -1268,11 +1268,15 @@ async function runDualBrainEngine(parsedMessage, client) {
           case 'add_tag':
             if (action.tag) {
               const { normalizeLeadTagForAdd, applyNeedHelpTag } = require('./needHelpTag');
+              const { transitionLeadTags } = require('./leadTagOps');
               const normalized = normalizeLeadTagForAdd(action.tag);
               if (normalized === 'Need help') {
                 await applyNeedHelpTag(client.clientId, phone);
               } else if (normalized) {
-                await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: normalized } });
+                await transitionLeadTags({
+                  filter: { _id: lead._id, clientId: client.clientId },
+                  add: [normalized],
+                });
               }
               await emitLeadTags();
             }
@@ -3585,16 +3589,23 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const { action, tag } = node.data || {}; // action: 'add' or 'remove'
     if (tag && lead) {
        const { normalizeLeadTagForAdd, applyNeedHelpTag, NEED_HELP_TAG } = require('./needHelpTag');
+       const { transitionLeadTags } = require('./leadTagOps');
        const normalized = normalizeLeadTagForAdd(tag) || tag;
        if (action === 'remove') {
-         const pullTags = normalized === NEED_HELP_TAG
+         const removeTags = normalized === NEED_HELP_TAG
            ? [NEED_HELP_TAG, 'Human', 'human', 'pending-human']
            : [tag, normalized];
-         await AdLead.findByIdAndUpdate(lead._id, { $pull: { tags: { $in: pullTags } } });
+         await transitionLeadTags({
+           filter: { _id: lead._id, clientId: client.clientId },
+           remove: removeTags,
+         });
        } else if (normalized === NEED_HELP_TAG) {
          await applyNeedHelpTag(client.clientId, phone);
        } else {
-         await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: normalized } });
+         await transitionLeadTags({
+           filter: { _id: lead._id, clientId: client.clientId },
+           add: [normalized],
+         });
        }
        log.info(`TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
     }
@@ -5813,53 +5824,24 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode, c
 
 async function sendWhatsAppSmartTemplate(client, phone, templateName, variables = [], headerImage = null, languageCode = 'en') {
   try {
-    const convo = await Conversation.findOne({ phone, clientId: client.clientId }).lean();
-    const params = [];
-    if (Array.isArray(variables) && variables.length) {
-      params.push({
-        type: 'body',
-        parameters: variables.map((v) => ({ type: 'text', text: String(v) })),
-      });
-    }
-    if (headerImage) {
-      params.push({
-        type: 'header',
-        parameters: [{ type: 'image', image: { link: headerImage } }],
-      });
-    }
-
-    const { dispatchBotEnvelope } = require('../messaging/botEnvelopeDispatch');
-    const env = await dispatchBotEnvelope({
+    const WhatsApp = require('../meta/whatsapp');
+    return await WhatsApp.sendSmartTemplate(
       client,
       phone,
-      payload: {
-        templateName,
-        templateLanguage: languageCode || 'en',
-        components: params,
-      },
-      opts: { conversationId: convo?._id, source: 'dualBrainEngine:sendSmartTemplate' },
-    });
-    if (env?.handled) {
-      if (env.sent && env.messageId) {
-        await saveOutboundMessage(
-          phone,
-          client.clientId,
-          'template',
-          `[SmartTemplate: ${templateName}]`,
-          env.messageId
-        );
-      }
-      return env.sent ? { messages: [{ id: env.messageId }] } : null;
-    }
-
-    return null;
+      templateName,
+      variables,
+      headerImage,
+      languageCode || 'en'
+    );
   } catch (err) {
     if (
       (err.message || "").includes("132001") ||
       (err.message || "").includes("132000") ||
-      (err.message || "").includes("132012")
+      (err.message || "").includes("132012") ||
+      (err.message || "").includes("TEMPLATE_URL_BUTTON_MISSING") ||
+      (err.message || "").includes("URL button parameter")
     ) {
-      log.warn(`[DualBrain] Template ${templateName} failed (Missing). Fallback was triggered in WhatsApp utility.`);
+      log.warn(`[DualBrain] Template ${templateName} failed: ${err.message}`);
       return;
     }
     log.error('sendSmartTemplate error:', { 

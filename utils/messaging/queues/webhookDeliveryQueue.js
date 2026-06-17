@@ -2,6 +2,7 @@
 
 const { Queue } = require('bullmq');
 const { getConnection } = require('./queueConnection');
+const { webhookDeliveryJobId } = require('./jobIdUtils');
 
 const QUEUE_NAME = 'webhook-delivery';
 const RETRY_DELAYS_MS = [0, 30_000, 120_000, 600_000, 1_800_000, 7_200_000];
@@ -40,7 +41,7 @@ async function enqueueWebhookDelivery(jobData, { attempt = 1 } = {}) {
     'deliver',
     { ...jobData, deliveryId, attempt },
     {
-      jobId: `${deliveryId}:${attempt}`,
+      jobId: webhookDeliveryJobId(deliveryId, attempt),
       delay,
     }
   );

@@ -1,5 +1,6 @@
 const { Queue } = require('bullmq');
 const { getConnection } = require('./queueConnection');
+const { campaignMessageJobId } = require('./jobIdUtils');
 
 const QUEUE_NAME = 'campaign-dispatch';
 let queue;
@@ -24,7 +25,7 @@ function getCampaignDispatchQueue() {
 async function enqueueCampaignMessageJob(payload, opts = {}) {
   const q = getCampaignDispatchQueue();
   if (!q) throw new Error('campaign_dispatch_queue_unavailable');
-  const jobId = `cm:${payload.campaignMessageId}`;
+  const jobId = campaignMessageJobId(payload.campaignMessageId);
   return q.add('dispatch', payload, {
     jobId,
     delay: opts.delay || 0,
@@ -44,7 +45,7 @@ async function bulkEnqueueCampaignJobs(jobs, opts = {}) {
         name: 'dispatch',
         data: payload,
         opts: {
-          jobId: `cm:${payload.campaignMessageId}`,
+          jobId: campaignMessageJobId(payload.campaignMessageId),
           delay: payload.delayMs ?? opts.delay ?? 0,
         },
       }))

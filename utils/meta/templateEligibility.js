@@ -29,11 +29,25 @@ function hasImageHeader(template) {
   );
 }
 
+function getUrlButtonVariableCount(template) {
+  const buttonsComp = (template?.components || []).find(
+    (c) => String(c?.type || '').toUpperCase() === 'BUTTONS'
+  );
+  if (!buttonsComp?.buttons?.length) return 0;
+  return buttonsComp.buttons.filter(
+    (btn) =>
+      String(btn?.type || '').toUpperCase() === 'URL' &&
+      String(btn?.url || '').includes('{{')
+  ).length;
+}
+
 function validateTemplateEligibility({
   template,
   contextPurpose = 'utility',
   availableFields = [],
   providedVariables = [],
+  buttonUrlParams = [],
+  contextUrls = {},
   strict = true,
 }) {
   const reasons = [];
@@ -101,6 +115,26 @@ function validateTemplateEligibility({
     warnings.push('Template uses an image header. Make sure a valid media URL/handle is supplied.');
   }
 
+  const urlButtonCount = getUrlButtonVariableCount(template);
+  if (urlButtonCount > 0) {
+    const explicitButtonVars = (Array.isArray(buttonUrlParams) ? buttonUrlParams : [])
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
+    const hasCheckout = Boolean(
+      contextUrls.checkout_url ||
+        contextUrls.store_url ||
+        contextUrls.website ||
+        contextUrls.shop_url
+    );
+    const buttonParamsProvided =
+      explicitButtonVars.length >= urlButtonCount || hasCheckout;
+    if (!buttonParamsProvided) {
+      reasons.push(
+        `Template "${template.name}" has ${urlButtonCount} URL button(s) requiring a checkout or store link parameter.`
+      );
+    }
+  }
+
   const ok = strict ? reasons.length === 0 : normalizedStatus === 'APPROVED';
   return { ok, reasons, warnings, missingVariables, requiredVariableCount };
 }
@@ -110,4 +144,5 @@ module.exports = {
   normalizePurpose,
   validateTemplateEligibility,
   getBodyVariableCount,
+  getUrlButtonVariableCount,
 };

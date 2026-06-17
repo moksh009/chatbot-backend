@@ -472,6 +472,10 @@ router.post('/quick-send', protect, tenantRateLimit(), async (req, res) => {
       template: eligibilityTpl,
       contextPurpose: 'campaign',
       strict: strictValidation !== false,
+      contextUrls: {
+        checkout_url: client.shopifyStoreUrl || client.website || '',
+        store_url: client.shopifyStoreUrl || client.website || '',
+      },
     });
 
     if (preflight.requiredVariableCount > 1) {
@@ -748,9 +752,11 @@ router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
                     { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
                 ]
             });
-        } else if (source === 'manual' && campaignId && mongoose.Types.ObjectId.isValid(String(campaignId))) {
-            const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
-            count = Array.isArray(campaign?.audience) ? campaign.audience.length : 0;
+        } else if ((source === 'manual' || source === 'csv') && campaignId && mongoose.Types.ObjectId.isValid(String(campaignId))) {
+            const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience audienceCount').lean();
+            count = Array.isArray(campaign?.audience)
+              ? campaign.audience.length
+              : Number(campaign?.audienceCount) || 0;
         }
 
         res.json({ success: true, count });
@@ -845,6 +851,23 @@ router.get('/audience-preview', protect, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @route   GET /api/campaigns/:id/audience-snapshot
+// @desc    Campaign-centric audience totals (CSV, segment, import, hot)
+// @access  Private
+router.get('/:id/audience-snapshot', protect, campaignByIdScope, async (req, res) => {
+  try {
+    const tenantId = tenantClientId(req);
+    const { getCampaignAudienceSnapshot } = require('../services/campaignAudienceSnapshot');
+    const snapshot = await getCampaignAudienceSnapshot(tenantId, req.params.id, {
+      templateCategory: req.query.templateCategory || 'MARKETING',
+    });
+    return res.json(snapshot);
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({ success: false, message: err.message });
   }
 });
 

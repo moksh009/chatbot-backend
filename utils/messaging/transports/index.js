@@ -2,7 +2,7 @@ const WhatsApp = require('../../meta/whatsapp');
 const { sendWorkspaceEmailDirect } = require('../../core/emailService');
 const { sendInstagram } = require('./sendInstagram');
 
-async function sendWhatsApp({ client, to, payload }) {
+async function sendWhatsApp({ client, to, payload, skipSuppressionCheck = false }) {
   if (payload.templateName) {
     const response = await WhatsApp.sendTemplate(
       client,
@@ -21,7 +21,9 @@ async function sendWhatsApp({ client, to, payload }) {
     const response = await WhatsApp.sendImage(client, to, payload.media.url, payload.text || '');
     return { messageId: response?.messages?.[0]?.id || null, raw: response };
   }
-  const response = await WhatsApp.sendText(client, to, payload.text || '');
+  const response = await WhatsApp.sendText(client, to, payload.text || '', {
+    skipSuppressionCheck,
+  });
   return { messageId: response?.messages?.[0]?.id || null, raw: response };
 }
 

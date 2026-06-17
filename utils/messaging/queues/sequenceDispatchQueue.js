@@ -1,5 +1,6 @@
 const { Queue } = require('bullmq');
 const { getConnection } = require('./queueConnection');
+const { sequenceStepJobId } = require('./jobIdUtils');
 
 const QUEUE_NAME = 'sequence-dispatch';
 let queue;
@@ -24,7 +25,7 @@ function getSequenceDispatchQueue() {
 async function enqueueSequenceStepJob(payload, opts = {}) {
   const q = getSequenceDispatchQueue();
   if (!q) throw new Error('sequence_dispatch_queue_unavailable');
-  const jobId = `seq:${payload.sequenceId}:${payload.stepIdx}`;
+  const jobId = sequenceStepJobId(payload.sequenceId, payload.stepIdx);
   return q.add('dispatch', payload, {
     jobId,
     delay: opts.delay || 0,

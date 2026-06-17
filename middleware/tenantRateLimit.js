@@ -68,9 +68,15 @@ function tenantRateLimit() {
     if (IS_NON_PROD && !ENFORCE_TENANT_IN_DEV) return next();
 
     const clientId = req.user.clientId;
-    const key = `api_rate:${clientId}`;
+    const pathOnly = String(path).split('?')[0];
+    const isCampaignDraftPatch =
+      req.method === 'PATCH' && /\/api\/campaigns\/[a-f0-9]{24}$/i.test(pathOnly);
+    const key = isCampaignDraftPatch ? `api_rate_draft:${clientId}` : `api_rate:${clientId}`;
     const { rpm } = await resolveLimit(clientId);
-    const effectiveRpm = IS_NON_PROD ? DEV_TENANT_RPM : rpm;
+    let effectiveRpm = IS_NON_PROD ? DEV_TENANT_RPM : rpm;
+    if (isCampaignDraftPatch && !IS_NON_PROD) {
+      effectiveRpm = Math.max(effectiveRpm, effectiveRpm * 4);
+    }
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, 60);
 

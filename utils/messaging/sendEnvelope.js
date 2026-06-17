@@ -173,7 +173,9 @@ async function sendEnvelope(input = {}) {
     channel: input.channel,
     contact,
   });
-  if (!suppression.pass) return buildResult('blocked', suppression);
+  if (!suppression.pass && input?.options?.complianceExempt !== true) {
+    return buildResult('blocked', suppression);
+  }
 
   const serviceWindow = checkServiceWindow({ channel: input.channel, intent: input.intent, payload: input.payload, contact });
   if (!serviceWindow.pass) return buildResult('blocked', serviceWindow);
@@ -266,6 +268,7 @@ async function sendEnvelope(input = {}) {
         client,
         to: contact.phoneNumber,
         payload: input.payload,
+        skipSuppressionCheck: input?.options?.complianceExempt === true,
       });
     }
 

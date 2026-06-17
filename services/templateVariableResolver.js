@@ -66,6 +66,19 @@ async function buildSendContext({ client, phone, convo = null, lead = null, orde
   if (cart?.checkout_url) merged.checkout_url = cart.checkout_url;
   if (cart?.total_price != null) merged.cart_total = `₹${Number(cart.total_price).toLocaleString("en-IN")}`;
 
+  if (!merged.checkout_url && !merged.store_url) {
+    const storeUrl =
+      client?.shopifyStoreUrl ||
+      client?.website ||
+      client?.platformVars?.storeUrl ||
+      client?.growthWidgetConfig?.storeUrl ||
+      '';
+    if (storeUrl) {
+      merged.checkout_url = String(storeUrl).replace(/\/$/, '');
+      merged.store_url = merged.checkout_url;
+    }
+  }
+
   return merged;
 }
 
@@ -156,10 +169,18 @@ async function buildMetaTemplateComponents(metaTemplate, context, options = {}) 
     }
 
     if (type === "BUTTONS" && Array.isArray(comp.buttons)) {
+      const missingUrlButtons = [];
       comp.buttons.forEach((btn, idx) => {
         if (btn.type === "URL" && (btn.url || "").includes("{{1}}")) {
           const urlKey = mappings.buttons?.[String(idx)] || mappings.buttons?.[idx] || "checkout_url";
-          const urlVal = String(context[urlKey] || context.checkout_url || "").slice(0, 2000);
+          const urlVal = String(
+            context[urlKey] ||
+              context.checkout_url ||
+              context.store_url ||
+              context.website ||
+              context.shop_url ||
+              ""
+          ).slice(0, 2000);
           if (urlVal) {
             components.push({
               type: "button",
@@ -167,9 +188,18 @@ async function buildMetaTemplateComponents(metaTemplate, context, options = {}) 
               index: String(idx),
               parameters: [{ type: "text", text: urlVal }],
             });
+          } else {
+            missingUrlButtons.push(idx);
           }
         }
       });
+      if (missingUrlButtons.length > 0) {
+        const err = new Error(
+          `Template requires URL button parameter(s) at index ${missingUrlButtons.join(", ")}. Map checkout_url or store_url before sending.`
+        );
+        err.code = "TEMPLATE_URL_BUTTON_MISSING";
+        throw err;
+      }
     }
   }
 

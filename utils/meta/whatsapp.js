@@ -308,10 +308,12 @@ const WhatsApp = {
   /**
    * Sends a plain text message
    */
-  async sendText(client, phone, body) {
+  async sendText(client, phone, body, opts = {}) {
     const validPhone = validatePhone(phone);
     if (!body) throw new Error("[WhatsApp] Empty message body");
-    await this.ensureNotSuppressed(client, validPhone);
+    if (!opts.skipSuppressionCheck) {
+      await this.ensureNotSuppressed(client, validPhone);
+    }
 
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;

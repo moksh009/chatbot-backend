@@ -77,7 +77,6 @@ async function executeGlobalOptOut({
     { clientId, phoneNumber: { $in: variants } },
     {
       $set: leadUpdate,
-      $addToSet: { tags: 'Opted Out' },
       $push: {
         optInHistory: {
           $each: [
@@ -96,6 +95,15 @@ async function executeGlobalOptOut({
     },
     { upsert: false, new: true }
   );
+
+  if (lead?._id) {
+    const { transitionLeadTags } = require('./leadTagOps');
+    await transitionLeadTags({
+      filter: { _id: lead._id, clientId },
+      add: ['Opted Out'],
+      remove: ['Opted In'],
+    });
+  }
 
   if (conversationId) {
     const Conversation = require('../../models/Conversation');
@@ -134,12 +142,15 @@ async function executeGlobalOptOut({
 
   if (sendConfirmation) {
     try {
-      const WhatsApp = require('../meta/whatsapp');
+      const { sendComplianceText } = require('../messaging/sendComplianceText');
       const confirmationText =
         confirmationMessage && String(confirmationMessage).trim()
           ? String(confirmationMessage).trim()
           : getOptOutAutoReply(client);
-      await WhatsApp.sendText(client, phone, confirmationText);
+      await sendComplianceText(client, phone, confirmationText, {
+        source: 'optOutKillSwitch:confirmation',
+        conversationId,
+      });
     } catch (e) {
       log.warn(`[OptOutKillSwitch] Confirmation send failed: ${e.message}`);
     }
