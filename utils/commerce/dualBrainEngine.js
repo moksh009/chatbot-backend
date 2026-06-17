@@ -2906,6 +2906,14 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   if (matchingEdge) {
+    if (currentNode?.type === 'cod_prepaid' && bid === 'paid') {
+      try {
+        const { handleNodeAction } = require('../flow/nodeActions');
+        await handleNodeAction('CONVERT_COD_TO_PREPAID', currentNode, client, phone, convo, lead);
+      } catch (codErr) {
+        log.warn(`[Graph] cod_prepaid conversion failed: ${codErr.message}`);
+      }
+    }
     if (currentNode?.type === 'review' && bid === 'positive') {
       const reviewUrl =
         currentNode.data?.reviewUrl ||
@@ -4522,6 +4530,32 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
     log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);
+  }
+
+  // Legacy escalate node — same runtime as livechat handoff
+  if (node.type === 'escalate' || node.type === 'escalateNode') {
+    const { handleNodeAction } = require('../flow/nodeActions');
+    await handleNodeAction('ESCALATE_HUMAN', node, client, phone, convo, lead);
+    const nextEdge = flowEdges.find(
+      (e) =>
+        e.source === nodeId &&
+        (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output')
+    );
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
+    return true;
   }
 
   // Update lastStepId logic (skipped for isolated commerce automations)

@@ -143,6 +143,36 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
       }
     }
 
+    if (type === 'cod_prepaid' || type === 'cod_to_prepaid') {
+      if (!hasHandle(node.id, 'paid') && !hasHandle(node.id, 'cod')) {
+        warnings.push({
+          code: 'COD_PREPAID_BRANCHES_MISSING',
+          message: `COD → prepaid node "${node?.id || ''}" has no paid or cod branch wired.`,
+          fix: 'Connect **paid** (after conversion) and **cod** (declined) handles.'
+        });
+      }
+    }
+
+    if (type === 'delay') {
+      warnings.push({
+        code: 'DELAY_REQUIRES_CRON',
+        message: `Delay node "${node?.id || ''}" pauses until flowResumptionCron runs (worker with RUN_CRONS=true).`,
+        fix: 'Ensure worker service is deployed; simulator skips delay after 1s.'
+      });
+    }
+
+    if (type === 'webhook') {
+      const url = String(node.data?.webhookUrl || node.data?.url || '').trim();
+      if (!url) {
+        errors.push({
+          code: 'WEBHOOK_URL_MISSING',
+          nodeId: node.id,
+          message: `Webhook node "${node?.id || ''}" has no URL.`,
+          fix: 'Set an https:// endpoint or remove the node.'
+        });
+      }
+    }
+
     if (type === 'loyalty_action' || type === 'loyalty') {
       errors.push({
         code: 'LOYALTY_NODE_REMOVED',

@@ -540,12 +540,40 @@ async function validateAutomationFlow(client, flowType) {
       break;
     }
 
-    case 'cod_to_prepaid': {
+    case 'cod_to_prepaid':
+    case 'cod_prepaid': {
       if (!client.razorpayKeyId || !client.razorpaySecret) {
         errors.push({
           code:    'NO_PAYMENT_GATEWAY',
+          nodeId:  node.id,
           message: 'COD to Prepaid conversion requires Razorpay credentials.',
           fix:     'Go to Settings → Financials → Enter your Razorpay Key ID and Secret.'
+        });
+      }
+      break;
+    }
+
+    case 'set_variable': {
+      const varName = String(node.data?.variable || '').trim();
+      if (!varName) {
+        errors.push({
+          code:    'SET_VARIABLE_NAME_MISSING',
+          nodeId:  node.id,
+          message: 'Set variable node has no variable name.',
+          fix:     'Enter a variable name (e.g. order_status).'
+        });
+      }
+      break;
+    }
+
+    case 'review': {
+      const body = node.data?.text || node.data?.body;
+      if (!body?.trim()) {
+        warnings.push({
+          code:    'REVIEW_MESSAGE_EMPTY',
+          nodeId:  node.id,
+          message: 'Review node has no custom message — default copy will be used.',
+          fix:     'Add review request text or leave default.'
         });
       }
       break;
