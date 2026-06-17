@@ -4,7 +4,7 @@
  * Shared QR scan side-effects for wa.me ref text and bare QR_XXXXXXXX messages.
  */
 
-async function recordQrScanStats(qrId, phone) {
+async function recordQrScanStats(qrId, phone, clientId) {
   const QRScan = require('../../models/QRScan');
   const QRCode = require('../../models/QRCode');
   const isUnique = !(await QRScan.exists({ qrCodeId: qrId, phone }));
@@ -13,10 +13,30 @@ async function recordQrScanStats(qrId, phone) {
     { $setOnInsert: { qrCodeId: qrId, phone, scannedAt: new Date() } },
     { upsert: true }
   );
-  await QRCode.findByIdAndUpdate(qrId, {
-    $inc: { scansTotal: 1, ...(isUnique ? { scansUnique: 1 } : {}) },
-  });
-  return { isUnique };
+  const updated = await QRCode.findByIdAndUpdate(
+    qrId,
+    {
+      $inc: { scansTotal: 1, ...(isUnique ? { scansUnique: 1 } : {}) },
+    },
+    { new: true }
+  )
+    .select('scansTotal scansUnique conversions shortCode name')
+    .lean();
+
+  const socketIo = global.io;
+  if (socketIo && clientId && updated) {
+    socketIo.to(`client_${clientId}`).emit('qr_stats_updated', {
+      qrId: String(updated._id),
+      shortCode: updated.shortCode,
+      scansTotal: updated.scansTotal || 0,
+      scansUnique: updated.scansUnique || 0,
+      conversions: updated.conversions || 0,
+      phone,
+      isFirstScan: isUnique,
+    });
+  }
+
+  return { isUnique, qr: updated };
 }
 
 async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique, io }) {
@@ -129,9 +149,37 @@ async function applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique
  * Does not start flows — keyword / Flow Builder rules handle the reply.
  */
 async function handleQrInboundMessage({ client, phone, lead, qr, shortCode, io }) {
-  const { isUnique } = await recordQrScanStats(qr._id, phone);
+  const { isUnique } = await recordQrScanStats(qr._id, phone, client?.clientId);
   await applyQrLeadEffects({ client, phone, lead, qr, shortCode, isUnique, io });
   return { isUnique };
+}
+
+/**
+ * Match inbound text to an active tenant QR and record scan + CRM effects.
+ * Call early in the inbound pipeline (before greeting fast paths).
+ */
+async function processQrInboundIfPresent({ client, phone, lead, inboundText, io }) {
+  const shortCode = extractQrShortCodeFromText(inboundText);
+  if (!shortCode) return null;
+
+  const QRCode = require('../../models/QRCode');
+  const { qrClientIdFilter } = require('../core/qrClientScope');
+  const qr = await QRCode.findOne({
+    shortCode,
+    isActive: true,
+    ...qrClientIdFilter(client),
+  });
+  if (!qr) return null;
+
+  const { isUnique } = await handleQrInboundMessage({
+    client,
+    phone,
+    lead,
+    qr,
+    shortCode,
+    io,
+  });
+  return { qr, shortCode, isUnique };
 }
 
 function extractQrShortCodeFromText(text) {
@@ -174,6 +222,7 @@ module.exports = {
   recordQrScanStats,
   applyQrLeadEffects,
   handleQrInboundMessage,
+  processQrInboundIfPresent,
   extractQrShortCodeFromText,
   maybeAttributeQrConversion,
 };

@@ -28,8 +28,8 @@ async function generateQRImage(text, fgColor = "#000000", bgColor = "#FFFFFF") {
   });
 }
 
-function buildWaLink(client, shortCode, config = {}) {
-  const phone = resolveClientWaPhone(client);
+async function buildWaLink(client, shortCode, config = {}) {
+  const phone = await resolveClientWaPhone(client);
   const customText = config?.prefilledText
     ? `${config.prefilledText} (Ref: ${shortCode})`
     : `Hi! I'd like to connect. (Ref: ${shortCode})`;
@@ -56,7 +56,7 @@ async function createQRCode(client, qrData) {
   } while (existing && attempts < 5);
 
   const config = qrData.config || {};
-  const waLink = buildWaLink(client, shortCode, config);
+  const waLink = await buildWaLink(client, shortCode, config);
   const fgColor = config?.styleConfig?.fgColor || "#000000";
   const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
   const qrImage = await generateQRImage(waLink, fgColor, bgColor);
@@ -82,7 +82,7 @@ async function createQRCode(client, qrData) {
  */
 async function refreshQRCodeAssets(client, qr) {
   const config = qr.config || {};
-  const waLink = buildWaLink(client, qr.shortCode, config);
+  const waLink = await buildWaLink(client, qr.shortCode, config);
   const fgColor = config?.styleConfig?.fgColor || "#000000";
   const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
   const qrImage = await generateQRImage(waLink, fgColor, bgColor);

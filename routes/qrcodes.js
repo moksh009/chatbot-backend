@@ -8,7 +8,7 @@ const Client = require("../models/Client");
 const { verifyToken } = require("../middleware/auth");
 const { verifyTenantScope } = require("../middleware/verifyTenantScope");
 const { createQRCode, refreshQRCodeAssets } = require("../utils/core/qrGenerator");
-const { qrClientIdFilter, qrBelongsToClient } = require("../utils/core/qrClientScope");
+const { qrClientIdFilter, qrBelongsToClient, getClientQrPhoneContext } = require("../utils/core/qrClientScope");
 
 const tenantScope = verifyTenantScope({ clientIdParam: "clientId" });
 
@@ -34,12 +34,15 @@ router.get("/:clientId", verifyToken, tenantScope, async (req, res) => {
     const totalScans  = qrcodes.reduce((s, q) => s + (q.scansTotal || 0), 0);
     const totalUnique = qrcodes.reduce((s, q) => s + (q.scansUnique || 0), 0);
     const totalConv   = qrcodes.reduce((s, q) => s + (q.conversions || 0), 0);
+    const phoneCtx = await getClientQrPhoneContext(client);
 
     res.json({
       success: true,
       qrcodes,
       stats: { total: qrcodes.length, totalScans, totalUnique, totalConv },
-      waPhoneConfigured: !!String(client.whatsappDisplayPhoneNumber || client.phoneNumber || client.adminPhone || "").replace(/\D/g, ""),
+      whatsappConnected: phoneCtx.whatsappConnected,
+      waPhoneConfigured: phoneCtx.waPhoneConfigured,
+      waDisplayPhone: phoneCtx.waDisplayPhone,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -185,12 +188,21 @@ router.post("/:clientId/preview", verifyToken, tenantScope, async (req, res) => 
     const { buildWaLink, generateQRImage } = require("../utils/core/qrGenerator");
     const config = req.body?.config || {};
     const shortCode = String(req.body?.shortCode || "QR_PREVIEW1").toUpperCase();
-    const waLink = buildWaLink(client, shortCode, config);
+    const phoneCtx = await getClientQrPhoneContext(client);
+    const waLink = await buildWaLink(client, shortCode, config);
     const fgColor = config?.styleConfig?.fgColor || "#000000";
     const bgColor = config?.styleConfig?.bgColor || "#FFFFFF";
     const qrImageUrl = await generateQRImage(waLink, fgColor, bgColor);
 
-    res.json({ success: true, waLink, qrImageUrl, shortCode });
+    res.json({
+      success: true,
+      waLink,
+      qrImageUrl,
+      shortCode,
+      whatsappConnected: phoneCtx.whatsappConnected,
+      waPhoneConfigured: phoneCtx.waPhoneConfigured,
+      waDisplayPhone: phoneCtx.waDisplayPhone,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

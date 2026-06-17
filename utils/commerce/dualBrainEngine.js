@@ -886,9 +886,34 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.error("[InboundSave] Early persist failed:", { error: earlySaveErr.message });
     }
 
+    // ── QR scan (wa.me Ref: QR_* or bare QR_XXXXXXXX) — before greeting fast path ──
+    // Prefilled QR messages often start with "Hi" and must still count as scans.
+    const { processQrInboundIfPresent, extractQrShortCodeFromText } = require('./qrInboundHandler');
+    if (inboundText) {
+      const qrInboundResult = await processQrInboundIfPresent({
+        client,
+        phone,
+        lead,
+        inboundText,
+        io,
+      });
+      if (qrInboundResult?.qr) {
+        log.info(
+          `[DualBrain] 📷 QR message from ${lead.phoneNumber || phone}: ${qrInboundResult.qr.name} — tagged, continuing to automations`
+        );
+        if (qrInboundResult.qr.type === 'contact_capture') {
+          const welcomeMsg = String(qrInboundResult.qr.config?.welcomeMessage || '').trim();
+          if (welcomeMsg) {
+            await sendWhatsAppText(client, phone, welcomeMsg);
+          }
+        }
+      }
+    }
+
     // ── EARLY GREETING FAST PATH (before translation, rules, heavy flow loads) ──
     const isEarlyGreeting =
       inboundText &&
+      !extractQrShortCodeFromText(inboundText) &&
       !convo.botPaused &&
       !parsedMessage.interactive?.button_reply &&
       !parsedMessage.interactive?.list_reply &&
@@ -1126,41 +1151,6 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
-
-  // ── QR scan (wa.me Ref: QR_* or bare QR_XXXXXXXX) ────────────────────────────────
-  const { handleQrInboundMessage, extractQrShortCodeFromText } = require('./qrInboundHandler');
-  const qrShortCode = extractQrShortCodeFromText(incomingText);
-  if (qrShortCode) {
-    const QRCodeModel = require('../../models/QRCode');
-    const { qrClientIdFilter } = require('../../utils/core/qrClientScope');
-    const scannedQr = await QRCodeModel.findOne({
-      shortCode: qrShortCode,
-      isActive: true,
-      ...qrClientIdFilter(client),
-    });
-
-    if (scannedQr) {
-      log.info(
-        `[DualBrain] 📷 QR message from ${lead.phoneNumber || phone}: ${scannedQr.name} — tagged, continuing to automations`
-      );
-      await handleQrInboundMessage({
-        client,
-        phone,
-        lead,
-        qr: scannedQr,
-        shortCode: qrShortCode,
-        io,
-      });
-
-      if (scannedQr.type === 'contact_capture') {
-        const welcomeMsg = String(scannedQr.config?.welcomeMessage || '').trim();
-        if (welcomeMsg) {
-          await sendWhatsAppText(client, phone, welcomeMsg);
-        }
-      }
-      // Fall through — keyword triggers, Smart rules, and Flow Builder handle replies.
-    }
-  }
 
   // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
   // This is passed to executeNode so variables are injected into all nodes
