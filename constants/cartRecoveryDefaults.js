@@ -15,7 +15,8 @@ const CART_RECOVERY_DEFAULTS = {
   smartSendStartHour: 8,
   smartSendEndHour: 22,
   timezone: 'Asia/Kolkata',
-  attributionWindowHours: 24,
+  /** Orders on same phone within this window after any cart WA message → WhatsApp recovery */
+  attributionWindowHours: 7 * 24,
   /** 50/50 template A/B per step when variant B configured on rule (Phase 7) */
   abTestEnabled: false,
 };
@@ -62,6 +63,37 @@ function clampDelayMinutes(value, min, fallback) {
   return Math.max(min, Math.min(1440 * 14, Math.round(n)));
 }
 
+/** Legacy platform default before 7-day cart ladder attribution (June 2026). */
+const LEGACY_ATTRIBUTION_WINDOW_HOURS = 24;
+
+/**
+ * Resolve WA recovery attribution window (hours).
+ * Priority: per-tenant config (if not legacy 24) → env → 7-day default.
+ */
+function resolveAttributionWindowHours(clientHours) {
+  const envRaw = process.env.CART_RECOVERY_ATTRIBUTION_HOURS;
+  if (envRaw != null && String(envRaw).trim() !== '') {
+    const envHours = Number(envRaw);
+    if (Number.isFinite(envHours) && envHours > 0) return envHours;
+  }
+
+  const stored = clientHours != null ? Number(clientHours) : null;
+  if (
+    stored != null &&
+    Number.isFinite(stored) &&
+    stored > 0 &&
+    stored !== LEGACY_ATTRIBUTION_WINDOW_HOURS
+  ) {
+    return stored;
+  }
+
+  return CART_RECOVERY_DEFAULTS.attributionWindowHours;
+}
+
+function attributionWindowMsFromHours(hours) {
+  return Math.max(1, Number(hours) || CART_RECOVERY_DEFAULTS.attributionWindowHours) * 60 * 60 * 1000;
+}
+
 module.exports = {
   CART_RECOVERY_DEFAULTS,
   CART_FOLLOWUP_MIN_MINUTES,
@@ -69,6 +101,9 @@ module.exports = {
   CART_VALUE_TIER_THRESHOLDS,
   CART_VALUE_TIER_RANK,
   CART_RECOVERY_STEP_PROBABILITIES,
+  LEGACY_ATTRIBUTION_WINDOW_HOURS,
   resolveCartNudgeDelay,
   clampDelayMinutes,
+  resolveAttributionWindowHours,
+  attributionWindowMsFromHours,
 };

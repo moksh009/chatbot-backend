@@ -42,6 +42,24 @@ test('shouldSkipLegacyOrderDispatch when tenant has active sys_ rules', () => {
   assert.equal(shouldSkipLegacyOrderDispatch(client), true);
 });
 
+test('shouldSkipLegacyOrderDispatch is false when flag off and no sys_ rules', () => {
+  const prev = process.env.COMMERCE_CANONICAL_ONLY;
+  delete process.env.COMMERCE_CANONICAL_ONLY;
+  try {
+    const client = {
+      commerceAutomations: [
+        { id: 'custom_rule_1', isActive: true, meta: { category: 'order_notification' } },
+      ],
+    };
+    assert.equal(isCommerceCanonicalOnlyEnabled(), false);
+    assert.equal(usesCanonicalOrderMessages(client), false);
+    assert.equal(shouldSkipLegacyOrderDispatch(client), false);
+  } finally {
+    if (prev === undefined) delete process.env.COMMERCE_CANONICAL_ONLY;
+    else process.env.COMMERCE_CANONICAL_ONLY = prev;
+  }
+});
+
 test('dispatchOrderStatusAutomation skips when COMMERCE_CANONICAL_ONLY=true', async () => {
   const prev = process.env.COMMERCE_CANONICAL_ONLY;
   process.env.COMMERCE_CANONICAL_ONLY = 'true';

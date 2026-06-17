@@ -10,13 +10,18 @@ const {
 const log = require('../core/logger')('CartRecoveryAttempt');
 const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 const { normalizeEmail } = require('./marketingConsent');
-const { CART_RECOVERY_DEFAULTS } = require('../../constants/cartRecoveryDefaults');
+const {
+  CART_RECOVERY_DEFAULTS,
+  resolveAttributionWindowHours,
+  attributionWindowMsFromHours,
+} = require('../../constants/cartRecoveryDefaults');
 
 const CART_FOLLOWUP_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
-/** Industry standard: credit WA recovery only within this window after first message. */
-const WA_RECOVERY_ATTRIBUTION_WINDOW_MS =
-  Number(process.env.CART_RECOVERY_ATTRIBUTION_HOURS || 24) * 60 * 60 * 1000;
+/** Platform default: credit WA recovery within 7 days after any cart message (configurable). */
+const WA_RECOVERY_ATTRIBUTION_WINDOW_MS = attributionWindowMsFromHours(
+  resolveAttributionWindowHours()
+);
 
 function contactPhoneKey(raw) {
   const digits = indianPhoneDigits(raw);
@@ -30,19 +35,24 @@ function withinWaAttributionWindow(
   recoveredAt = new Date(),
   attributionWindowMs = WA_RECOVERY_ATTRIBUTION_WINDOW_MS
 ) {
-  let sentAtMs = null;
-  if (attempt?.whatsappMessageSentAt) {
-    sentAtMs = new Date(attempt.whatsappMessageSentAt).getTime();
-  } else {
-    const tplTimes = (attempt?.whatsappTemplatesSent || [])
-      .map((t) => t?.sentAt)
-      .filter(Boolean)
-      .map((d) => new Date(d).getTime());
-    if (tplTimes.length) sentAtMs = Math.min(...tplTimes);
-  }
-  if (!sentAtMs) return false;
   const recoveredMs = new Date(recoveredAt).getTime();
-  return recoveredMs - sentAtMs <= attributionWindowMs && recoveredMs >= sentAtMs;
+  if (!Number.isFinite(recoveredMs)) return false;
+
+  const sentAtMsList = [];
+  if (attempt?.whatsappMessageSentAt) {
+    sentAtMsList.push(new Date(attempt.whatsappMessageSentAt).getTime());
+  }
+  for (const tpl of attempt?.whatsappTemplatesSent || []) {
+    if (tpl?.sentAt) sentAtMsList.push(new Date(tpl.sentAt).getTime());
+  }
+
+  const uniqueSent = [...new Set(sentAtMsList.filter((t) => Number.isFinite(t) && t > 0))];
+  if (!uniqueSent.length) return false;
+
+  // 3-message ladder: credit if order is within window after ANY cart recovery send
+  return uniqueSent.some(
+    (sentAtMs) => recoveredMs >= sentAtMs && recoveredMs - sentAtMs <= attributionWindowMs
+  );
 }
 
 /**
@@ -350,11 +360,8 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
   const now = new Date();
 
   const client = await Client.findOne({ clientId }).select('cartRecoveryConfig').lean();
-  const attributionHours = Number(
-    client?.cartRecoveryConfig?.attributionWindowHours ??
-      CART_RECOVERY_DEFAULTS.attributionWindowHours
-  );
-  const attributionWindowMs = Math.max(1, attributionHours) * 60 * 60 * 1000;
+  const attributionHours = resolveAttributionWindowHours(client?.cartRecoveryConfig?.attributionWindowHours);
+  const attributionWindowMs = attributionWindowMsFromHours(attributionHours);
 
   const patch = {
     status: 'recovered',
@@ -392,6 +399,7 @@ async function attributeOrderToRecoveryAttempt(clientId, orderData, cleanPhone) 
     organicRecovery: !!patch.organicRecovery,
     attributedRevenue: patch.attributedRevenue || 0,
     withinWindow: !!patch.recoveredViaWhatsapp,
+    attributionWindowHours: attributionHours,
     outcome: 'recovered',
   });
   return updated;
@@ -1037,6 +1045,8 @@ async function getCartRecoveryTemplatePerformance(clientId, from, to) {
 module.exports = {
   contactPhoneKey,
   WA_RECOVERY_ATTRIBUTION_WINDOW_MS,
+  resolveAttributionWindowHours,
+  withinWaAttributionWindow,
   ensureCartRecoveryAttempt,
   getCartFollowupConfig,
   recordWhatsappTemplateSent,

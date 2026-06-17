@@ -52,14 +52,16 @@ test('Task 2 — buildCartRecoveryComponents step 1 (image + 3 body + button)', 
   assert.match(button.parameters[0].text, /utm_campaign=cart_msg_1/);
 });
 
-test('Task 2 — buildCartRecoveryComponents step 2 (2 body vars, no image header)', () => {
+test('Task 2 — buildCartRecoveryComponents step 2 (2 body vars + product image header)', () => {
   const lead = {
     firstName: 'Rahul',
     cartSnapshot: { items: [{ title: 'Doorbell', image: 'https://cdn.shopify.com/img.jpg' }] },
     checkoutUrl: 'https://store.com/checkout/abc',
   };
   const { components } = buildCartRecoveryComponents(lead, {}, 2);
-  assert.ok(!components.some((c) => c.type === 'header'));
+  const header = components.find((c) => c.type === 'header');
+  assert.ok(header);
+  assert.equal(header.parameters[0].type, 'image');
   const body = components.find((c) => c.type === 'body');
   assert.equal(body.parameters.length, 2);
 });
@@ -111,12 +113,19 @@ test('Task 1 — verifySecret rejects missing secret in production', () => {
   }
 });
 
-test('Cart recovery — 24h WA attribution window helper', () => {
+test('Cart recovery — WA attribution window defaults to 7 days', () => {
   const {
     WA_RECOVERY_ATTRIBUTION_WINDOW_MS,
     contactPhoneKey,
   } = require('../../utils/commerce/cartRecoveryAttemptService');
-  assert.equal(WA_RECOVERY_ATTRIBUTION_WINDOW_MS, 24 * 60 * 60 * 1000);
+  const {
+    resolveAttributionWindowHours,
+    CART_RECOVERY_DEFAULTS,
+  } = require('../../constants/cartRecoveryDefaults');
+  assert.equal(WA_RECOVERY_ATTRIBUTION_WINDOW_MS, 7 * 24 * 60 * 60 * 1000);
+  assert.equal(resolveAttributionWindowHours(null), CART_RECOVERY_DEFAULTS.attributionWindowHours);
+  assert.equal(resolveAttributionWindowHours(24), CART_RECOVERY_DEFAULTS.attributionWindowHours);
+  assert.equal(resolveAttributionWindowHours(72), 72);
   assert.ok(contactPhoneKey('+919876543210').endsWith('9876543210'));
 });
 

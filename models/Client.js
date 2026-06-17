@@ -182,7 +182,7 @@ const CartRecoveryConfigSchema = new mongoose.Schema({
   smartSendStartHour: { type: Number, default: 8 },
   smartSendEndHour: { type: Number, default: 22 },
   timezone: { type: String, default: 'Asia/Kolkata' },
-  attributionWindowHours: { type: Number, default: 24 },
+  attributionWindowHours: { type: Number, default: 168 },
   discountEnabled: { type: Boolean, default: false },
   discountStep2Pct: { type: Number, default: 0 },
   discountStep3Pct: { type: Number, default: 0 },

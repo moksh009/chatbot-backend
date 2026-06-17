@@ -2,7 +2,7 @@
 
 const Order = require('../../models/Order');
 const { isLeadOptedOutForSend } = require('./marketingConsent');
-const { CART_RECOVERY_DEFAULTS } = require('../../constants/cartRecoveryDefaults');
+const { resolveAttributionWindowHours } = require('../../constants/cartRecoveryDefaults');
 
 /**
  * Decide whether a cart recovery send should be skipped for this lead.
@@ -31,9 +31,7 @@ async function shouldSuppressCartSend(client, lead, config = {}) {
     }
   }
 
-  const attributionHours = Number(
-    config.attributionWindowHours ?? CART_RECOVERY_DEFAULTS.attributionWindowHours
-  );
+  const attributionHours = resolveAttributionWindowHours(config.attributionWindowHours);
   if (attributionHours > 0 && phone && !/^unknown_/i.test(String(phone))) {
     const since = new Date(Date.now() - attributionHours * 60 * 60 * 1000);
     const recentOrder = await Order.findOne({

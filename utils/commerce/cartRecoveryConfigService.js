@@ -7,6 +7,7 @@ const {
   CART_FOLLOWUP_DEFAULT_MINUTES,
   resolveCartNudgeDelay,
   clampDelayMinutes,
+  resolveAttributionWindowHours,
 } = require('../../constants/cartRecoveryDefaults');
 
 function getCartRecoveryConfig(client = {}) {
@@ -45,9 +46,7 @@ function getCartRecoveryConfig(client = {}) {
     smartSendStartHour: Number(cfg.smartSendStartHour ?? CART_RECOVERY_DEFAULTS.smartSendStartHour),
     smartSendEndHour: Number(cfg.smartSendEndHour ?? CART_RECOVERY_DEFAULTS.smartSendEndHour),
     timezone: cfg.timezone || CART_RECOVERY_DEFAULTS.timezone,
-    attributionWindowHours: Number(
-      cfg.attributionWindowHours ?? CART_RECOVERY_DEFAULTS.attributionWindowHours
-    ),
+    attributionWindowHours: resolveAttributionWindowHours(cfg.attributionWindowHours),
     discountEnabled: !!cfg.discountEnabled,
     discountStep2Pct: Number(cfg.discountStep2Pct || 0),
     discountStep3Pct: Number(cfg.discountStep3Pct || 0),

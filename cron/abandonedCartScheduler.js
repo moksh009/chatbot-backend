@@ -30,6 +30,22 @@ const { ABANDONED_CART_TAG } = require('../constants/cartRecoveryTags');
 
 const CART_DEDUP_TTL_SEC = 48 * 3600;
 
+function logCartStepDecision({ clientId, leadId, step, templateName, outcome, skipReason }) {
+  logDispatchEvent(
+    'AbandonedCartScheduler',
+    outcome === 'sent' ? 'cart_recovery_sent' : 'cart_recovery_skipped',
+    {
+      clientId,
+      leadId: leadId ? String(leadId) : null,
+      step,
+      templateName: templateName || null,
+      outcome,
+      skipReason: skipReason || null,
+    },
+    outcome === 'sent' ? 'info' : 'warn'
+  );
+}
+
 function cartLeadDedupeKey(lead) {
   if (hasRealPhone(lead?.phoneNumber)) return lead.phoneNumber;
   const email = String(lead?.email || '').trim().toLowerCase();
@@ -113,12 +129,27 @@ async function wasCartRecoverySentRecently(clientId, phone, stepNum, lead = null
     const key = `cart_recovery:${clientId}:${phone}:step${stepNum}`;
     try {
       const hit = await redis.get(key);
-      if (hit) return true;
+      if (hit) {
+        log.debug('cart recovery dedup hit', {
+          clientId,
+          step: stepNum,
+          dedupKey: `step${stepNum}:${String(phone).slice(-4)}`,
+        });
+        return true;
+      }
     } catch {
       /* fall through to Mongo dedup */
     }
   }
-  return lead ? wasStepSentInActivityLog(lead, stepNum) : false;
+  if (lead && wasStepSentInActivityLog(lead, stepNum)) {
+    log.debug('cart recovery dedup hit', {
+      clientId,
+      step: stepNum,
+      dedupKey: `activity:step${stepNum}:${String(lead._id)}`,
+    });
+    return true;
+  }
+  return false;
 }
 
 async function markCartRecoverySent(clientId, phone, stepNum) {
@@ -675,17 +706,24 @@ async function runAbandonedCartTick() {
                     });
 
                     if (!outcome?.sent) {
-                        log.warn(`[CartRecovery] step 1 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        logCartStepDecision({
+                          clientId: client.clientId,
+                          leadId: lead._id,
+                          step: 1,
+                          templateName: resolved.templateName,
+                          outcome: 'skipped',
+                          skipReason: outcome?.reason || outcome?.detail || 'unknown',
+                        });
                         tickSummary.stepSkipped += 1;
                         continue;
                     }
 
                     tickSummary.step1Sent += 1;
-                    logDispatchEvent('AbandonedCart', 'cart_recovery_sent', {
+                    logCartStepDecision({
                       clientId: client.clientId,
-                      leadId: String(lead._id),
+                      leadId: lead._id,
                       step: 1,
-                      template: resolved.templateName || null,
+                      templateName: resolved.templateName,
                       outcome: 'sent',
                     });
 
@@ -743,9 +781,24 @@ async function runAbandonedCartTick() {
                     });
 
                     if (!outcome?.sent) {
-                        log.warn(`[CartRecovery] step 2 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome?.reason || 'unknown'} ${outcome?.detail || ''}`);
+                        logCartStepDecision({
+                          clientId: client.clientId,
+                          leadId: lead._id,
+                          step: 2,
+                          templateName: resolved.templateName,
+                          outcome: 'skipped',
+                          skipReason: outcome?.reason || outcome?.detail || 'unknown',
+                        });
                         continue;
                     }
+
+                    logCartStepDecision({
+                      clientId: client.clientId,
+                      leadId: lead._id,
+                      step: 2,
+                      templateName: resolved.templateName,
+                      outcome: 'sent',
+                    });
 
                     await markCartRecoverySent(client.clientId, dedupeKey, 2);
                     await AdLead.findByIdAndUpdate(lead._id, {
@@ -810,9 +863,24 @@ async function runAbandonedCartTick() {
                     });
 
                     if (!outcome3?.sent) {
-                        log.warn(`[CartRecovery] step 3 skipped for ${client.clientId}/${String(dedupeKey).slice(-4)} — ${outcome3?.reason || 'unknown'} ${outcome3?.detail || ''}`);
+                        logCartStepDecision({
+                          clientId: client.clientId,
+                          leadId: lead._id,
+                          step: 3,
+                          templateName,
+                          outcome: 'skipped',
+                          skipReason: outcome3?.reason || outcome3?.detail || 'unknown',
+                        });
                         continue;
                     }
+
+                    logCartStepDecision({
+                      clientId: client.clientId,
+                      leadId: lead._id,
+                      step: 3,
+                      templateName,
+                      outcome: 'sent',
+                    });
 
                     await markCartRecoverySent(client.clientId, dedupeKey, 3);
                     await AdLead.findByIdAndUpdate(lead._id, {
@@ -868,7 +936,7 @@ async function runAbandonedCartTick() {
             log.error('Abandoned Cart Cron Error:', e);
             tickSummary.errors = 1;
         } finally {
-            logDispatchEvent('AbandonedCart', 'cart_recovery_tick_complete', {
+            logDispatchEvent('AbandonedCartScheduler', 'cart_recovery_tick_complete', {
               ...tickSummary,
               durationMs: Date.now() - tickStarted,
               outcome: tickSummary.step1Sent + tickSummary.step2Sent + tickSummary.step3Sent > 0 ? 'sent' : 'idle',

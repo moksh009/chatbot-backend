@@ -10,6 +10,7 @@ const { buildSendContext, buildMetaTemplateComponents, resolveTemplateVariables 
 const { resolveTemplateForSend, isSendableMeta } = require("./templateResolver");
 const { renderBrandedEmail } = require("./mjmlEmailRenderer");
 const log = require('../utils/core/logger')("TemplateSender");
+const { maskPhone } = require("../utils/commerce/ruleStatsDetailService");
 const { getSlotById } = require("../constants/templateCatalog/catalog");
 const {
   getSendMetaNameCandidates,
@@ -235,10 +236,24 @@ async function logTemplateSendAttempt({
     errorMessage,
   }).catch(() => {});
 
-  if (failureCode !== SEND_FAILURE_CODES.SENT) {
-    log.warn(
-      `[TemplateSend] ${clientId} ${failureCode} slot=${logMeta.automationSlotId || "-"} name=${templateName} ${errorMessage || ""}`
-    );
+  if (failureCode === SEND_FAILURE_CODES.SENT) {
+    log.info('template send success', {
+      clientId,
+      ruleId: logMeta.automationSlotId || null,
+      phone: maskPhone(recipient?.phone || ''),
+      templateName,
+      messageId: logMeta.messageId || result?.whatsapp?.messageId || null,
+      channel,
+    });
+  } else {
+    log.warn('template send blocked', {
+      clientId,
+      ruleId: logMeta.automationSlotId || null,
+      templateName,
+      reason: failureCode,
+      detail: errorMessage || result?.whatsapp?.reason || null,
+      channel,
+    });
   }
 
   return failureCode;

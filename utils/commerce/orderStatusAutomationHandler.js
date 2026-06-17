@@ -43,6 +43,7 @@ const {
 const { isCodShopifyOrder } = require('./canonicalOrderMessages');
 const log = require('../core/logger')('OrderStatusAutomation');
 const { logDispatchEvent } = require('../messaging/dispatchEventLog');
+const { maskPhone } = require('./ruleStatsDetailService');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const Order = require('../../models/Order');
@@ -330,13 +331,45 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
   const orderId = String(payload.id || payload.order_id || '');
 
   if (await alreadySentForOrder({ clientId: client.clientId, orderId, statusKey, channel: 'whatsapp' })) {
+    log.debug('order send dedup hit', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      statusKey,
+      channel: 'whatsapp',
+      dedupKey: `${orderId}:${statusKey}:whatsapp`,
+    });
     return { sent: false, skipped: true, channel: 'whatsapp', reason: 'already_sent' };
   }
-  if (!phoneNorm) return { sent: false, skipped: true, channel: 'whatsapp', reason: 'missing_phone' };
+  if (!phoneNorm) {
+    log.info('rule send skipped', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      skipReason: 'missing_phone',
+      channel: 'whatsapp',
+    });
+    return { sent: false, skipped: true, channel: 'whatsapp', reason: 'missing_phone' };
+  }
   if (await isPhoneOptedOut(client.clientId, phoneNorm)) {
+    log.info('rule send skipped', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      skipReason: 'opted_out',
+      channel: 'whatsapp',
+      phone: maskPhone(phoneNorm),
+    });
     return { sent: false, skipped: true, channel: 'whatsapp', reason: 'opted_out' };
   }
   if (!rule.templateName) {
+    log.info('rule send skipped', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      skipReason: 'missing_template',
+      channel: 'whatsapp',
+    });
     return { sent: false, skipped: true, channel: 'whatsapp', reason: 'missing_template' };
   }
 
@@ -367,6 +400,14 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
   });
 
   if (result?.whatsapp?.sent) {
+    log.info('rule send matched', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      templateName: rule.templateName,
+      channel: 'whatsapp',
+      phone: maskPhone(phoneNorm),
+    });
     await recordSent({
       clientId: client.clientId,
       orderId,
@@ -399,9 +440,26 @@ async function sendEmailForRule({ client, rule, statusKey, payload, emailRaw, le
   const orderId = String(payload.id || payload.order_id || '');
 
   if (await alreadySentForOrder({ clientId: client.clientId, orderId, statusKey, channel: 'email' })) {
+    log.debug('order send dedup hit', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      statusKey,
+      channel: 'email',
+      dedupKey: `${orderId}:${statusKey}:email`,
+    });
     return { sent: false, skipped: true, channel: 'email', reason: 'already_sent' };
   }
-  if (!emailRaw) return { sent: false, skipped: true, channel: 'email', reason: 'missing_email' };
+  if (!emailRaw) {
+    log.info('rule send skipped', {
+      clientId: client.clientId,
+      orderId,
+      ruleId: rule.id,
+      skipReason: 'missing_email',
+      channel: 'email',
+    });
+    return { sent: false, skipped: true, channel: 'email', reason: 'missing_email' };
+  }
 
   const context = buildOrderEmailContext(payload, lead, client);
   const template = await resolveOrderEmailTemplate({

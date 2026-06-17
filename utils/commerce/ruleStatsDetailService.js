@@ -9,6 +9,10 @@ const {
   ZERO_RULE_STATS,
 } = require('./orderMessagesOverview');
 
+const {
+  resolveAttributionWindowHours,
+} = require('../../constants/cartRecoveryDefaults');
+
 const CART_RULE_TEMPLATE_BY_ID = {
   sys_cart_followup_1: 'cart_recovery_1',
   sys_cart_followup_2: 'cart_recovery_2',
@@ -237,6 +241,11 @@ async function buildRuleStatsDetail(clientConfig, ruleId, options = {}) {
     ? recentSends.reduce((sum, r) => sum + (Number(r.recoveredRevenue) || 0), 0)
     : 0;
 
+  const attributionHours = resolveAttributionWindowHours(
+    clientConfig?.cartRecoveryConfig?.attributionWindowHours
+  );
+  const attributionDays = Math.round(attributionHours / 24);
+
   return {
     success: true,
     ruleId,
@@ -269,7 +278,7 @@ async function buildRuleStatsDetail(clientConfig, ruleId, options = {}) {
     recentFailures,
     dailyBreakdown,
     trackingNote: isCartRule
-      ? 'Recovered via TopEdge WhatsApp when the same phone places an order within your attribution window after a cart message. Organic purchases after a message show as Purchased.'
+      ? `Recovered via TopEdge WhatsApp when the same phone places an order within ${attributionDays} day${attributionDays === 1 ? '' : 's'} after any cart recovery message (1, 2, or 3). Orders after that window show as Purchased (organic).`
       : 'Opened tracking improves when Meta delivery receipts are linked to each send.',
   };
 }
