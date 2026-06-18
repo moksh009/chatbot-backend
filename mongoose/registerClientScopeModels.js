@@ -31,7 +31,6 @@ const TENANT_MODELS = [
   'SuppressionList',
   'Contact',
   'ExportJob',
-  'FlowHistory',
   'FlowAnalytics',
   'IntentRule',
   'MetaTemplate',

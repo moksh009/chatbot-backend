@@ -23,6 +23,28 @@ function normalizeEvent(eventName) {
   return e;
 }
 
+function sanitizeButtonActions(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [label, action] of Object.entries(raw)) {
+    const key = String(label || '').trim();
+    if (!key || !action || typeof action !== 'object') continue;
+    const type = String(action.type || '').toLowerCase();
+    if (type === 'start_flow' && action.flowId) {
+      out[key] = { type: 'start_flow', flowId: String(action.flowId) };
+      continue;
+    }
+    if (type === 'handoff') {
+      out[key] = { type: 'handoff' };
+      continue;
+    }
+    if (type === 'keyword' && String(action.keyword || '').trim()) {
+      out[key] = { type: 'keyword', keyword: String(action.keyword).trim() };
+    }
+  }
+  return out;
+}
+
 function normalizeSkuRule(rule = {}) {
   const mt = String(rule.matchType || 'exact').toLowerCase();
   const matchType =
@@ -259,6 +281,7 @@ async function sendAutomationTemplate({ clientConfig, order, automation, item })
       contextType: 'order',
       trigger,
       variableMappings: mergedMappings || undefined,
+      buttonActions: automation.buttonActions || undefined,
       contextData: {
         order: {
           name: order.orderNumber || order.orderId,
@@ -906,6 +929,10 @@ async function upsertAutomation(clientId, automation = {}) {
       normalizeAutomationMappings(automation.variableMappings)
     ),
     customVariableValues: automation.customVariableValues || {},
+    buttonActions:
+      automation.buttonActions !== undefined
+        ? sanitizeButtonActions(automation.buttonActions)
+        : sanitizeButtonActions(existing?.buttonActions),
     channels: ruleChannels.filter((c) => c === 'whatsapp' || c === 'email').length
       ? ruleChannels.filter((c) => c === 'whatsapp' || c === 'email')
       : ['whatsapp'],

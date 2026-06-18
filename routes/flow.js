@@ -511,84 +511,6 @@ router.post('/publish', protect, async (req, res) => {
   }
 });
 
-// GET /api/flow/:flowId/versions
-// Returns history of published versions
-router.get('/:flowId/versions', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/core/perfLogger');
-  const timer = createTimer('GET /api/flow/:flowId/versions', req.user?.clientId || '');
-  try {
-    const { flowId } = req.params;
-    const clientId = tenantClientId(req) || req.user.clientId;
-    const FlowHistory = require('../models/FlowHistory');
-
-    const history = await timer.time('FlowHistory.find', () =>
-      FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20).lean()
-    );
-    res.json({ success: true, history });
-    timer.finish(`200 ok | count=${history.length}`);
-  } catch (error) {
-    timer.finish(`500 error=${error.message}`);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// POST /api/flow/:flowId/rollback/:versionId
-// Reverts published state to a previous version
-router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
-  try {
-    const { flowId, versionId } = req.params;
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const FlowHistory = require('../models/FlowHistory');
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-
-    const historyRecord = await FlowHistory.findById(versionId);
-    if (!historyRecord) return res.status(404).json({ success: false, message: 'History record not found' });
-    if (String(historyRecord.clientId) !== String(clientId)) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-    if (String(historyRecord.flowId) !== String(flowId)) {
-      return res.status(400).json({ success: false, message: 'Version does not belong to this flow' });
-    }
-
-    const flow = await WhatsAppFlow.findOne({ clientId, flowId });
-    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
-
-    // Rollback published state (draft canvas unchanged; runtime graph restored)
-    flow.publishedNodes = historyRecord.nodes;
-    flow.publishedEdges = historyRecord.edges;
-    flow.lastSyncedAt = Date.now();
-    await flow.save();
-
-    const client = await Client.findOne({ clientId });
-    if (client) {
-      const { syncClientFlowGraphStores } = require('../services/flowPublishService');
-      await syncClientFlowGraphStores(client, flow, {
-        draftNodes: flow.nodes || [],
-        draftEdges: flow.edges || [],
-        publishedNodes: flow.publishedNodes,
-        publishedEdges: flow.publishedEdges,
-        demoteOtherFlows: false,
-      });
-      await client.save();
-      const { clearClientCache, invalidateClientCache } = require('../utils/core/clientCache');
-      const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
-      const { clearTriggerCache } = require('../utils/flow/triggerEngine');
-      clearTriggerCache(clientId);
-      await clearClientCache(clientId);
-      invalidateClientCache(clientId);
-      invalidateFlowGraphCache(clientId, flowId);
-    }
-
-    res.json({ success: true, message: `Rolled back to version ${historyRecord.version}` });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
 // GET /api/flow/ — deprecated: use GET /api/flow/flows?lite=1 (no full node payloads)
 router.get('/', protect, apiCache(30), async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');
@@ -1026,15 +948,11 @@ router.get('/:flowId/summary', protect, apiCache(60), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const FlowHistory = require('../models/FlowHistory');
 
     const payload = await dedupeAsync(`flow-summary:${clientId}:${flowId}`, async () => {
-      const [flow, history] = await Promise.all([
-        timer.time('WhatsAppFlow.findOne', () =>
-          WhatsAppFlow.findOne({ clientId, flowId }, 'name version status lastSyncedAt nodes edges').lean()
-        ),
-        timer.time('FlowHistory.countDocuments', () => FlowHistory.countDocuments({ clientId, flowId })),
-      ]);
+      const flow = await timer.time('WhatsAppFlow.findOne', () =>
+        WhatsAppFlow.findOne({ clientId, flowId }, 'name version status lastSyncedAt nodes edges').lean()
+      );
       if (!flow) return null;
       return {
         name: flow.name,
@@ -1042,7 +960,6 @@ router.get('/:flowId/summary', protect, apiCache(60), async (req, res) => {
         status: flow.status,
         nodeCount: (flow.nodes || []).length,
         edgeCount: (flow.edges || []).length,
-        totalVersions: history,
         lastPublishedAt: flow.lastSyncedAt || null,
       };
     });

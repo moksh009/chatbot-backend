@@ -19,7 +19,6 @@ dotenv.config();
 
 const Client = require("../models/Client");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const FlowHistory = require("../models/FlowHistory");
 const { generateEcommerceFlow } = require('../../../utils/flow/flowGenerator');
 
 function argValue(flag, fallback = "") {
@@ -112,16 +111,6 @@ async function upgradeOne(client, { apply, publish }) {
       isAutomation: false
     });
   } else {
-    if (publish && Array.isArray(flow.publishedNodes) && flow.publishedNodes.length) {
-      await FlowHistory.create({
-        clientId,
-        flowId: flow.flowId,
-        version: flow.version || 1,
-        nodes: flow.publishedNodes,
-        edges: flow.publishedEdges,
-        publishedBy: "legacy-upgrade-script"
-      });
-    }
     flow.nodes = generated.nodes;
     flow.edges = generated.edges;
     if (publish) {

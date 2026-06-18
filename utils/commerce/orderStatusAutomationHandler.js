@@ -383,6 +383,7 @@ async function sendWhatsAppForRule({ client, rule, statusKey, type, status, payl
     contextType: 'order',
     trigger: null,
     variableMappings: rule.variableMappings || undefined,
+    buttonActions: rule.buttonActions || undefined,
     contextData: {
       order: orderContext,
       extra: {

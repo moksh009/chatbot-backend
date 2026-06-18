@@ -201,6 +201,41 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
         });
       }
     }
+
+    if (type === 'shopify_call') {
+      const allowed = new Set(['search_products', 'CHECK_ORDER_STATUS', 'get_order', 'get_latest']);
+      const action = String(node.data?.action || 'search_products').trim();
+      if (!allowed.has(action)) {
+        errors.push({
+          code: 'SHOPIFY_ACTION_INVALID',
+          nodeId: node.id,
+          message: `Shopify node "${node?.id || ''}" uses unsupported action "${action}".`,
+          fix: 'Pick Find products, Latest order, Order by ID, or Refresh catalog.',
+        });
+      }
+      if (action === 'CHECK_ORDER_STATUS') {
+        const out = outgoingBySource.get(node.id) || [];
+        const hasFail = out.some((e) =>
+          ['no_order', 'not_found', 'error'].includes(String(e.sourceHandle || '').toLowerCase())
+        );
+        if (!hasFail) {
+          warnings.push({
+            code: 'SHOPIFY_ORDER_LOOKUP_NO_FALLBACK',
+            nodeId: node.id,
+            message: `Shopify latest-order lookup "${node?.id || ''}" has no no_order / not_found / error branch.`,
+            fix: 'Connect a friendly message when the customer has no order on file.',
+          });
+        }
+      }
+      if (action === 'get_order' && !String(node.data?.query || '').trim()) {
+        warnings.push({
+          code: 'SHOPIFY_ORDER_ID_EMPTY',
+          nodeId: node.id,
+          message: `Shopify order-by-ID node "${node?.id || ''}" has no order ID or variable.`,
+          fix: 'Set {{order_id}} or add a Capture input step before this node.',
+        });
+      }
+    }
   });
 
   const copyLint = lintCopyInFlow({ nodes: safeNodes });

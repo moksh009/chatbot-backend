@@ -756,6 +756,7 @@ async function sendForAutomation({
   email = null,
   trigger = null,
   variableMappings = null,
+  buttonActions = null,
 }) {
   // NOTE (WS-2 fix, June 2026): the previous `sendEnvelope` short-circuit was
   // passing empty `components: []` to Meta, which silently rejected every
@@ -979,6 +980,7 @@ async function sendForAutomation({
       automationSlotId: hit.slotId,
       contextType,
       resolvedMetaName: hit.metaName,
+      buttonActions: buttonActions && typeof buttonActions === 'object' ? buttonActions : undefined,
     },
   });
 

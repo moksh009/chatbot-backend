@@ -2,7 +2,6 @@
 
 const Client = require('../models/Client');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
-const FlowHistory = require('../models/FlowHistory');
 const { preflightValidateFlowGraph, migrateWarrantyFlowGraph } = require('../utils/flow/flowPublishPreflight');
 const { stripEditorOnlyNodes, pruneFlowGraphToReachable } = require('../utils/flow/pruneFlowGraph');
 const { sanitizeFlowNodesMedia } = require('../utils/flow/sanitizeFlowMedia');
@@ -68,17 +67,6 @@ async function publishFlowForClient({
     flow.edges = draftEdges;
   }
 
-  if (flow.publishedNodes?.length) {
-    await FlowHistory.create({
-      clientId,
-      flowId: flow.flowId,
-      version: flow.version,
-      nodes: flow.publishedNodes,
-      edges: flow.publishedEdges,
-      publishedBy: publishedBy || 'system',
-    });
-  }
-
   const stripped = stripEditorOnlyNodes(draftNodes, draftEdges);
   const pruned = pruneFlowGraphToReachable(stripped.nodes, stripped.edges);
   flow.publishedNodes = sanitizeFlowNodesMedia(pruned.nodes);
@@ -127,7 +115,7 @@ async function publishFlowForClient({
 }
 
 /**
- * FB-P1-08: Align Client.visualFlows card + runtime flowNodes/flowEdges with WhatsAppFlow publish/rollback.
+ * FB-P1-08: Align Client.visualFlows card + runtime flowNodes/flowEdges with WhatsAppFlow publish.
  */
 async function syncClientFlowGraphStores(client, flow, opts = {}) {
   const {
