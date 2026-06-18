@@ -96,6 +96,21 @@ router.get("/:clientId/products", verifyToken, apiCache(25), async (req, res) =>
   }
 });
 
+// ─── GET /api/catalog/:clientId/products/:productId — rich product for Live Chat ─
+router.get("/:clientId/products/:productId", verifyToken, apiCache(60), async (req, res) => {
+  try {
+    const { clientId, productId } = req.params;
+    const { resolveCachedShopifyProduct } = require("../utils/commerce/resolveCachedShopifyProduct");
+    const product = await resolveCachedShopifyProduct(clientId, productId);
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+    res.json({ success: true, product });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── GET /api/catalog/:clientId/diagnose — token + catalog access check ─────
 router.get("/:clientId/diagnose", verifyToken, apiCache(120), async (req, res) => {
   try {

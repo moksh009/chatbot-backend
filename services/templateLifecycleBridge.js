@@ -286,7 +286,7 @@ async function getClientMetaCredentials(clientId) {
     WHATSAPP_CREDENTIAL_SELECT,
     getEffectiveWhatsAppAccessToken,
     getEffectiveWhatsAppWabaId,
-  } = require('../meta/clientWhatsAppCreds');
+  } = require('../utils/meta/clientWhatsAppCreds');
   const client = await Client.findOne({ clientId })
     .select(WHATSAPP_CREDENTIAL_SELECT)
     .lean();

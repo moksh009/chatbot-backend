@@ -23,6 +23,9 @@ const init = (server) => {
     'https://topedgeai.com',
     'https://www.topedgeai.com',
     'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:3000',
+    'https://localhost:3000',
   ].filter(Boolean);
 
   const ioOptions = {

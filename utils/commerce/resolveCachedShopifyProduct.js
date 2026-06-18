@@ -104,7 +104,7 @@ async function fetchLiveShopifyProduct(clientId, productId) {
     const { withShopifyRetry } = require("../shopify/shopifyHelper");
     const product = await withShopifyRetry(clientId, async (shop) => {
       const resp = await shop.get(
-        `/products/${id}.json?fields=id,title,handle,body_html,variants,images,status`
+        `/products/${id}.json?fields=id,title,handle,body_html,variants,images,status,tags,product_type,vendor`
       );
       return resp.data?.product || null;
     });
@@ -113,17 +113,28 @@ async function fetchLiveShopifyProduct(clientId, productId) {
     const domain = normalizeShopDomain(client.shopDomain);
     const handle = product.handle || "";
     const productUrl = domain && handle ? `https://${domain}/products/${handle}` : "";
+    const primaryVariant = product.variants?.[0] || {};
 
     return {
       shopifyProductId: String(product.id),
-      shopifyVariantId: product.variants?.[0]?.id ? String(product.variants[0].id) : null,
+      shopifyVariantId: primaryVariant.id ? String(primaryVariant.id) : null,
       title: product.title || "Product",
       imageUrl: product.images?.[0]?.src || "",
-      price: product.variants?.[0]?.price ?? null,
+      price: primaryVariant.price ?? null,
+      compareAtPrice: primaryVariant.compare_at_price ?? null,
       currency: "INR",
       productUrl,
       handle,
       description: stripHtmlText(product.body_html || ""),
+      body_html: product.body_html || "",
+      tags: Array.isArray(product.tags)
+        ? product.tags
+        : String(product.tags || "")
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean),
+      productType: product.product_type || "",
+      vendor: product.vendor || "",
     };
   } catch {
     return null;

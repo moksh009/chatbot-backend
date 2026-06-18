@@ -27,6 +27,13 @@ const {
 } = require('../utils/core/featureFlags');
 const AdminTeamMember = require('../models/AdminTeamMember');
 
+/** Enabled in production via FEATURE_WORKSPACE_SHELL=true; on by default in local dev. */
+function isWorkspaceShellEnabled() {
+  if (process.env.FEATURE_WORKSPACE_SHELL === 'false') return false;
+  if (process.env.FEATURE_WORKSPACE_SHELL === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
 async function fetchWorkerHealthSnapshot() {
   try {
     const { buildWorkerHealthSnapshot } = require('../utils/hub/workerHealth');
@@ -139,7 +146,7 @@ async function fetchCustomVariables(clientId) {
  * Gate: FEATURE_WORKSPACE_SHELL=true (frontend: VITE_FEATURE_WORKSPACE_SHELL)
  */
 router.get('/:clientId/shell', protect, verifyTenantScope(), apiCache(30), async (req, res) => {
-  if (process.env.FEATURE_WORKSPACE_SHELL !== 'true') {
+  if (!isWorkspaceShellEnabled()) {
     return res.status(404).json({ success: false, error: 'Workspace shell not enabled' });
   }
 

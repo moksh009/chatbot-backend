@@ -24,5 +24,10 @@ assert.strictEqual(
 );
 
 assert.strictEqual(labelSource('routes/email-hub:send'), 'Email hub');
+assert.strictEqual(labelSource('routes/conversations:send-email'), 'Live chat');
+assert.strictEqual(
+  formatEmailLogSource({ source: 'routes/conversations:send-email' }),
+  'Live chat'
+);
 
 console.log('✓ formatEmailLogSource');

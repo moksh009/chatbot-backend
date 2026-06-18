@@ -18,7 +18,7 @@ async function buildInboxFiltersList(clientId) {
   const filters = [
     { id: 'all', label: 'All', type: 'static' },
     { id: 'assigned_to_me', label: 'Assigned to me', type: 'static' },
-    { id: 'open', label: 'Open', type: 'static' },
+    { id: 'open', label: 'Open', type: 'static', description: 'Assigned, unread, paused bot, or needs attention' },
     {
       id: 'needs_help',
       label: 'Asking for help',

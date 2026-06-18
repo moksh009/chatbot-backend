@@ -8,7 +8,12 @@ const {
   dedupeOrders,
   summarizeOrders,
   normalizeEmail,
+  buildEmailRegex,
 } = require('../utils/customer360/leadLookupHelpers');
+const {
+  findBestLeadForConversationPhone,
+  resolveCanonicalLeadMetrics,
+} = require('../utils/commerce/resolveCanonicalLeadMetrics');
 
 test('buildOrderPhoneQuery matches phone and customerPhone variants', () => {
   const q = buildOrderPhoneQuery('client_a', '919876543210');
@@ -54,4 +59,19 @@ test('summarizeOrders computes count and LTV', () => {
 test('normalizeEmail lowercases and validates', () => {
   assert.equal(normalizeEmail('  Moksh@Example.com '), 'moksh@example.com');
   assert.equal(normalizeEmail('invalid'), '');
+});
+
+test('buildEmailRegex returns case-insensitive anchored regex for valid emails', () => {
+  const regex = buildEmailRegex('Moksh@Example.com');
+  assert.ok(regex instanceof RegExp);
+  assert.ok(regex.test('moksh@example.com'));
+  assert.ok(regex.test('Moksh@Example.com'));
+  assert.equal(regex.test('other@example.com'), false);
+  assert.equal(buildEmailRegex('invalid'), null);
+  assert.equal(buildEmailRegex(''), null);
+});
+
+test('resolveCanonicalLeadMetrics exports are callable functions', () => {
+  assert.equal(typeof findBestLeadForConversationPhone, 'function');
+  assert.equal(typeof resolveCanonicalLeadMetrics, 'function');
 });

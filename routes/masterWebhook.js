@@ -224,6 +224,12 @@ async function processStatuses(statuses) {
       const Message = require('../models/Message');
       const liveMsg = await Message.findOne({ messageId }).lean();
 
+      if (liveMsg?._id) {
+        await Message.updateOne({ _id: liveMsg._id }, { $set: updateData }).catch(() => {});
+      } else if (messageId) {
+        await Message.updateOne({ messageId }, { $set: updateData }).catch(() => {});
+      }
+
       if (global.io) {
         if (liveMsg?.clientId) {
           global.io.to(`client_${liveMsg.clientId}`).emit('message_status_update', {

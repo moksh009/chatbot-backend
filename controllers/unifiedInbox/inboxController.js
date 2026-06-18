@@ -49,21 +49,8 @@ async function listConversations(req, res) {
         ];
       }
 
-      if (filter === 'assigned_to_me') {
-        waQuery.assignedTo = currentUserId;
-      } else if (filter === 'open') {
-        waQuery.status = { $nin: ['CLOSED', 'OPTED_OUT'] };
-      } else if (filter === 'needs_help') {
-        waQuery.$or = [
-          { botStatus: 'paused' },
-          { lastDetectedIntent: 'support' },
-          { requiresAttention: true },
-          { status: { $in: ['HUMAN_SUPPORT', 'HUMAN_TAKEOVER'] } }
-        ];
-      } else if (filter.startsWith('agent_')) {
-        const agentId = filter.replace('agent_', '');
-        waQuery.assignedTo = agentId;
-      }
+      const { applyInboxFilterToQuery } = require('../../utils/messaging/inboxFilterQuery');
+      applyInboxFilterToQuery(waQuery, filter, { _id: currentUserId });
 
       const rawWA = await timer.time('Conversation.find_whatsapp', () =>
         Conversation.find(waQuery)
@@ -175,7 +162,7 @@ async function getFilters(req, res) {
     const filters = [
       { id: 'all', label: 'All', type: 'static' },
       { id: 'assigned_to_me', label: 'Assigned to me', type: 'static' },
-      { id: 'open', label: 'Open', type: 'static' },
+      { id: 'open', label: 'Open', type: 'static', description: 'Assigned, unread, paused bot, or needs attention' },
       { id: 'needs_help', label: 'Asking for help', type: 'static', description: 'Paused bot, support intent, needs attention, or live handoff (human queue)' }
     ];
 

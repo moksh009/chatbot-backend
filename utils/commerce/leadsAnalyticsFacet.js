@@ -9,7 +9,6 @@ const {
   hasWhatsAppInbound,
   resolveAcquisitionSource,
 } = require('./leadDisplayNormalize');
-const { findOrdersForLead } = require('../customer360/leadLookupHelpers');
 const { phoneVariants } = require('../messaging/cancelAllAutomationsFor');
 const { phoneSuffixKey } = require('../shopify/customerOrderAttribution');
 const { pickCanonicalPhone, phoneForAdLeadStorage, isShopifyTestPhone } = require('../core/phoneSanitizer');
@@ -18,6 +17,7 @@ const LEAD_LIST_PROJECTION = {
   name: 1,
   phoneNumber: 1,
   leadScore: 1,
+  scoreLabel: 1,
   tags: 1,
   lastInteraction: 1,
   chatSummary: 1,
@@ -201,23 +201,21 @@ function leadsPagePipeline(query, sortBy, skip, limitNum) {
 async function enrichLeadRow(clientId, row) {
   if (!row?.phoneNumber) return normalizeLeadForDisplay(row);
 
+  const { resolveCanonicalLeadMetrics } = require('./resolveCanonicalLeadMetrics');
+  const metrics = await resolveCanonicalLeadMetrics(clientId, row.phoneNumber, {
+    lead: row,
+    orderLimit: 50,
+  });
+
   const variants = phoneVariants(row.phoneNumber);
-  const [orders, conversation] = await Promise.all([
-    findOrdersForLead(clientId, row.phoneNumber, { limit: 50, email: row.email }),
-    variants.length
-      ? Conversation.findOne(
-          { clientId, phone: { $in: variants } },
-          { lastMessageAt: 1 }
-        ).lean()
-      : Promise.resolve(null),
-  ]);
+  const conversation = variants.length
+    ? await Conversation.findOne(
+        { clientId, phone: { $in: variants } },
+        { lastMessageAt: 1 }
+      ).lean()
+    : null;
 
-  let merged = row;
-  if (conversation?.lastMessageAt) {
-    merged = { ...row, conversationLastMessageAt: conversation.lastMessageAt };
-  }
-
-  const normalized = normalizeLeadForDisplay(merged, { orders });
+  let normalized = metrics.lead || normalizeLeadForDisplay(row, { orders: metrics.orders });
 
   if (conversation?.lastMessageAt) {
     const convMs = new Date(conversation.lastMessageAt).getTime();
@@ -225,8 +223,12 @@ async function enrichLeadRow(clientId, row) {
       ? new Date(normalized.displayLastSeenAt).getTime()
       : 0;
     if (convMs > seenMs) {
-      normalized.displayLastSeenAt = conversation.lastMessageAt;
-      normalized.lastMessageAt = conversation.lastMessageAt;
+      normalized = {
+        ...normalized,
+        conversationLastMessageAt: conversation.lastMessageAt,
+        displayLastSeenAt: conversation.lastMessageAt,
+        lastMessageAt: conversation.lastMessageAt,
+      };
     }
   }
 

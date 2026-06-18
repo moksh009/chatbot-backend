@@ -119,6 +119,7 @@ async function resolveLinkedPhonesForLead(clientId, phoneNumber, email) {
     })
       .select('phoneNumber')
       .limit(30)
+      .maxTimeMS(4000)
       .lean(),
     Order.find({
       clientId,
@@ -126,6 +127,7 @@ async function resolveLinkedPhonesForLead(clientId, phoneNumber, email) {
     })
       .select('phone customerPhone')
       .limit(80)
+      .maxTimeMS(4000)
       .lean(),
   ]);
 
@@ -146,8 +148,14 @@ async function findContactForPhone(clientId, phoneNumber) {
   return Contact.findOne({ clientId, phoneNumber: { $in: variants } }).lean();
 }
 
-async function findOrdersForLead(clientId, phoneNumber, { email, limit = 20, extraPhones = [] } = {}) {
-  const linkedPhones = await resolveLinkedPhonesForLead(clientId, phoneNumber, email);
+async function findOrdersForLead(
+  clientId,
+  phoneNumber,
+  { email, limit = 20, extraPhones = [], skipLinkedLookup = false } = {}
+) {
+  const linkedPhones = skipLinkedLookup
+    ? []
+    : await resolveLinkedPhonesForLead(clientId, phoneNumber, email);
   const identityPhones = [...new Set([...linkedPhones, ...extraPhones])];
   const query = buildOrderIdentityQuery(clientId, {
     phoneNumber,
@@ -155,12 +163,14 @@ async function findOrdersForLead(clientId, phoneNumber, { email, limit = 20, ext
     extraPhones: identityPhones,
   });
 
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
   const orders = await Order.find(query)
     .sort({ createdAt: -1 })
-    .limit(Math.max(limit, 50))
+    .limit(safeLimit)
+    .maxTimeMS(6000)
     .lean();
 
-  return dedupeOrders(orders).slice(0, limit);
+  return dedupeOrders(orders).slice(0, safeLimit);
 }
 
 function mapEmbeddedWarrantyRecords(lead) {
@@ -199,6 +209,7 @@ async function findWarrantyRecordsForLead(clientId, phoneNumber, lead = null) {
 
 module.exports = {
   normalizeEmail,
+  buildEmailRegex,
   buildOrderPhoneQuery,
   buildOrderIdentityQuery,
   dedupeOrders,

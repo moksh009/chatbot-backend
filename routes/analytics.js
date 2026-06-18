@@ -553,7 +553,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
     const {
       findOrdersForLead,
       resolveLinkedPhonesForLead,
-      summarizeOrders,
     } = require('../utils/customer360/leadLookupHelpers');
     const { phoneVariants } = require('../utils/messaging/cancelAllAutomationsFor');
     const CustomerIntelligence = require('../models/CustomerIntelligence');
@@ -694,9 +693,14 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
     const { buildLiveLeadPanels } = require('../services/customer360/liveLeadProfile');
     const livePanels = await buildLiveLeadPanels(lead);
     const linkedPhones = await resolveLinkedPhonesForLead(lead.clientId, lead.phoneNumber, lead.email);
-    const orderSummary = summarizeOrders(orders);
-    const { normalizeLeadForDisplay } = require('../utils/commerce/leadDisplayNormalize');
-    const displayLead = normalizeLeadForDisplay(lead, { orders: orderSummary.orders });
+    const { resolveCanonicalLeadMetrics } = require('../utils/commerce/resolveCanonicalLeadMetrics');
+    const metrics = await resolveCanonicalLeadMetrics(lead.clientId, lead.phoneNumber, {
+      lead,
+      orderLimit: 50,
+      orders,
+    });
+    const displayLead = metrics.lead;
+    const orderSummary = metrics.orderSummary;
 
     res.json({
       lead: displayLead,

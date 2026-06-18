@@ -1042,6 +1042,10 @@ async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
     templateName,
     mergeContext,
   } = body;
+  const allowedSource =
+    body?.source === 'routes/conversations:send-email'
+      ? 'routes/conversations:send-email'
+      : 'routes/email-hub:send';
   const email = String(toEmail || '').trim().toLowerCase();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     const err = new Error('A valid recipient email is required.');
@@ -1116,7 +1120,7 @@ async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
   const plainBody = htmlToPlainText(merged.html);
 
   const ctx = {
-    source: 'routes/email-hub:send',
+    source: allowedSource,
     actorUserId,
     recipientEmail: email,
     subject: merged.subject,
@@ -1137,7 +1141,7 @@ async function sendEmailHubOne(clientId, body = {}, actorUserId = null) {
         body: sendFormat === 'plain' ? plainBody : merged.html,
         toEmail: email,
         format: sendFormat,
-        source: 'routes/email-hub:send',
+        source: allowedSource,
         ...(templateId ? { templateId: String(templateId) } : {}),
       },
       sendAt: scheduleDate,

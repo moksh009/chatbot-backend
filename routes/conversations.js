@@ -139,27 +139,8 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
   }
 
   const inboxFilter = inboxFilterRaw ? String(inboxFilterRaw).trim() : '';
-  if (inboxFilter === 'assigned_to_me' && user?._id) {
-    query.assignedTo = user._id;
-  } else if (inboxFilter === 'needs_help') {
-    const helpOr = [
-      { requiresAttention: true },
-      { botStatus: 'paused' },
-      { isBotPaused: true },
-      { status: { $in: ['HUMAN_SUPPORT', 'HUMAN_TAKEOVER'] } },
-    ];
-    if (query.$or) {
-      query.$and = [{ $or: query.$or }, { $or: helpOr }];
-      delete query.$or;
-    } else {
-      query.$or = helpOr;
-    }
-  } else if (inboxFilter === 'open') {
-    query.status = { $nin: ['CLOSED', 'OPTED_OUT'] };
-  } else if (inboxFilter.startsWith('agent_')) {
-    const agentId = inboxFilter.slice('agent_'.length);
-    if (agentId) query.assignedTo = agentId;
-  }
+  const { applyInboxFilterToQuery } = require('../utils/messaging/inboxFilterQuery');
+  applyInboxFilterToQuery(query, inboxFilter, user);
 
   timer.checkpoint('query_built');
 
@@ -515,28 +496,11 @@ router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) 
 });
 
 /**
- * Conversation.phone is often "9193…" while AdLead.phoneNumber may be "93…" or 10-digit local.
- * Try several normalizations so LTV/score/tags resolve reliably.
+ * @deprecated Use findBestLeadForConversationPhone from resolveCanonicalLeadMetrics.
  */
 async function findLeadForConversationPhone(tenantId, phone, selectFields) {
-  const AdLead = require('../models/AdLead');
-  const clean = String(phone || '').replace(/\D/g, '');
-  const suffix = clean.length >= 10 ? clean.slice(-10) : clean;
-  const select =
-    selectFields ||
-    'name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords';
-  const base = { clientId: tenantId };
-
-  const tryOne = async (pn) => {
-    if (!pn) return null;
-    return AdLead.findOne({ ...base, phoneNumber: pn }).select(select).maxTimeMS(8000).lean();
-  };
-
-  let l = await tryOne(phone);
-  if (!l && clean && clean !== String(phone)) l = await tryOne(clean);
-  if (!l && suffix) l = await tryOne(suffix);
-  if (!l && clean.length >= 12 && clean.startsWith('91')) l = await tryOne(clean.slice(2));
-  return l;
+  const { findBestLeadForConversationPhone } = require('../utils/commerce/resolveCanonicalLeadMetrics');
+  return findBestLeadForConversationPhone(tenantId, phone, selectFields);
 }
 
 /** Fast path: messages + lead only (Live Chat first paint). */
@@ -564,10 +528,7 @@ async function loadConversationLiteContext({
 
   const phone = conversation.phone;
   const tenantId = conversation.clientId || scopedClientId || user.clientId;
-  const {
-    resolveScoreStageNameForClient,
-    calculateCustomerLTV,
-  } = require('../utils/commerce/customerOrderMetrics');
+  const { findBestLeadForConversationPhone, resolveCanonicalLeadMetrics } = require('../utils/commerce/resolveCanonicalLeadMetrics');
 
   const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
   const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
@@ -628,6 +589,7 @@ async function loadConversationLiteContext({
         .select(
           'content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText'
         )
+        .maxTimeMS(5000)
         .lean()
         .then((msgs) => ({
           messages: msgs.reverse(),
@@ -635,7 +597,7 @@ async function loadConversationLiteContext({
           hasMore: msgs.length === 50,
         })),
       (async () => {
-        let l = await findLeadForConversationPhone(tenantId, phone);
+        let l = await findBestLeadForConversationPhone(tenantId, phone);
         if (l?.importBatchId) {
           const ImportSession = require('../models/ImportSession');
           const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
@@ -645,60 +607,30 @@ async function loadConversationLiteContext({
         }
         return l;
       })(),
-      (async () => {
-        if (!phone) return [];
-        const Order = require('../models/Order');
-        const select =
-          'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl phone customerPhone';
-        const sort = { createdAt: -1 };
-        const exact = await Order.find({
-          clientId: tenantId,
-          $or: [{ phone }, { customerPhone: phone }],
-        })
-          .sort(sort)
-          .limit(5)
-          .select(select)
-          .lean();
-        if (exact.length > 0) return exact;
-        if (!phoneSuffix) return [];
-        return Order.find({
-          clientId: tenantId,
-          $or: [
-            { phone: { $regex: `${phoneSuffix}$` } },
-            { customerPhone: { $regex: `${phoneSuffix}$` } },
-          ],
-        })
-          .sort(sort)
-          .limit(5)
-          .select(select)
-          .lean()
-          .catch(() => []);
-      })(),
       ...sidebarFetches,
     ])
   );
 
   const messages = parallel[0];
-  const lead = parallel[1];
-  const orders = parallel[2];
-  const activeSequence = includeSidebar ? parallel[3] : undefined;
-  const notes = includeSidebar ? parallel[4] : undefined;
-  const latestCheckoutLink = includeSidebar ? parallel[5] : undefined;
-  const leadScore = lead?.leadScore ?? 0;
-  let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
-  if (phone) {
-    const fromOrders =
-      (await timer.time('calculateCustomerLTV', () => calculateCustomerLTV(tenantId, phone))) || 0;
-    ltv = Math.max(ltv, fromOrders);
-  }
-  const stageName = await timer.time('resolveScoreStageName', () =>
-    resolveScoreStageNameForClient(tenantId, leadScore)
+  const leadRaw = parallel[1];
+  const activeSequence = includeSidebar ? parallel[2] : undefined;
+  const notes = includeSidebar ? parallel[3] : undefined;
+  const latestCheckoutLink = includeSidebar ? parallel[4] : undefined;
+
+  const metrics = await timer.time('resolveCanonicalLeadMetrics', () =>
+    resolveCanonicalLeadMetrics(tenantId, phone, {
+      lead: leadRaw,
+      orderLimit: 5,
+      includeLinkedPhones: false,
+      skipLinkedOrderLookup: true,
+    })
   );
 
-  if (lead) {
-    lead.ltv = ltv;
-    lead.stageName = stageName;
-  }
+  const lead = metrics.lead;
+  const orders = metrics.orders;
+  const leadScore = metrics.leadScore;
+  const stageName = metrics.stageName;
+  const ltv = metrics.ltv;
 
   return {
     conversation,
@@ -707,8 +639,11 @@ async function loadConversationLiteContext({
     hasMore: messages.hasMore,
     lead,
     leadScore,
+    scoreLabel: metrics.scoreLabel,
     stageName,
     ltv,
+    ordersCount: metrics.ordersCount,
+    displayAov: metrics.displayAov,
     orders,
     ...(includeSidebar
       ? { activeSequence: activeSequence || null, notes: notes || [], latestCheckoutLink: latestCheckoutLink ?? null }
@@ -735,33 +670,13 @@ async function loadConversationSidebarContext({ id, user, timer }) {
   const parallel = await timer.time('sidebar_context_parallel', () =>
     Promise.all([
       (async () => {
-        if (!phone) return [];
-        const Order = require('../models/Order');
-        const select =
-          'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl';
-        const sort = { createdAt: -1 };
-        const exact = await Order.find({
-          clientId: tenantId,
-          $or: [{ phone }, { customerPhone: phone }],
-        })
-          .sort(sort)
-          .limit(5)
-          .select(select)
-          .lean();
-        if (exact.length > 0) return exact;
-        if (!phoneSuffix) return [];
-        return Order.find({
-          clientId: tenantId,
-          $or: [
-            { phone: { $regex: `${phoneSuffix}$` } },
-            { customerPhone: { $regex: `${phoneSuffix}$` } },
-          ],
-        })
-          .sort(sort)
-          .limit(5)
-          .select(select)
-          .lean()
-          .catch(() => []);
+        const { resolveCanonicalLeadMetrics } = require('../utils/commerce/resolveCanonicalLeadMetrics');
+        const metrics = await resolveCanonicalLeadMetrics(tenantId, phone, {
+          orderLimit: 5,
+          includeLinkedPhones: false,
+          skipLinkedOrderLookup: true,
+        });
+        return metrics.orders.slice(0, 5);
       })(),
       (async () => {
         if (!phoneSuffix) return null;
@@ -893,9 +808,9 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
 
     const {
-      calculateCustomerLTV,
-      resolveScoreStageNameForClient,
-    } = require('../utils/commerce/customerOrderMetrics');
+      findBestLeadForConversationPhone,
+      resolveCanonicalLeadMetrics,
+    } = require('../utils/commerce/resolveCanonicalLeadMetrics');
 
     const parallel = await timeParallel(
       timer,
@@ -905,7 +820,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
             .sort({ timestamp: -1 })
             .limit(50)
             .select(
-              'content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText'
+              'content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText messageId'
             )
             .lean()
             .then((msgs) => ({
@@ -914,7 +829,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
               hasMore: msgs.length === 50,
             })),
         lead: async () => {
-          const l = await findLeadForConversationPhone(tenantId, phone);
+          const l = await findBestLeadForConversationPhone(tenantId, phone);
           if (l?.importBatchId) {
             const ImportSession = require('../models/ImportSession');
             const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
@@ -923,35 +838,6 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
             l.importSource = l.meta.importListName;
           }
           return l;
-        },
-        orders: async () => {
-          if (!phone) return [];
-          const Order = require('../models/Order');
-          const select =
-            'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl';
-          const sort = { createdAt: -1 };
-          const exact = await Order.find({
-            clientId: tenantId,
-            $or: [{ phone }, { customerPhone: phone }],
-          })
-            .sort(sort)
-            .limit(3)
-            .select(select)
-            .lean();
-          if (exact.length > 0) return exact;
-          if (!phoneSuffix) return [];
-          return Order.find({
-            clientId: tenantId,
-            $or: [
-              { phone: { $regex: phoneSuffix + '$' } },
-              { customerPhone: { $regex: phoneSuffix + '$' } },
-            ],
-          })
-            .sort(sort)
-            .limit(3)
-            .select(select)
-            .lean()
-            .catch(() => []);
         },
         activeSequence: async () => {
           if (!phoneSuffix) return null;
@@ -1001,34 +887,26 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     );
 
     const messages = parallel.messages;
-    const lead = parallel.lead;
-    const orders = parallel.orders;
+    const leadRaw = parallel.lead;
     const activeSequence = parallel.activeSequence;
     const notes = parallel.notes;
     const latestCheckoutLink = parallel.latestCheckoutLink;
 
-    const leadScore = lead?.leadScore ?? 0;
-    let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
-    if (phone) {
-      const fromOrders = await timer.time('calculateCustomerLTV', () =>
-        calculateCustomerLTV(tenantId, phone)
-      );
-      ltv = Math.max(ltv, Number(fromOrders) || 0);
-    }
-    const stageName = await timer.time('resolveScoreStageName', () =>
-      resolveScoreStageNameForClient(tenantId, leadScore)
+    const metrics = await timer.time('resolveCanonicalLeadMetrics', () =>
+      resolveCanonicalLeadMetrics(tenantId, phone, { lead: leadRaw, orderLimit: 50 })
     );
+
+    const lead = metrics.lead;
+    const orders = metrics.orders.slice(0, 5);
+    const leadScore = metrics.leadScore;
+    const stageName = metrics.stageName;
+    const ltv = metrics.ltv;
 
     // Attach notes for UI backwards compatibility
     if (conversation) {
       conversation.internalNotes = notes || [];
     }
 
-    if (lead) {
-      lead.ltv = ltv;
-      lead.stageName = stageName;
-    }
-    
     return {
       conversation,
       messages: messages.messages,
@@ -1036,8 +914,11 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       hasMore: messages.hasMore,
       lead,
       leadScore,
+      scoreLabel: metrics.scoreLabel,
       stageName,
       ltv,
+      ordersCount: metrics.ordersCount,
+      displayAov: metrics.displayAov,
       orders,
       activeSequence,
       latestCheckoutLink,
@@ -1659,6 +1540,66 @@ router.put('/:id/read', protect, async (req, res) => {
     res.json(conversation);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// @route   POST /api/conversations/:id/mark-inbound-read
+// @desc    Mark customer's WhatsApp message as read (blue ticks on their side) + clear inbox unread
+// @access  Private
+router.post('/:id/mark-inbound-read', protect, async (req, res) => {
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query).select('clientId phone unreadCount').lean();
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const Message = require('../models/Message');
+    const requestedMessageId = String(req.body?.messageId || '').trim();
+    let inbound = null;
+    if (requestedMessageId) {
+      inbound = await Message.findOne({
+        conversationId: conversation._id,
+        direction: { $in: ['incoming', 'inbound', 'in'] },
+        $or: [{ messageId: requestedMessageId }, { _id: requestedMessageId }],
+      })
+        .select('messageId')
+        .lean();
+    }
+    if (!inbound) {
+      inbound = await Message.findOne({
+        conversationId: conversation._id,
+        direction: { $in: ['incoming', 'inbound', 'in'] },
+        messageId: { $exists: true, $ne: '' },
+      })
+        .sort({ timestamp: -1 })
+        .select('messageId')
+        .lean();
+    }
+
+    const waMessageId = String(inbound?.messageId || '').trim();
+    if (waMessageId && waMessageId.startsWith('wamid.')) {
+      const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
+      const client = await getCachedClientForWhatsAppSend(conversation.clientId);
+      if (client) {
+        const whatsapp = require('../utils/meta/whatsapp');
+        await whatsapp.markRead(client, waMessageId);
+      }
+    }
+
+    await Conversation.updateOne({ _id: conversation._id }, { $set: { unreadCount: 0 } });
+
+    const io = req.app.get('socketio');
+    if (io) {
+      const fresh = await Conversation.findById(conversation._id).lean();
+      if (fresh) io.to(`client_${conversation.clientId}`).emit('conversation_update', fresh);
+    }
+
+    res.json({ success: true, messageId: waMessageId || null, unreadCount: 0 });
+  } catch (error) {
+    console.error('[mark-inbound-read]', error.message);
+    res.status(500).json({ message: 'Could not mark message as read' });
   }
 });
 
