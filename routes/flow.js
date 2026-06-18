@@ -393,7 +393,7 @@ router.post('/simulate', protect, async (req, res) => {
       } else if (currentNode?.type === 'warranty_check' || currentNode?.type === 'warranty_lookup') {
         edgeUsed = null;
       } else if (currentNode?.type === 'capture_input' || currentNode?.type === 'CaptureNode') {
-        const varName = currentNode.data?.variable || 'captured_input';
+        const varName = String(currentNode.data?.variable || 'last_input').replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim() || 'last_input';
         updatedVariables[varName] = userInput;
         edgeUsed = outgoingEdges[0];
       } else {

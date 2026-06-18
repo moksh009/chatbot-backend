@@ -3,6 +3,7 @@
 const Order = require("../../models/Order");
 const { normalizePhone } = require('./helpers');
 const { VARIABLE_REGISTRY, resolveSourcePath } = require('./variableRegistry');
+const { applyTenantCustomVariableDefaults } = require('./variableUtils');
 
 /**
  * VARIABLE INJECTOR — registry-backed context + legacy flat aliases for dualBrainEngine.
@@ -294,7 +295,7 @@ async function buildVariableContext(client, phone, convo, lead) {
     merged.customer_name = profileName;
     merged.first_name = profileName.split(/\s+/)[0] || merged.first_name;
   }
-  return merged;
+  return applyTenantCustomVariableDefaults(merged, clientLean);
 }
 
 function injectVariables(text, context) {

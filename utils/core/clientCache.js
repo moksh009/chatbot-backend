@@ -86,11 +86,19 @@ function invalidateClientCache(clientId) {
   if (keys.length) clientCache.del(keys);
 }
 
+/** Clears in-process client cache + API response cache (compat alias for legacy imports). */
+async function clearClientCache(clientId) {
+  invalidateClientCache(clientId);
+  const { clearClientCache: clearApiCache } = require('../../middleware/apiCache');
+  return clearApiCache(clientId);
+}
+
 module.exports = {
   getCachedClient,
   getCachedClientForWhatsAppSend,
   getCachedClientForWhatsAppInbound,
   invalidateClientCache,
+  clearClientCache,
   DEFAULT_CLIENT_SELECT: DEFAULT_SELECT,
   WHATSAPP_INBOUND_SELECT,
   WHATSAPP_SEND_SELECT,

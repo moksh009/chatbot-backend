@@ -17,6 +17,7 @@ const log = require('../core/logger')('DualBrain');
 const { generateText, getGeminiModel, AI_BOT_TIMEOUT_MS } = require('../core/gemini');
 const { createMessage } = require('../core/createMessage');
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require('../core/variableInjector');
+const { normalizeVariableKey, normalizeCaptureValidationType } = require('../core/variableUtils');
 const {
   findMatchingFlow,
   findGreetingFlowFast,
@@ -480,7 +481,10 @@ async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
-function replaceVariables(text, client, lead, convo) {
+function replaceVariables(text, client, lead, convo, prebuiltContext) {
+  if (prebuiltContext && typeof prebuiltContext === 'object') {
+    return injectVariables(text, prebuiltContext);
+  }
   return injectVariablesLegacy(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
@@ -2093,7 +2097,9 @@ async function runDualBrainEngine(parsedMessage, client) {
       const captureNode = flatNodes.find(n => n.id === convo.lastStepId);
       
       // Safeguard 2: Validation Logic
-      const expectedType = captureNode?.data?.expectedType || 'string';
+      const expectedType = normalizeCaptureValidationType(
+        captureNode?.data?.validationType || captureNode?.data?.expectedType
+      );
       const validationErrorMsg = captureNode?.data?.validationErrorMessage || "Please provide a valid response.";
       const maxRetries = captureNode?.data?.maxRetries || 3;
       
@@ -3876,11 +3882,33 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // New: Set Variable Node
   if (node.type === 'set_variable' || node.type === 'SetVariableNode') {
-    const { variable, value } = node.data;
-    const processedValue = replaceVariables(value, client, lead, convo);
-    const updatedMetadata = { ...(convo.metadata || {}), [variable]: processedValue };
-    await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
-    convo.metadata = updatedMetadata;
+    const varName = normalizeVariableKey(node.data?.variable);
+    const rawValue = node.data?.value;
+    if (varName) {
+      const ctx =
+        parsedMessage?._variableContext ||
+        convo?._variableContext ||
+        await buildVariableContext(client, phone, convo, lead);
+      const processedValue = injectVariables(String(rawValue ?? ''), ctx);
+      const updatedMetadata = { ...(convo.metadata || {}), [varName]: processedValue };
+      await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+      convo.metadata = updatedMetadata;
+      if (parsedMessage?._variableContext) {
+        parsedMessage._variableContext[varName] = processedValue;
+      }
+      if (convo._variableContext) {
+        convo._variableContext[varName] = processedValue;
+      }
+      try {
+        await AdLead.findOneAndUpdate(
+          { phoneNumber: phone, clientId: client.clientId },
+          { $set: { [`capturedData.${varName}`]: processedValue } }
+        );
+        if (lead?.capturedData) {
+          lead.capturedData[varName] = processedValue;
+        }
+      } catch (_) {}
+    }
   }
 
   // 9. Link Node (Jump to Flow)
@@ -4574,7 +4602,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // Auto-forward or enter WAIT state
   if (isWaitNode) {
     // Correctly enter WAITING_FOR_INPUT state
-    const targetVar = node.data?.variable || 'last_input';
+    const targetVar = normalizeVariableKey(node.data?.variable) || 'last_input';
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     
     log.info(`⏳ Node ${nodeId} entering wait state for variable "${targetVar}"`);

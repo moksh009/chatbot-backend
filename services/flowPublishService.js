@@ -6,7 +6,7 @@ const { preflightValidateFlowGraph, migrateWarrantyFlowGraph } = require('../uti
 const { stripEditorOnlyNodes, pruneFlowGraphToReachable } = require('../utils/flow/pruneFlowGraph');
 const { sanitizeFlowNodesMedia } = require('../utils/flow/sanitizeFlowMedia');
 const { clearTriggerCache } = require('../utils/flow/triggerEngine');
-const { clearClientCache, invalidateClientCache } = require('../utils/core/clientCache');
+const { clearClientCache } = require('../middleware/apiCache');
 const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
 const { emitDual } = require('../utils/core/socketEmit');
 const log = require('../utils/core/logger')('FlowPublish');
@@ -94,7 +94,6 @@ async function publishFlowForClient({
 
   clearTriggerCache(clientId);
   await clearClientCache(clientId);
-  invalidateClientCache(clientId);
   invalidateFlowGraphCache(clientId, flow.flowId);
 
   if (io) {
