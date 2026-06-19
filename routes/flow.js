@@ -261,6 +261,13 @@ router.post('/ai-build', protect, async (req, res) => {
       contextExtras.approvedTemplateSlots = approved
         .map((t) => t.slotId || t.name)
         .filter(Boolean);
+      // Phase 5.3 — pass canonical storeCategory slug so aiFlowBuilder skips
+      // warranty / install scaffolding for clothing brands and turns it on for
+      // electronics / home stores. Slug resolution lives in onboardingData.
+      const slug =
+        client.onboardingData?.storeCategory ||
+        '';
+      if (slug) contextExtras.storeCategory = slug;
     } catch (ctxErr) {
       console.warn('[POST /flow/ai-build] context enrichment skipped:', ctxErr.message);
     }

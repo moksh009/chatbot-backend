@@ -15,6 +15,26 @@ const { mapFeatureToggle } = require('../utils/flow/wizardMapper');
 const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
 const { sanitizeWizardStepData } = require('../utils/flow/wizardStepSanitize');
 const { applySettingsSyncMirrors } = require('../utils/core/settingsSyncMapper');
+const {
+  isKnownSlug,
+  resolveStoreCategorySlug,
+  getStoreCategoryBySlug,
+} = require('../constants/storeCategories');
+
+const MASKED_API_KEY = '••••••••';
+
+/** Persist BYOK keys from wizard connections or AI step into Client.ai.* paths. */
+function mirrorAiProviderKeys(pvUpdate, safeStepData) {
+  if (!safeStepData) return;
+  if (safeStepData.geminiApiKey && safeStepData.geminiApiKey !== MASKED_API_KEY) {
+    pvUpdate.geminiApiKey = safeStepData.geminiApiKey;
+    pvUpdate['ai.geminiKey'] = safeStepData.geminiApiKey;
+  }
+  if (safeStepData.openaiApiKey && safeStepData.openaiApiKey !== MASKED_API_KEY) {
+    pvUpdate.openaiApiKey = safeStepData.openaiApiKey;
+    pvUpdate['ai.openaiKey'] = safeStepData.openaiApiKey;
+  }
+}
 
 /** v2 (8 steps) → v3 (7 steps): features before products; cart_timing merged into features. */
 const V2_TO_V3_INDEX = { 0: 0, 1: 1, 2: 4, 3: 3, 4: 5, 5: 2, 6: 2, 7: 6 };
@@ -260,7 +280,33 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       applySettingsSyncMirrors(pvUpdate, safeStepData);
 
       if (safeStepData.websiteUrl !== undefined) {
-        pvUpdate.websiteUrl = String(safeStepData.websiteUrl || '').trim();
+        const websiteUrl = String(safeStepData.websiteUrl || '').trim();
+        pvUpdate['onboardingData.websiteUrl'] = websiteUrl;
+        pvUpdate['onboardingData.step1.websiteUrl'] = websiteUrl;
+      }
+      // Phase 1.3 — persist canonical store-category slug when wizard sets it.
+      if (safeStepData.storeCategory !== undefined) {
+        const slug = String(safeStepData.storeCategory || '').trim();
+        if (isKnownSlug(slug)) {
+          pvUpdate['onboardingData.storeCategory'] = slug;
+          pvUpdate['onboardingData.storeCategorySource'] = 'user';
+          const cat = getStoreCategoryBySlug(slug);
+          if (cat?.presetKey) {
+            // Mirror the preset key so legacy code that reads businessType stays aligned.
+            pvUpdate['businessType'] = pvUpdate['businessType'] || cat.presetKey;
+          }
+        }
+      }
+      // Phase 1.3 — persist merchant force_on/force_off overrides from BusinessStep.
+      if (safeStepData.categoryOverrides && typeof safeStepData.categoryOverrides === 'object') {
+        pvUpdate['onboardingData.categoryOverrides'] = {
+          warranty: ['force_on', 'force_off'].includes(safeStepData.categoryOverrides.warranty)
+            ? safeStepData.categoryOverrides.warranty
+            : null,
+          install: ['force_on', 'force_off'].includes(safeStepData.categoryOverrides.install)
+            ? safeStepData.categoryOverrides.install
+            : null,
+        };
       }
       if (safeStepData.currency) {
         pvUpdate['platformVars.baseCurrency'] = safeStepData.currency;
@@ -293,6 +339,11 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       }
     }
 
+    // connections — BYOK keys live on Channels step (Phase 7 UX)
+    if (stepId === 'connections' && safeStepData) {
+      mirrorAiProviderKeys(pvUpdate, safeStepData);
+    }
+
     // products / catalog — mirror Settings catalog fields
     if (stepId === 'products' && safeStepData) {
       applySettingsSyncMirrors(pvUpdate, safeStepData);
@@ -313,6 +364,8 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
 
     // intelligence (tone / language / keys / prompt live on shared flat `data`)
     if (stepId === 'ai' && safeStepData) {
+      applySettingsSyncMirrors(pvUpdate, safeStepData);
+      mirrorAiProviderKeys(pvUpdate, safeStepData);
       if (safeStepData.faqUrl !== undefined) {
         pvUpdate.faqUrl = String(safeStepData.faqUrl || '').trim();
       }
@@ -335,6 +388,13 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       if (safeStepData.botName && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botName')) {
         queuePersona({ name: safeStepData.botName });
       }
+      if (
+        safeStepData.businessDescription !== undefined &&
+        wizardStepFieldChanged(prevStepBlob, safeStepData, 'businessDescription') &&
+        safeStepData.businessDescription
+      ) {
+        queuePersona({ description: safeStepData.businessDescription });
+      }
       if (safeStepData.tone && wizardStepFieldChanged(prevStepBlob, safeStepData, 'tone')) {
         queuePersona({ tone: safeStepData.tone });
       }
@@ -348,21 +408,16 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
           personaSystemPrompt = nextSp;
         }
       }
-      if (safeStepData.geminiApiKey) {
-        pvUpdate.geminiApiKey = safeStepData.geminiApiKey;
-        pvUpdate['ai.geminiKey'] = safeStepData.geminiApiKey;
-      }
-      if (safeStepData.openaiApiKey) {
-        pvUpdate.openaiApiKey = safeStepData.openaiApiKey;
-        pvUpdate['ai.openaiKey'] = safeStepData.openaiApiKey;
-      }
     }
 
     if (safeStepData?.faqs && Array.isArray(safeStepData.faqs)) {
       const faqDocs = safeStepData.faqs
         .filter(f => f.question?.trim() && f.answer?.trim())
         .map((f, i) => ({ question: f.question.trim(), answer: f.answer.trim(), order: i }));
-      if (faqDocs.length > 0) pvUpdate.faq = faqDocs;
+      if (faqDocs.length > 0) {
+        pvUpdate.faq = faqDocs;
+        pvUpdate['knowledgeBase.faqs'] = faqDocs;
+      }
     }
 
     if (safeStepData?.is247 !== undefined)   pvUpdate['config.businessHours.is247'] = safeStepData.is247;

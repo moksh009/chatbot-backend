@@ -9,6 +9,11 @@ const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
+const {
+  getWizardPackTemplates,
+  hydrateWizardTemplateStatuses,
+  shouldRefreshDraftFromCatalog,
+} = require('../utils/flow/wizardPackTemplates');
 const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 const { syncPlatformVarsToFlows } = require('../utils/core/platformVarsSync');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
@@ -469,7 +474,7 @@ router.post("/:clientId/flow-graph-preview", protect, async (req, res) => {
         automationTrigger: f.automationTrigger || "",
         nodeCount: nodes.length,
         edgeCount: edges.length,
-        previewNodes: nodes.slice(0, 14).map((n) => ({
+        previewNodes: nodes.slice(0, 20).map((n) => ({
           id: n.id,
           type: n.type,
           label:
@@ -764,6 +769,13 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       systemPrompt: personaSystemPrompt,
     });
 
+    try {
+      const { syncWizardCommerceAutomations } = require('../utils/commerce/wizardCommerceAutomationSync');
+      await syncWizardCommerceAutomations(clientId, launchWizardData);
+    } catch (syncErr) {
+      log.warn(`[Wizard] commerce automation sync skipped: ${syncErr.message}`);
+    }
+
     console.log(`[Wizard] Completed for ${clientId}. wizardCompleted=${updatedClient.wizardCompleted}`);
 
     // Custom Meta templates are pushed separately so they don't conflict with
@@ -825,6 +837,109 @@ router.post("/:clientId/complete", protect, async (req, res) => {
   } catch (err) {
     console.error(`[Wizard] Error completing wizard for ${clientId}:`, err.message);
     res.status(500).json({ error: err.message || "Wizard completion failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Product guide library (install help) — platform AI structuring
+// ─────────────────────────────────────────────────────────────────────────────
+const guideGenRate = new Map(); // clientId -> [timestamps]
+
+function checkGuideGenRate(clientId, maxPerHour = 3) {
+  const now = Date.now();
+  const windowMs = 3600000;
+  const prev = (guideGenRate.get(clientId) || []).filter((t) => now - t < windowMs);
+  if (prev.length >= maxPerHour) {
+    return { ok: false, retryAfterMs: windowMs - (now - prev[0]) };
+  }
+  prev.push(now);
+  guideGenRate.set(clientId, prev);
+  return { ok: true };
+}
+
+router.get("/:clientId/product-guides", protect, async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    const { normalizeLibrary } = require('../utils/commerce/productGuideGenerator');
+    const client = await Client.findOne({ clientId })
+      .select("productGuideLibrary businessName websiteUrl")
+      .lean();
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    res.json({
+      productGuideLibrary: normalizeLibrary(client.productGuideLibrary),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch("/:clientId/product-guides", protect, async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    const { normalizeLibrary } = require('../utils/commerce/productGuideGenerator');
+    const lib = normalizeLibrary(req.body?.productGuideLibrary || req.body);
+    await Client.findOneAndUpdate(
+      { clientId },
+      { $set: { productGuideLibrary: lib } }
+    );
+    res.json({ productGuideLibrary: lib });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/:clientId/product-guides/generate", protect, async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const rate = checkGuideGenRate(clientId);
+  if (!rate.ok) {
+    return res.status(429).json({
+      error: "Too many guide generations. Try again in about an hour.",
+      retryAfterMs: rate.retryAfterMs,
+    });
+  }
+
+  try {
+    const {
+      generateProductGuideLibrary,
+      normalizeLibrary,
+    } = require('../utils/commerce/productGuideGenerator');
+
+    const client = await Client.findOne({ clientId })
+      .select("productGuideLibrary businessName name websiteUrl shopDomain")
+      .lean();
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    const body = req.body || {};
+    const { library, stats } = await generateProductGuideLibrary({
+      clientId,
+      client,
+      websiteUrl: body.websiteUrl || body.url,
+      rawDraft: body.rawDraft || body.rawText,
+      products: body.products,
+      storeCategory: body.storeCategory,
+      replace: body.replace === true,
+      existingLibrary: body.productGuideLibrary || client.productGuideLibrary,
+    });
+
+    await Client.findOneAndUpdate(
+      { clientId },
+      { $set: { productGuideLibrary: library } }
+    );
+
+    res.json({ productGuideLibrary: library, stats });
+  } catch (err) {
+    log.warn(`[Wizard] product-guides/generate: ${err.message}`);
+    res.status(500).json({ error: err.message || "Guide generation failed" });
   }
 });
 
@@ -1045,64 +1160,8 @@ router.get("/:clientId/debug-shopify", protect, async (req, res) => {
 
 
 
-function libraryEntryToWizardTemplate(entry) {
-  const components = [];
-  const ht = String(entry.headerType || "NONE").toUpperCase();
-  if (ht === "IMAGE") {
-    components.push({ type: "HEADER", format: "IMAGE", _imageUrl: "" });
-  } else if (ht === "TEXT" && entry.headerText) {
-    components.push({ type: "HEADER", format: "TEXT", text: entry.headerText });
-  }
-  if (entry.bodyText) components.push({ type: "BODY", text: entry.bodyText });
-  if (entry.footerText) components.push({ type: "FOOTER", text: entry.footerText });
-  if (Array.isArray(entry.buttons) && entry.buttons.length) {
-    components.push({ type: "BUTTONS", buttons: entry.buttons });
-  }
-  return {
-    id: entry.key,
-    name: entry.metaName || entry.key,
-    category: entry.category || "UTILITY",
-    language: "en",
-    status: "not_submitted",
-    required: false,
-    description: entry.displayName || entry.metaName,
-    libraryKey: entry.key,
-    components,
-    body: entry.bodyText || "",
-    variables: [],
-  };
-}
-
 function getExtendedWizardTemplates(wizardData = {}) {
-  const { PREBUILT_TEMPLATE_LIBRARY } = require("../constants/prebuiltTemplateLibrary");
-  const feats = wizardData.features || {};
-  const base = getPrebuiltTemplates(wizardData);
-  const names = new Set(base.map((t) => t.name));
-  const extras = [];
-
-  const maybeAdd = (metaName) => {
-    if (names.has(metaName)) return;
-    const entry = PREBUILT_TEMPLATE_LIBRARY.find((t) => t.metaName === metaName || t.key === metaName);
-    if (!entry) return;
-    names.add(entry.metaName);
-    extras.push(libraryEntryToWizardTemplate(entry));
-  };
-
-  if (feats.enableWarranty) maybeAdd("warranty_registration_v1");
-  if (feats.enableOrderConfirmTpl !== false) maybeAdd("cod_confirmation_v1");
-  maybeAdd("order_shipped_v1");
-
-  return [...base, ...extras];
-}
-
-function hydrateWizardTemplateStatuses(client, templates) {
-  const pendingMap = new Map((client?.pendingTemplates || []).map((t) => [t.name, String(t.status || "PENDING").toUpperCase()]));
-  const syncedMap = new Map((client?.syncedMetaTemplates || []).map((t) => [t.name, String(t.status || "APPROVED").toUpperCase()]));
-  const msgMap = new Map((client?.messageTemplates || []).map((t) => [t.name, String(t.status || "").toUpperCase()]));
-  return templates.map((tpl) => {
-    const status = syncedMap.get(tpl.name) || pendingMap.get(tpl.name) || msgMap.get(tpl.name) || tpl.status || "not_submitted";
-    return { ...tpl, status };
-  });
+  return getWizardPackTemplates(wizardData);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1183,6 +1242,9 @@ router.post("/:clientId/templates/prepare", protect, async (req, res) => {
       const name = tpl.name;
       if (!name) continue;
       const existing = byName.get(name);
+      const metaStatus = existing?.status;
+      const refreshBody = shouldRefreshDraftFromCatalog(existing, metaStatus);
+
       if (!existing) {
         byName.set(name, {
           name,
@@ -1193,17 +1255,23 @@ router.post("/:clientId/templates/prepare", protect, async (req, res) => {
           description: tpl.description || "",
           status: "DRAFT",
           source: "wizard",
+          libraryKey: tpl.libraryKey || null,
+          slotId: tpl.slotId || null,
           required: !!tpl.required,
           createdAt: new Date(),
           updatedAt: new Date(),
         });
         added += 1;
-      } else if (!existing.components?.length && tpl.components?.length) {
+      } else if (refreshBody && tpl.components?.length) {
         byName.set(name, {
           ...existing,
           components: tpl.components,
           body: tpl.body || existing.body,
           category: tpl.category || existing.category,
+          description: tpl.description || existing.description,
+          libraryKey: tpl.libraryKey || existing.libraryKey,
+          slotId: tpl.slotId || existing.slotId,
+          source: existing.source || "wizard",
           updatedAt: new Date(),
         });
         updated += 1;

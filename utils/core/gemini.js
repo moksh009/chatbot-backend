@@ -96,12 +96,6 @@ function getVertexInstance() {
             }
 
             vertexPlatformInstance = new VertexAI(config);
-            if (!vertexDeprecationLogged) {
-              vertexDeprecationLogged = true;
-              logger.warn(
-                "VertexAI SDK is deprecated — platform calls still work; migrate to @google/genai when upgrading dependencies."
-              );
-            }
             logger.info(`✅ Vertex AI initialized for project: ${projectId} (${region})`);
             return vertexPlatformInstance;
         } catch (err) {

@@ -82,6 +82,14 @@ async function sendInteractive(client, phone, bodyText, buttons, envelopeOpts = 
  * After a new COD Shopify order is persisted, optionally send confirmation tap.
  */
 async function maybeSendCodConfirmationAfterOrderCreate(client, orderDoc) {
+  try {
+    const { isActiveOrderRule } = require('./canonicalOrderMessages');
+    if (isActiveOrderRule(client, 'sys_commerce_cod_confirm')) {
+      return { skipped: true, reason: 'template_automation_active' };
+    }
+  } catch (_) {
+    /* optional */
+  }
   const cfg = rtoCfg(client);
   if (!cfg.requireCodConfirmation) return { skipped: true, reason: 'disabled' };
   if (!orderDoc?.isCOD) return { skipped: true, reason: 'not_cod' };

@@ -1,6 +1,11 @@
 "use strict";
 
 const { normalizePersonaTone } = require('./personaEngine');
+const {
+  isKnownSlug,
+  getStoreCategoryBySlug,
+  resolveStoreCategorySlug,
+} = require('../../constants/storeCategories');
 
 /**
  * Mirrors Settings PATCH fields into the same canonical paths as wizardMapper.js
@@ -105,6 +110,47 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
     updateFields["onboardingData.step1.industry"] = ind;
   }
 
+  // Phase 2 — single canonical write path for website URL. We deliberately
+  // do not write a root `Client.websiteUrl` field; the only canonical home is
+  // `onboardingData.websiteUrl`. AuthContext bootstrap and the wizard pull
+  // from there.
+  if (body.websiteUrl !== undefined) {
+    const url = String(body.websiteUrl || "").trim();
+    updateFields["onboardingData.websiteUrl"] = url;
+    updateFields["onboardingData.step1.websiteUrl"] = url;
+  }
+
+  // Phase 2 — accept storeCategory slug from Settings PATCH. We persist:
+  //   - the slug itself
+  //   - the merchant's source-of-truth marker ('user' since they edited Settings)
+  //   - mirror to businessType when blank, so legacy preset code keeps working
+  if (body.storeCategory !== undefined) {
+    const slug = String(body.storeCategory || "").trim();
+    if (isKnownSlug(slug)) {
+      updateFields["onboardingData.storeCategory"] = slug;
+      updateFields["onboardingData.storeCategorySource"] = "user";
+      const cat = getStoreCategoryBySlug(slug);
+      if (cat?.presetKey && !body.businessType) {
+        updateFields["businessType"] = cat.presetKey;
+      }
+    } else if (!slug) {
+      // Allow clearing to default
+      updateFields["onboardingData.storeCategory"] = "";
+      updateFields["onboardingData.storeCategorySource"] = "";
+    }
+  }
+
+  if (body.categoryOverrides && typeof body.categoryOverrides === "object") {
+    updateFields["onboardingData.categoryOverrides"] = {
+      warranty: ["force_on", "force_off"].includes(body.categoryOverrides.warranty)
+        ? body.categoryOverrides.warranty
+        : null,
+      install: ["force_on", "force_off"].includes(body.categoryOverrides.install)
+        ? body.categoryOverrides.install
+        : null,
+    };
+  }
+
   if (body.cartTiming !== undefined && typeof body.cartTiming === "object") {
     const t = body.cartTiming;
     const clamp = (v, min, max, def) => {
@@ -182,6 +228,12 @@ function flattenClientForSettingsUI(client = {}) {
   const pv = client.platformVars || {};
   const persona = client.ai?.persona || {};
   const wf = client.wizardFeatures || {};
+  const onb = client.onboardingData || {};
+  const resolvedStoreCategory = onb.storeCategory || resolveStoreCategorySlug({
+    ecommerceCategories: onb.ecommerceCategories,
+    aiProductCategory: onb.brandProfile?.productCategory,
+    industryLabel: onb.industry || onb.step1?.industry,
+  });
   return {
     businessName: pv.brandName || client.businessName || client.name || "",
     botName: pv.agentName || persona.name || client.nicheData?.botName || "",
@@ -192,6 +244,14 @@ function flattenClientForSettingsUI(client = {}) {
     businessDescription:
       pv.businessDescription || client.ai?.persona?.description || "",
     industry: client.onboardingData?.industry || client.onboardingData?.step1?.industry || "",
+    // Phase 2 — single canonical website URL, plus resolved store category slug
+    websiteUrl: onb.websiteUrl || onb.step1?.websiteUrl || "",
+    storeCategory: resolvedStoreCategory,
+    storeCategorySource: onb.storeCategorySource || (onb.storeCategory ? "ai" : "auto"),
+    ecommerceCategories: Array.isArray(onb.ecommerceCategories) ? onb.ecommerceCategories : [],
+    categoryOverrides: onb.categoryOverrides && typeof onb.categoryOverrides === "object"
+      ? { warranty: onb.categoryOverrides.warranty || null, install: onb.categoryOverrides.install || null }
+      : { warranty: null, install: null },
     cartTiming: {
       msg1: wf.cartNudgeMinutes1 ?? 15,
       msg2: wf.cartNudgeHours2 ?? 2,

@@ -94,6 +94,26 @@ function buildBusinessContext(client, extras = {}) {
   if (extras.approvedTemplateSlots?.length) {
     lines.push(`Approved template slots: ${extras.approvedTemplateSlots.join(', ')}`);
   }
+  // Phase 5.3 — surface canonical store-category slug so the AI flow builder
+  // knows whether to scaffold warranty / install nodes vs catalog-only flows.
+  const slug =
+    extras.storeCategory ||
+    client?.onboardingData?.storeCategory ||
+    '';
+  if (slug) {
+    try {
+      const { getStoreCategoryBySlug } = require('../../constants/storeCategories');
+      const cat = getStoreCategoryBySlug(slug);
+      if (cat?.label) {
+        lines.push(`Store category: ${cat.label} (slug: ${slug})`);
+        if (cat.warranty === false) lines.push('Do NOT scaffold warranty registration nodes.');
+        if (cat.install === false) lines.push('Do NOT scaffold install / product-help nodes.');
+        if (cat.catalog === false) lines.push('Skip catalog browsing nodes — this is a services workspace.');
+      }
+    } catch (_) {
+      lines.push(`Store category slug: ${slug}`);
+    }
+  }
   const wf = client?.wizardFeatures;
   if (wf && typeof wf === 'object') {
     const enabled = Object.entries(wf).filter(([, v]) => v === true).map(([k]) => k);

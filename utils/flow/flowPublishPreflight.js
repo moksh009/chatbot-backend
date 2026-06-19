@@ -203,7 +203,7 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
     }
 
     if (type === 'shopify_call') {
-      const allowed = new Set(['search_products', 'CHECK_ORDER_STATUS', 'get_order', 'get_latest']);
+      const allowed = new Set(['search_products', 'CHECK_ORDER_STATUS', 'get_order', 'get_latest', 'GET_CUSTOMER_ORDERS', 'UPDATE_ORDER_ADDRESS']);
       const action = String(node.data?.action || 'search_products').trim();
       if (!allowed.has(action)) {
         errors.push({

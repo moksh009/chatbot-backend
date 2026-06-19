@@ -240,6 +240,20 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
     wizardData.knowledgeBase || wizardData.aiKnowledgeBase || wizardData.faqText
   );
 
+  if (Array.isArray(wizardData.faqs)) {
+    const faqDocs = wizardData.faqs
+      .filter((f) => f?.question?.trim() && f?.answer?.trim())
+      .map((f, i) => ({
+        question: f.question.trim(),
+        answer: f.answer.trim(),
+        order: i,
+      }));
+    if (faqDocs.length) {
+      out["knowledgeBase.faqs"] = faqDocs;
+      out.faq = faqDocs;
+    }
+  }
+
   // System prompt — canonical at ai.systemPrompt; legacy mirror at top-level.
   if (generatedSystemPrompt) {
     out["ai.systemPrompt"] = generatedSystemPrompt;
@@ -256,6 +270,7 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
   }
 
   setBool(out, "ai.fallbackEnabled", wizardData.enableAIFallback);
+  setIfTruthy(out, "ai.fallbackMessage", wizardData.fallbackMessage);
   return out;
 }
 
@@ -401,6 +416,15 @@ function mapWizardToClient(wizardData = {}, client = {}, opts = {}) {
 
   if (wizardData.faqText) {
     $set.faq = [{ question: "About Us / General", answer: wizardData.faqText, order: 1 }];
+  }
+
+  if (wizardData.productGuideLibrary && typeof wizardData.productGuideLibrary === "object") {
+    try {
+      const { normalizeLibrary } = require("../commerce/productGuideGenerator");
+      $set.productGuideLibrary = normalizeLibrary(wizardData.productGuideLibrary);
+    } catch (_) {
+      $set.productGuideLibrary = wizardData.productGuideLibrary;
+    }
   }
 
   // Strip undefined entries defensively (belt & braces).

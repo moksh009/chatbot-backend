@@ -252,6 +252,7 @@ async function resolveLatestOrderContext({ client, phone }) {
     order_number: String(label),
     order_status: local.status || local.fulfillmentStatus || "",
     payment_method: local.paymentMethod || "",
+    order_total: amt != null ? `₹${amt}` : "",
     is_shipped: /shipped|fulfilled|delivered/i.test(
       String(local.fulfillmentStatus || local.status || "")
     )
@@ -384,6 +385,9 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
       : `#${shopifyOrder.order_number}`,
     order_status: fulfillStatus,
     payment_method: payGw,
+    order_total: shopifyOrder.total_price
+      ? `${shopifyOrder.currency || 'INR'} ${parseFloat(shopifyOrder.total_price).toFixed(2)}`
+      : '',
     is_shipped: isShippedLike ? "true" : "false",
     first_product_title: firstItemTitle,
     first_product_image: preImage,

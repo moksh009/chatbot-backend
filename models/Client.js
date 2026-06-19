@@ -202,6 +202,44 @@ const RtoProtectionSchema = new mongoose.Schema({
   ndrTemplateLanguage: { type: String, default: 'en' },
 }, { _id: false });
 
+/** Per-product install / setup guides for WhatsApp install-help flow. */
+const ProductGuideFaqSchema = new mongoose.Schema({
+  question: { type: String, default: "" },
+  answer: { type: String, default: "" },
+}, { _id: false });
+
+const ProductInstallGuideSchema = new mongoose.Schema({
+  summary: { type: String, default: "" },
+  steps: [{ type: String }],
+  videoUrl: { type: String, default: "" },
+  manualUrl: { type: String, default: "" },
+  faqs: [ProductGuideFaqSchema],
+  estimatedMinutes: { type: Number },
+}, { _id: false });
+
+const ProductGuideProductSchema = new mongoose.Schema({
+  productId: { type: String, default: "" },
+  title: { type: String, default: "" },
+  sku: { type: String, default: "" },
+  imageUrl: { type: String, default: "" },
+  installGuide: { type: ProductInstallGuideSchema, default: () => ({}) },
+}, { _id: false });
+
+const ProductGuideCategorySchema = new mongoose.Schema({
+  id: { type: String, default: "" },
+  label: { type: String, default: "" },
+  source: { type: String, default: "manual" },
+  products: [ProductGuideProductSchema],
+}, { _id: false });
+
+const ProductGuideLibrarySchema = new mongoose.Schema({
+  version: { type: Number, default: 1 },
+  sourceUrl: { type: String, default: "" },
+  rawDraft: { type: String, default: "" },
+  lastGeneratedAt: { type: Date, default: null },
+  categories: [ProductGuideCategorySchema],
+}, { _id: false });
+
 /** Courier tracking eligibility — Shopify sync vs direct partner webhook. */
 const LogisticsHealthSchema = new mongoose.Schema({
   shopifyPathActive: { type: Boolean, default: true },
@@ -504,6 +542,7 @@ const ClientSchema = new mongoose.Schema({
 
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
+  productGuideLibrary: { type: ProductGuideLibrarySchema, default: () => ({ version: 1, categories: [] }) },
   cartRecoveryConfig: { type: CartRecoveryConfigSchema, default: () => ({}) },
   rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
   logisticsPartner: {
@@ -852,6 +891,19 @@ const ClientSchema = new mongoose.Schema({
     industry: { type: String, default: "" },
     /** Ecommerce product categories (workspace profile / AI personalization) */
     ecommerceCategories: { type: [String], default: [] },
+    /**
+     * Phase 1 (FLOW-WIZARD plan) — Canonical store-category slug.
+     * SSOT: `constants/storeCategories.js` (BE) + `src/config/storeCategories.js` (FE).
+     * Resolved from signup multi-select / AI brandProfile / merchant override; drives
+     * wizard preset auto-tuning (warranty + install) and flow generation.
+     */
+    storeCategory: { type: String, default: "" },
+    storeCategorySource: { type: String, enum: ["", "user", "ai", "preset", "auto"], default: "" },
+    /** Merchant per-toggle override table ("force_on" | "force_off" | null). */
+    categoryOverrides: {
+      warranty: { type: String, enum: [null, "force_on", "force_off"], default: null },
+      install: { type: String, enum: [null, "force_on", "force_off"], default: null },
+    },
     conversationVolume: { type: String, default: "" }, // "<500" | "500-2k" | "2k-10k" | "10k+"
     // Step 2: AI analysis output (what the scrape found)
     brandProfile: {

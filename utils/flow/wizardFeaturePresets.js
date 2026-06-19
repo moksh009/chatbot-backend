@@ -3,11 +3,18 @@
 /**
  * Vertical-aware defaults for multi-tenant wizard (clothing, electronics, services, etc.).
  * Merges on top of schema defaults — explicit false from user is preserved at launch.
+ *
+ * Phase 1.3 — `mergeWizardFeatures` now accepts a canonical `storeCategory` slug
+ * (see constants/storeCategories.js). Slug → PRESETS key happens via the
+ * imported SSOT; legacy regex fallback on businessType/industry is preserved
+ * so existing tenants without a slug keep working.
  */
+
+const { getStoreCategoryBySlug, isKnownSlug } = require('../../constants/storeCategories');
 
 const ECOMMERCE_BASE = {
   enableCatalog: true,
-  enableOrderTracking: true,
+  enableOrderTracking: false,
   enableReturnsRefunds: true,
   enableCancelOrder: true,
   enableAbandonedCart: true,
@@ -111,7 +118,7 @@ const PRESETS = {
   },
   restaurant: {
     enableCatalog: false,
-    enableOrderTracking: true,
+    enableOrderTracking: false,
     enableFAQ: true,
     enableSupportEscalation: true,
     enableAIFallback: true,
@@ -129,18 +136,45 @@ function normalizeBusinessType(raw) {
   return "ecommerce";
 }
 
-function getWizardFeaturePreset(businessType, industry = "") {
+function getWizardFeaturePreset(businessType, industry = "", storeCategory = "") {
+  // Slug wins when known (set by signup analyze / wizard override).
+  if (isKnownSlug(storeCategory)) {
+    const cat = getStoreCategoryBySlug(storeCategory);
+    const key = cat?.presetKey || normalizeBusinessType(businessType || industry);
+    return { key, features: { ...(PRESETS[key] || PRESETS.ecommerce) }, slug: storeCategory };
+  }
   const key = normalizeBusinessType(businessType || industry);
-  return { key, features: { ...PRESETS[key] } };
+  return { key, features: { ...PRESETS[key] }, slug: null };
 }
 
-function mergeWizardFeatures(userFeatures = {}, businessType = "", industry = "") {
-  const { features: preset } = getWizardFeaturePreset(businessType, industry);
+/**
+ * @param {object} userFeatures   merchant-tweaked toggles (preserved unless undefined)
+ * @param {string} businessType   raw biz type (legacy)
+ * @param {string} industry       industry label (legacy)
+ * @param {object} options
+ * @param {string} [options.storeCategory] canonical slug
+ * @param {object} [options.categoryOverrides] per-toggle force_on/force_off table
+ */
+function mergeWizardFeatures(userFeatures = {}, businessType = "", industry = "", options = {}) {
+  const { storeCategory = "", categoryOverrides = {} } = options || {};
+  const { features: preset } = getWizardFeaturePreset(businessType, industry, storeCategory);
   const out = { ...preset };
+
+  // Apply merchant overrides last so explicit values win over preset.
   for (const [k, v] of Object.entries(userFeatures || {})) {
     if (typeof v === "boolean") out[k] = v;
     else if (v !== undefined && v !== null) out[k] = v;
   }
+
+  // Category overrides ("force_on" / "force_off") always win — they represent an
+  // explicit merchant choice persisted to onboardingData.storeProfile.categoryOverrides.
+  if (categoryOverrides && typeof categoryOverrides === "object") {
+    if (categoryOverrides.warranty === "force_on")  out.enableWarranty = true;
+    if (categoryOverrides.warranty === "force_off") out.enableWarranty = false;
+    if (categoryOverrides.install === "force_on")  out.enableInstallSupport = true;
+    if (categoryOverrides.install === "force_off") out.enableInstallSupport = false;
+  }
+
   return out;
 }
 

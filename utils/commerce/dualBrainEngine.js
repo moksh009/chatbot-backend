@@ -1553,6 +1553,34 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (ndrHandled) return true;
   }
 
+  // ── COD confirmation template quick reply ("Confirm order") ──
+  if (inboundText && /^(confirm order|✅ confirm order)$/i.test(String(inboundText).trim())) {
+    const Order = require('../../models/Order');
+    const { normalizePhone } = require('../core/helpers');
+    const clean = normalizePhone(phone);
+    const pendingOrder = await Order.findOne({
+      clientId: client.clientId,
+      isCOD: true,
+      $or: [{ customerPhone: clean }, { phone: clean }, { customerPhone: phone }],
+      codConfirmationResponse: { $in: ['pending', '', null] },
+    })
+      .sort({ createdAt: -1 })
+      .exec();
+    if (pendingOrder) {
+      pendingOrder.isCodConfirmed = true;
+      pendingOrder.codConfirmationResponse = 'confirmed';
+      pendingOrder.codConfirmationRespondedAt = new Date();
+      pendingOrder.rtoStatus = 'safe';
+      await pendingOrder.save();
+      await sendWhatsAppText(
+        client,
+        phone,
+        `✅ Thanks! Your COD order *${pendingOrder.orderNumber || pendingOrder.orderId}* is confirmed. We'll keep you posted on WhatsApp.`
+      );
+      return true;
+    }
+  }
+
   // ── Template support buttons (Contact support / Need help) — no flow required ──
   if (inboundText) {
     const { isTemplateSupportButton, handleTemplateSupportButtonTap } = require('./templateSupportButtons');
@@ -2590,6 +2618,68 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
         }
         log.warn(`[WarrantyFlow] Menu tapped but no output edge on node ${warrantyStepId}`);
       }
+      return true;
+    }
+  }
+
+  // Install guide interaction — exclusive router (category → product → guide)
+  {
+    const freshConvoForGuide = await Conversation.findById(convo._id);
+    const guideConvo = freshConvoForGuide || convo;
+    const {
+      isInstallGuideInteractionActive,
+      handleInstallGuideReply,
+      findInstallGuideOutputEdge,
+      hasInstallGuideLibrary,
+      runInstallGuideEntry,
+    } = require('./installGuideFlow');
+    const guideActive =
+      isInstallGuideInteractionActive(guideConvo) ||
+      (buttonId && /^guide_/i.test(String(buttonId)));
+    if (guideActive) {
+      const replyTitle =
+        parsedMessage.interactive?.button_reply?.title ||
+        parsedMessage.interactive?.list_reply?.title ||
+        '';
+      const replyResult = await handleInstallGuideReply({
+        nodeId: guideConvo.lastStepId,
+        client,
+        phone,
+        convo: guideConvo,
+        flowEdges,
+        buttonId,
+        buttonTitle: replyTitle,
+        userText: userTextLower,
+      });
+      if (replyResult?.handled) {
+        if (replyResult.advanceToNext) {
+          const outEdge = findInstallGuideOutputEdge(flowEdges, guideConvo.lastStepId);
+          if (outEdge) {
+            const freshConvo = await Conversation.findById(convo._id);
+            return await executeNode(
+              outEdge.target,
+              flowNodes,
+              flowEdges,
+              client,
+              freshConvo || guideConvo,
+              lead,
+              phone,
+              io,
+              channel,
+              parsedMessage
+            );
+          }
+        }
+        return true;
+      }
+    }
+    if (buttonId === 'help_install' && hasInstallGuideLibrary(client)) {
+      await runInstallGuideEntry({
+        nodeId: currentStepId || 'help_install',
+        client,
+        phone,
+        convo: guideConvo,
+      });
       return true;
     }
   }
@@ -3668,6 +3758,33 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     }
   }
+  // 8b. Install guide entry — category picker from productGuideLibrary
+  if (node.type === 'install_guide_entry') {
+    const isInteractiveReply = !!(
+      parsedMessage?.interactive?.button_reply ||
+      parsedMessage?.interactive?.list_reply
+    );
+    if (!isInteractiveReply) {
+      const { runInstallGuideEntry } = require('./installGuideFlow');
+      try {
+        const entryResult = await runInstallGuideEntry({
+          nodeId,
+          client,
+          phone,
+          convo,
+        });
+        if (entryResult?.convoPatch) {
+          convo.metadata = entryResult.convoPatch.metadata;
+          convo.lastStepId = entryResult.convoPatch.lastStepId;
+          convo.status = entryResult.convoPatch.status;
+        }
+      } catch (err) {
+        log.error(`[InstallGuide] executeNode entry failed: ${err.message}`);
+      }
+    }
+    return true;
+  }
+
   // 9. Warranty Lookup — fully automated; single output after customer taps Menu
   if (node.type === 'warranty_check' || node.type === 'warranty_lookup') {
     const isInteractiveReply = !!(
@@ -4218,6 +4335,74 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         } else {
           await sendWhatsAppText(client, phone, 'Our catalog is being updated — check back soon!');
           resultData = { count: 0 };
+        }
+      }
+
+      else if (action === 'UPDATE_ORDER_ADDRESS') {
+        const qVar = node.data?.queryVariable || 'modify_details';
+        const addressText = String(convo?.metadata?.[qVar] || '').trim();
+        const { updateOrderShippingAddressFromChat } = require('./orderModifyService');
+        const outcome = await updateOrderShippingAddressFromChat({
+          client,
+          convo,
+          phone,
+          addressText,
+        });
+        if (outcome.ok) {
+          const md = {
+            ...(convo.metadata || {}),
+            shipping_address: [
+              outcome.order?.shippingAddress?.address1,
+              outcome.order?.shippingAddress?.city,
+              outcome.order?.shippingAddress?.zip,
+            ]
+              .filter(Boolean)
+              .join(', '),
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+          convo.metadata = md;
+          resultData = { updated: true };
+          const succEdge = flowEdges.find(
+            (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
+          );
+          if (succEdge) {
+            return await executeNode(
+              succEdge.target,
+              flowNodes,
+              flowEdges,
+              client,
+              convo,
+              lead,
+              phone,
+              io,
+              channel,
+              parsedMessage
+            );
+          }
+        } else {
+          if (outcome.message) {
+            await sendWhatsAppText(client, phone, outcome.message);
+          }
+          const errEdge = flowEdges.find(
+            (e) =>
+              e.source === nodeId &&
+              ['error', 'not_found', 'fail'].includes(normalizeHandleId(e.sourceHandle))
+          );
+          if (errEdge) {
+            return await executeNode(
+              errEdge.target,
+              flowNodes,
+              flowEdges,
+              client,
+              convo,
+              lead,
+              phone,
+              io,
+              channel,
+              parsedMessage
+            );
+          }
+          resultData = { updated: false, reason: outcome.reason };
         }
       }
 
@@ -4826,20 +5011,28 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
               }
             }
             if (!Array.isArray(customerOrders)) customerOrders = [];
-            const dynRows = customerOrders.slice(0, 10).map((order) => {
-              const title = String(order.name || order.order_number || `#${order.id}`).substring(0, 24);
-              const li0 = order.line_items?.[0];
-              const desc = li0
-                ? `${String(li0.title || "").substring(0, 36)} — ${order.currency || "₹"}${order.total_price}`
-                : `${order.currency || "₹"}${order.total_price}`;
-              return {
-                id: `order_${order.id}`,
-                title,
-                description: String(desc).substring(0, 72),
-              };
-            });
+            let dynRows = [];
+            if (dynKey === "guide_products") {
+              dynRows = customerOrders.slice(0, 10).map((p) => ({
+                id: `guide_prod_${String(p.productId || p.id || "").slice(0, 120)}`,
+                title: String(p.title || p.name || "Product").substring(0, 24),
+              }));
+            } else {
+              dynRows = customerOrders.slice(0, 10).map((order) => {
+                const title = String(order.name || order.order_number || `#${order.id}`).substring(0, 24);
+                const li0 = order.line_items?.[0];
+                const desc = li0
+                  ? `${String(li0.title || "").substring(0, 36)} — ${order.currency || "₹"}${order.total_price}`
+                  : `${order.currency || "₹"}${order.total_price}`;
+                return {
+                  id: `order_${order.id}`,
+                  title,
+                  description: String(desc).substring(0, 72),
+                };
+              });
+            }
             if (dynRows.length) {
-              sourceSections = [{ title: data.dynamicSectionTitle || "Your orders", rows: dynRows }];
+              sourceSections = [{ title: data.dynamicSectionTitle || (dynKey === "guide_products" ? "Products" : "Your orders"), rows: dynRows }];
             }
           } catch (de) {
             log.warn(`[interactive] dynamicSections failed: ${de.message}`);

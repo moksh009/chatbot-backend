@@ -272,10 +272,23 @@ function buildContext(client = {}, wizardData = {}) {
     : (client.wizardFeatures || {});
   const live = wizardData.features || {};
   const { mergeWizardFeatures } = require('./wizardFeaturePresets');
+  // Phase 1.3 — feed canonical storeCategory slug + categoryOverrides into the
+  // preset merge so warranty / install defaults match the merchant's vertical.
+  const storeCategorySlug =
+    wizardData.storeCategory ||
+    client.onboardingData?.storeCategory ||
+    '';
+  const categoryOverrides =
+    (wizardData.categoryOverrides && typeof wizardData.categoryOverrides === 'object'
+      ? wizardData.categoryOverrides
+      : null) ||
+    client.onboardingData?.categoryOverrides ||
+    {};
   const features = mergeWizardFeatures(
     { ...persistedFeatures, ...live },
     wizardData.businessType || client.businessType,
-    wizardData.industry
+    wizardData.industry,
+    { storeCategory: storeCategorySlug, categoryOverrides }
   );
 
   // Allow legacy wizardData top-level fields to feed features for backward compat.
@@ -289,7 +302,7 @@ function buildContext(client = {}, wizardData = {}) {
   // Sane feature defaults so missing fields never short-circuit a builder.
   const F = {
     enableCatalog:           true,
-    enableOrderTracking:     true,
+    enableOrderTracking:     false,
     enableReturnsRefunds:    false,
     enableCancelOrder:       true,
     enableCodToPrepaid:      false,
@@ -412,6 +425,10 @@ function buildContext(client = {}, wizardData = {}) {
       msg2: F.cartNudgeHours2,
       msg3: F.cartNudgeHours3
     },
+    productGuideLibrary:
+      wizardData.productGuideLibrary ||
+      client.productGuideLibrary ||
+      { version: 1, categories: [] },
   };
 }
 
@@ -483,6 +500,10 @@ function buildIDs(client, wizardData) {
     can_flow_mod_capture: `can_flow_mod_capture_${ts}`,
     can_flow_mod_alert: `can_flow_mod_alert_${ts}`,
     can_flow_mod_done: `can_flow_mod_done_${ts}`,
+    can_flow_show:    `can_flow_show_${ts}`,
+    can_flow_mod_check: `can_flow_mod_check_${ts}`,
+    can_flow_addr_sync: `can_flow_addr_sync_${ts}`,
+    can_flow_addr_ok: `can_flow_addr_ok_${ts}`,
   // AI help desk
     ai_capture:       `ai_capture_${ts}`,
     ai_respond:       `ai_respond_${ts}`,
@@ -527,6 +548,10 @@ function buildIDs(client, wizardData) {
     help_done:        `help_done_${ts}`,
     help_install_msg: `help_install_msg_${ts}`,
     help_other_cap:   `help_other_cap_${ts}`,
+    guide_cat_list:   `guide_cat_list_${ts}`,
+    guide_prod_list:  `guide_prod_list_${ts}`,
+    guide_send:       `guide_send_${ts}`,
+    guide_no_guides:  `guide_no_guides_${ts}`,
     war_ask:          `war_ask_${ts}`,
     war_active_hub:   `war_active_hub_${ts}`,
     war_pdf:          `war_pdf_${ts}`,
@@ -1239,6 +1264,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
   const nodes = [];
   const edges = [];
   const requireReason = F.cancelRequireReason !== false;
+  const allowModify = F.cancelAllowModify !== false;
 
   nodes.push(
     {
@@ -1249,9 +1275,9 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         label: "Cancel — ask identifier",
         variable: "cancel_identifier",
         question:
-          "😔 Sorry to hear that!\n\nPlease share your *registered phone number* or *Order ID* (e.g. #1042) so we can find your order.",
+          "To find your order, share your *Order ID* (e.g. #1042) or the *mobile number* used at checkout.",
         text:
-          "😔 Sorry to hear that!\n\nPlease share your *registered phone number* or *Order ID* (e.g. #1042) so we can find your order.",
+          "To find your order, share your *Order ID* (e.g. #1042) or the *mobile number* used at checkout.",
         heatmapCount: 0,
       },
     },
@@ -1296,6 +1322,17 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       },
     },
     {
+      id: IDS.can_flow_show,
+      type: "message",
+      position: flowPos(8, 10),
+      data: {
+        label: "Order summary",
+        text:
+          "📦 *Order {{order_number|selected}}*\nStatus: *{{order_status|Processing}}*\nTotal: *{{order_total|—}}*\n\nWhat would you like to do with this order?",
+        heatmapCount: 0,
+      },
+    },
+    {
       id: IDS.can_flow_shipped,
       type: "interactive",
       position: flowPos(9, 11),
@@ -1307,7 +1344,6 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         buttonsList: [
           { id: "shipped_menu", title: "🏠 Main menu" },
           { id: "shipped_agent", title: "👨‍💼 Talk to agent" },
-          { id: "shipped_track", title: "📦 Track order" },
         ],
         heatmapCount: 0,
       },
@@ -1326,7 +1362,9 @@ function buildCancelOrderBranch(ctx, IDS, content) {
             title: "Order options",
             rows: [
               { id: "action_cancel", title: "❌ Cancel order", description: "Request cancellation" },
-              { id: "action_modify", title: "✏️ Modify order", description: "Address, size, etc." },
+              ...(allowModify
+                ? [{ id: "action_modify", title: "✏️ Modify order", description: "Address, size, etc." }]
+                : []),
               ...(F.enableReturnsRefunds
                 ? [{ id: "action_return", title: "↩️ Start return", description: "Return or exchange" }]
                 : []),
@@ -1384,10 +1422,12 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Cancel request received",
         text:
-          "✅ *Your cancellation request has been received.*\n\nOur team will review it within *2–4 hours* and confirm on WhatsApp. For urgent help, call *{{support_phone|our support line}}*.",
+          "✅ *Your cancellation request has been received.*\n\nOur team will review it within *2–4 hours*. Please describe any urgent details below — a support agent will join this chat shortly.",
         heatmapCount: 0,
       },
     },
+    ...(allowModify
+      ? [
     {
       id: IDS.can_flow_modify,
       type: "interactive",
@@ -1419,9 +1459,44 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         label: "Modify — capture details",
         variable: "modify_details",
         question:
-          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}* (e.g. full new address or phone number).",
+          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}*.\n\nFor *address*, send street, city, and PIN on separate lines.",
         text:
-          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}*.",
+          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}*.\n\nFor *address*, send street, city, and PIN on separate lines.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_mod_check,
+      type: "logic",
+      position: flowPos(11, 12),
+      data: {
+        label: "Address change?",
+        variable: "modification_type",
+        operator: "eq",
+        value: "mod_address",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_addr_sync,
+      type: "shopify_call",
+      position: flowPos(12, 11),
+      data: {
+        label: "Sync address to Shopify",
+        action: "UPDATE_ORDER_ADDRESS",
+        queryVariable: "modify_details",
+        silent: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_addr_ok,
+      type: "message",
+      position: flowPos(13, 11),
+      data: {
+        label: "Address updated",
+        text:
+          "✅ *Delivery address updated* for order *{{order_number|your order}}*.\n\nWe synced the change with your store order. You'll get a confirmation here once dispatch is scheduled.",
         heatmapCount: 0,
       },
     },
@@ -1447,39 +1522,52 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Modify request received",
         text:
-          "✅ *Your modification request has been received.*\n\nOur team will update order *{{order_number|your order}}* and confirm on WhatsApp within *2–4 hours*.\n\nFor urgent help, call *{{support_phone|our support line}}*.",
+          "✅ *Your modification request has been received.*\n\nOur team will update order *{{order_number|your order}}* and confirm on WhatsApp within *2–4 hours*.",
         heatmapCount: 0,
       },
-    }
+    },
+      ]
+      : []),
   );
 
   edges.push(
     { id: `e_${IDS.can_flow_ask}_lk`, source: IDS.can_flow_ask, target: IDS.can_flow_lookup },
     { id: `e_${IDS.can_flow_lookup}_ls`, source: IDS.can_flow_lookup, target: IDS.can_flow_list },
     { id: `e_${IDS.can_flow_list}_rs`, source: IDS.can_flow_list, target: IDS.can_flow_resolve },
-    { id: `e_${IDS.can_flow_resolve}_lg`, source: IDS.can_flow_resolve, target: IDS.can_logic, sourceHandle: "success" },
+    { id: `e_${IDS.can_flow_resolve}_sh`, source: IDS.can_flow_resolve, target: IDS.can_flow_show, sourceHandle: "success" },
+    { id: `e_${IDS.can_flow_show}_lg`, source: IDS.can_flow_show, target: IDS.can_logic },
     { id: `e_${IDS.can_flow_resolve}_nf`, source: IDS.can_flow_resolve, target: IDS.can_flow_ask, sourceHandle: "not_found" },
     { id: `e_${IDS.can_logic}_ship`, source: IDS.can_logic, target: IDS.can_flow_shipped, sourceHandle: "true" },
     { id: `e_${IDS.can_logic}_ok`, source: IDS.can_logic, target: IDS.can_flow_choice, sourceHandle: "false" },
     { id: `e_${IDS.can_flow_choice}_cn`, source: IDS.can_flow_choice, target: requireReason ? IDS.can_flow_reason : IDS.can_flow_alert, sourceHandle: "action_cancel" },
-    { id: `e_${IDS.can_flow_choice}_md`, source: IDS.can_flow_choice, target: IDS.can_flow_modify, sourceHandle: "action_modify" },
+    ...(allowModify
+      ? [{ id: `e_${IDS.can_flow_choice}_md`, source: IDS.can_flow_choice, target: IDS.can_flow_modify, sourceHandle: "action_modify" }]
+      : []),
     ...(F.enableReturnsRefunds
       ? [{ id: `e_${IDS.can_flow_choice}_ret`, source: IDS.can_flow_choice, target: IDS.ret_hub, sourceHandle: "action_return" }]
       : []),
     { id: `e_${IDS.can_flow_choice}_mm`, source: IDS.can_flow_choice, target: IDS.main_menu, sourceHandle: "action_back" },
     { id: `e_${IDS.can_flow_reason}_al`, source: IDS.can_flow_reason, target: IDS.can_flow_alert },
     { id: `e_${IDS.can_flow_alert}_dn`, source: IDS.can_flow_alert, target: IDS.can_flow_done },
-    { id: `e_${IDS.can_flow_done}_mm`, source: IDS.can_flow_done, target: IDS.main_menu },
+    { id: `e_${IDS.can_flow_done}_sp`, source: IDS.can_flow_done, target: IDS.sup_capture },
     { id: `e_${IDS.can_flow_shipped}_mm`, source: IDS.can_flow_shipped, target: IDS.main_menu, sourceHandle: "shipped_menu" },
     { id: `e_${IDS.can_flow_shipped}_ag`, source: IDS.can_flow_shipped, target: IDS.sup_capture, sourceHandle: "shipped_agent" },
-    { id: `e_${IDS.can_flow_shipped}_tr`, source: IDS.can_flow_shipped, target: IDS.ord_ask, sourceHandle: "shipped_track" },
-    { id: `e_${IDS.can_flow_modify}_addr`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_address" },
-    { id: `e_${IDS.can_flow_modify}_phone`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_phone" },
-    { id: `e_${IDS.can_flow_modify}_var`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_variant" },
-    { id: `e_${IDS.can_flow_modify}_oth`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_other" },
-    { id: `e_${IDS.can_flow_mod_capture}_al`, source: IDS.can_flow_mod_capture, target: IDS.can_flow_mod_alert },
-    { id: `e_${IDS.can_flow_mod_alert}_dn`, source: IDS.can_flow_mod_alert, target: IDS.can_flow_mod_done },
-    { id: `e_${IDS.can_flow_mod_done}_mm`, source: IDS.can_flow_mod_done, target: IDS.main_menu }
+    ...(allowModify
+      ? [
+          { id: `e_${IDS.can_flow_modify}_addr`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_address" },
+          { id: `e_${IDS.can_flow_modify}_phone`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_phone" },
+          { id: `e_${IDS.can_flow_modify}_var`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_variant" },
+          { id: `e_${IDS.can_flow_modify}_oth`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_other" },
+          { id: `e_${IDS.can_flow_mod_capture}_chk`, source: IDS.can_flow_mod_capture, target: IDS.can_flow_mod_check },
+          { id: `e_${IDS.can_flow_mod_check}_addr`, source: IDS.can_flow_mod_check, target: IDS.can_flow_addr_sync, sourceHandle: "true" },
+          { id: `e_${IDS.can_flow_mod_check}_oth`, source: IDS.can_flow_mod_check, target: IDS.can_flow_mod_alert, sourceHandle: "false" },
+          { id: `e_${IDS.can_flow_addr_sync}_ok`, source: IDS.can_flow_addr_sync, target: IDS.can_flow_addr_ok, sourceHandle: "success" },
+          { id: `e_${IDS.can_flow_addr_sync}_fail`, source: IDS.can_flow_addr_sync, target: IDS.can_flow_mod_alert, sourceHandle: "error" },
+          { id: `e_${IDS.can_flow_addr_ok}_mm`, source: IDS.can_flow_addr_ok, target: IDS.main_menu },
+          { id: `e_${IDS.can_flow_mod_alert}_dn`, source: IDS.can_flow_mod_alert, target: IDS.can_flow_mod_done },
+          { id: `e_${IDS.can_flow_mod_done}_mm`, source: IDS.can_flow_mod_done, target: IDS.main_menu },
+        ]
+      : []),
   );
 
   nodes.push({
@@ -1501,7 +1589,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
     menuRow: {
       id: "mnu_cancel",
       title: F.enableReturnsRefunds ? "📦 Orders & returns" : "❌ Cancel / Modify Order",
-      description: F.enableReturnsRefunds ? "Track, cancel, modify, or return" : "Change or cancel an order",
+      description: F.enableReturnsRefunds ? "Cancel, modify, or return" : "Change or cancel an order",
     },
     entryNodeId: IDS.can_flow_ask,
     sourceHandle: "mnu_cancel",
@@ -1793,6 +1881,14 @@ function buildInstallSupportBranch(ctx, IDS, content) {
   const nodes = [];
   const edges = [];
   const hasInstall = F.helpIncludeInstallGuide !== false;
+  const lib = ctx.productGuideLibrary || client?.productGuideLibrary || {};
+  const guideCategories = Array.isArray(lib.categories)
+    ? lib.categories.filter((c) => (c.products || []).some((p) => {
+        const g = p.installGuide || {};
+        return g.summary || (g.steps && g.steps.length) || g.videoUrl || g.manualUrl;
+      }))
+    : [];
+  const hasGuideLibrary = guideCategories.length > 0;
 
   const helpRows = [
     { id: "help_not_received", title: "📦 Order not received", description: "Delayed or missing" },
@@ -1858,8 +1954,48 @@ function buildInstallSupportBranch(ctx, IDS, content) {
           "🔍 We couldn't find that order.\n\nDouble-check your *Order ID* or try the phone used at checkout. Type *menu* to go back.",
         heatmapCount: 0,
       },
-    },
-    {
+    }
+  );
+
+  if (hasInstall && hasGuideLibrary) {
+    nodes.push(
+      {
+        id: IDS.guide_cat_list,
+        type: "install_guide_entry",
+        position: flowPos(8, 14),
+        data: {
+          label: "Install guide — categories",
+          text: "🔧 *Installation help*\n\nWhich product category?",
+          heatmapCount: 0,
+        },
+      },
+      {
+        id: IDS.guide_prod_list,
+        type: "interactive",
+        position: flowPos(9, 14),
+        data: {
+          label: "Install guide — products",
+          interactiveType: "list",
+          buttonText: "Choose product",
+          text: "Pick the product you need setup help for.",
+          dynamicSections: true,
+          dynamicSectionsVariable: "guide_products",
+          heatmapCount: 0,
+        },
+      },
+      {
+        id: IDS.guide_send,
+        type: "message",
+        position: flowPos(10, 14),
+        data: {
+          label: "Install guide message",
+          text: "🔧 Setup steps are sent dynamically from your product guide library.",
+          heatmapCount: 0,
+        },
+      }
+    );
+  } else if (hasInstall) {
+    nodes.push({
       id: IDS.help_install_msg,
       type: "message",
       position: flowPos(8, 15),
@@ -1870,7 +2006,10 @@ function buildInstallSupportBranch(ctx, IDS, content) {
           "🔧 For setup help, share your *product name* and a short video/photo of the issue. Our team will guide you step by step on *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
-    },
+    });
+  }
+
+  nodes.push(
     {
       id: IDS.help_other_cap,
       type: "capture_input",
@@ -1916,8 +2055,23 @@ function buildInstallSupportBranch(ctx, IDS, content) {
     { id: `e_${IDS.help_lookup}_ok`, source: IDS.help_lookup, target: IDS.help_menu, sourceHandle: "success" },
     { id: `e_${IDS.help_lookup}_nf`, source: IDS.help_lookup, target: IDS.help_not_found, sourceHandle: "not_found" },
     { id: `e_${IDS.help_not_found}_mm`, source: IDS.help_not_found, target: IDS.main_menu },
-    { id: `e_${IDS.help_menu}_inst`, source: IDS.help_menu, target: IDS.help_install_msg, sourceHandle: "help_install" },
-    { id: `e_${IDS.help_install_msg}_mm`, source: IDS.help_install_msg, target: IDS.main_menu },
+  );
+
+  if (hasInstall && hasGuideLibrary) {
+    edges.push(
+      { id: `e_${IDS.help_menu}_inst`, source: IDS.help_menu, target: IDS.guide_cat_list, sourceHandle: "help_install" },
+      { id: `e_${IDS.guide_cat_list}_mm`, source: IDS.guide_cat_list, target: IDS.main_menu },
+      { id: `e_${IDS.guide_prod_list}_mm`, source: IDS.guide_prod_list, target: IDS.main_menu },
+      { id: `e_${IDS.guide_send}_mm`, source: IDS.guide_send, target: IDS.main_menu }
+    );
+  } else if (hasInstall) {
+    edges.push(
+      { id: `e_${IDS.help_menu}_inst`, source: IDS.help_menu, target: IDS.help_install_msg, sourceHandle: "help_install" },
+      { id: `e_${IDS.help_install_msg}_mm`, source: IDS.help_install_msg, target: IDS.main_menu }
+    );
+  }
+
+  edges.push(
     { id: `e_${IDS.help_menu}_nr`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_not_received" },
     { id: `e_${IDS.help_menu}_dm`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_damaged" },
     {
@@ -2294,7 +2448,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   const commerceSlices = [];
   const splitAuto = !!mergedWizard._splitAutomations;
   if (!splitAuto && F.enableAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
-  if (!splitAuto && F.enableOrderConfirmTpl) commerceSlices.push(buildOrderConfirmAndCod(ctx, IDS, content));
+  // Order placed + COD confirmation run via Order messages (sys_commerce_*), not embedded flow triggers.
 
   const b2bParallel = F.enableB2BWholesale ? buildB2BBranch(ctx, IDS) : { nodes: [], edges: [] };
 
@@ -2445,127 +2599,12 @@ Write a single comprehensive system prompt (4-7 sentences) that the bot will fol
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 7. PRE-BUILT META TEMPLATES (unchanged from v5 — Meta-compliant payloads)
+// 7. PRE-BUILT META TEMPLATES — catalog + library SSOT (wizardPackTemplates)
 // ═════════════════════════════════════════════════════════════════════════
+const { getWizardPackTemplates } = require("./wizardPackTemplates");
+
 function getPrebuiltTemplates(wizardData = {}) {
-  const {
-    businessName    = "Our Brand",
-    googleReviewUrl = "",
-    checkoutUrl     = "",
-    shopDomain      = "",
-    businessLogo    = "",
-    products        = [],
-    currency        = "₹",
-  } = wizardData;
-
-  const brandSafe = businessName || "Our Brand";
-  const storeBase = shopDomain
-    ? `https://${shopDomain.replace(/^https?:\/\//, "")}`
-    : (checkoutUrl || "");
-
-  const allProducts = products.map((p, i) => buildProductContext(p, i));
-  const copy = getCopyPack({
-    F: wizardData.features || {},
-    tone: wizardData.tone || "friendly",
-    riskPosture: wizardData.riskPosture || "balanced",
-    flowType: wizardData.flowType || "ecommerce",
-  });
-
-  return [
-    {
-      id: "order_confirmed", name: "order_confirmed",
-      category: "UTILITY", language: "en", status: "not_submitted", required: true,
-      description: "Sent immediately after order is placed.",
-      components: [{
-        type: "BODY",
-        text: `🎉 *Order confirmed* — #{{1}}\n\nHi from ${brandSafe}. Thank you for trusting us with your purchase.\n\n📦 *Items*\n{{2}}\n\n💰 *Total*  ${currency}{{3}}\n\nWe're preparing everything carefully and will message you as soon as your order moves. Questions? Just reply here.`
-      }],
-      body: `🎉 *Order confirmed* — #{{1}}\n\nHi from ${brandSafe}. Thank you for trusting us with your purchase.\n\n📦 *Items*\n{{2}}\n\n💰 *Total*  ${currency}{{3}}\n\nWe're preparing everything carefully and will message you as soon as your order moves. Questions? Just reply here.`,
-      variables: ["order_id", "cart_items", "order_total"]
-    },
-    {
-      id: "cart_recovery_1", name: "cart_recovery_1",
-      category: "MARKETING", language: "en", status: "not_submitted", required: true,
-      description: "Sent if checkout is started but not completed.",
-      components: [
-        { type: "BODY", text: copy.template_cart_recovery_1_body.replace(/{{brand_name}}/g, brandSafe) },
-        ...(storeBase ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }] : [])
-      ],
-      body: copy.template_cart_recovery_1_body.replace(/{{brand_name}}/g, brandSafe),
-      variables: []
-    },
-    {
-      id: "cart_recovery_2", name: "cart_recovery_2",
-      category: "MARKETING", language: "en", status: "not_submitted", required: true,
-      description: "Follow-up reminder with urgency for cart recovery.",
-      components: [
-        { type: "BODY", text: copy.template_cart_recovery_2_body.replace(/{{brand_name}}/g, brandSafe) },
-        ...(storeBase ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }] : [])
-      ],
-      body: copy.template_cart_recovery_2_body.replace(/{{brand_name}}/g, brandSafe),
-      variables: []
-    },
-    {
-      id: "admin_handoff", name: "admin_human_alert",
-      category: "UTILITY", language: "en", status: "not_submitted", required: true,
-      description: "🚨 CRITICAL — sent to admin when customer requests human help.",
-      components: [{
-        type: "BODY",
-        text: `🚨 *Human Agent Requested!*\n\nCustomer: {{1}}\nPhone: {{2}}\nContext: {{3}}\n\nPlease reply in the dashboard immediately.`
-      }],
-      body: `🚨 *Human Agent Requested!*\n\nCustomer: {{1}}\nPhone: {{2}}\nContext: {{3}}\n\nPlease reply in the dashboard immediately.`,
-      variables: ["customer_name", "customer_phone", "last_message"]
-    },
-    {
-      id: "cod_to_prepaid", name: "cod_to_prepaid",
-      category: "MARKETING", language: "en", status: "not_submitted", required: true,
-      description: "COD → prepaid: incentive stack, urgency, two-tap choice (enterprise / Delitech-style).",
-      components: [
-        {
-          type: "HEADER",
-          format: "IMAGE",
-          _imageUrl: businessLogo || "",
-        },
-        {
-          type: "BODY",
-          text: `💳 *Save on your order!*
-
-Hi {{1}} 👋
-
-Your order *#{{2}}* for *{{3}}* ({{4}}) is confirmed as COD.
-
-🎁 *Pay via UPI right now and get:*
-✅ {{5}}
-✅ {{6}}
-
-⏰ *Offer expires in {{7}}!*
-
-${brandSafe} prioritises prepaid orders for dispatch — choose below when you are ready.`,
-        },
-        {
-          type: "FOOTER",
-          text: "Secured checkout · Reply STOP to opt out of promos",
-        },
-        {
-          type: "BUTTONS",
-          buttons: [
-            { type: "QUICK_REPLY", text: "💳 Pay via UPI Now" },
-            { type: "QUICK_REPLY", text: "Keep COD" },
-          ],
-        },
-      ],
-      body: `💳 *Save on your order!*\n\nHi {{1}} 👋\n\nYour order *#{{2}}* for *{{3}}* ({{4}}) is confirmed as COD.\n\n🎁 *Pay via UPI right now and get:*\n✅ {{5}}\n✅ {{6}}\n\n⏰ *Offer expires in {{7}}!*`,
-      variables: [
-        "customer_first_name",
-        "order_id",
-        "product_line",
-        "order_total_formatted",
-        "incentive_cashback",
-        "incentive_shipping",
-        "urgency_window",
-      ],
-    },
-  ];
+  return getWizardPackTemplates(wizardData);
 }
 
 // ═════════════════════════════════════════════════════════════════════════

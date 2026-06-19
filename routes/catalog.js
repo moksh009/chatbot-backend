@@ -5,6 +5,7 @@ const router = express.Router();
 const Client = require("../models/Client");
 const AdLead = require("../models/AdLead");
 const ShopifyProduct = require("../models/ShopifyProduct");
+const ShopifyCollection = require("../models/ShopifyCollection");
 const { protect: verifyToken } = require("../middleware/auth");
 const { sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require('../utils/meta/whatsappCatalog');
 const {
@@ -292,7 +293,7 @@ router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) =
       ];
     }
 
-    const [cachedCount, waOrdersToday, waRevenueAgg, products, orders] = await Promise.all([
+    const [cachedCount, waOrdersToday, waRevenueAgg, products, orders, collections] = await Promise.all([
       ShopifyProduct.countDocuments({ clientId: cid }),
       AdLead.countDocuments({
         clientId: cid,
@@ -305,7 +306,7 @@ router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) =
       ]),
       ShopifyProduct.find(queryFilter)
         .select(
-          "shopifyProductId shopifyVariantId title price currency imageUrl productUrl inStock collectionTitles clientId"
+          "shopifyProductId shopifyVariantId title price currency imageUrl productUrl inStock collectionTitles collectionIds clientId"
         )
         .sort({ title: 1 })
         .limit(limit)
@@ -319,6 +320,13 @@ router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) =
         .sort({ lastInteraction: -1 })
         .limit(20)
         .hint({ clientId: 1, cartStatus: 1 })
+        .lean(),
+      ShopifyCollection.find({ clientId: cid })
+        .select(
+          "shopifyCollectionId title handle productsCount whatsappMenuLabel whatsappEnabled sortOrder collectionType"
+        )
+        .sort({ sortOrder: 1, title: 1 })
+        .limit(200)
         .lean(),
     ]);
 
@@ -338,6 +346,16 @@ router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) =
       },
       products,
       orders,
+      collections: (collections || []).map((c) => ({
+        shopifyCollectionId: String(c.shopifyCollectionId || ""),
+        title: c.title || "",
+        handle: c.handle || "",
+        productsCount: Number(c.productsCount) || 0,
+        whatsappMenuLabel: String(c.whatsappMenuLabel || c.title || "").slice(0, 24),
+        whatsappEnabled: c.whatsappEnabled !== false,
+        sortOrder: typeof c.sortOrder === "number" ? c.sortOrder : 0,
+        collectionType: c.collectionType || "custom",
+      })),
       productsSource: "cache",
     });
   } catch (err) {

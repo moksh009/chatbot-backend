@@ -46,6 +46,7 @@ const {
   hasPaidEntitlements,
   isTrialWindowActive,
 } = require('../utils/core/accessFlags');
+const { resolveStoreCategorySlug } = require('../constants/storeCategories');
 
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -329,6 +330,14 @@ router.post("/analyze", protect, async (req, res) => {
       scraped: !!scraped,
     };
 
+    // Phase 1.2 — Resolve canonical store-category slug from signup + AI inputs.
+    // Priority: user-selected (n/a here) > signup multiselect > AI brandProfile > industry text.
+    const resolvedStoreCategory = resolveStoreCategorySlug({
+      ecommerceCategories: categories,
+      aiProductCategory: brandProfile.productCategory,
+      industryLabel: industryHint,
+    });
+
     // Persist into client.onboardingData.brandProfile + workspace brand fields
     await Client.updateOne(
       { clientId },
@@ -339,6 +348,8 @@ router.post("/analyze", protect, async (req, res) => {
           "onboardingData.industry": industryHint || "",
           "onboardingData.ecommerceCategories": categories,
           "onboardingData.brandProfile": brandProfile,
+          "onboardingData.storeCategory": resolvedStoreCategory,
+          "onboardingData.storeCategorySource": "ai",
           // Mirror to canonical paths so Settings, theme, and generators see them immediately
           ...(resolvedBrandName
             ? {
@@ -348,10 +359,8 @@ router.post("/analyze", protect, async (req, res) => {
             : {}),
           ...(logoUrl ? { businessLogo: logoUrl } : {}),
           ...(tagline ? { businessDescription: tagline } : {}),
-          ...(brandProfile.productCategory
-            ? { industry: brandProfile.productCategory }
-            : {}),
-          ...(brandColor ? { "platformVars.primaryColor": brandColor } : {}),
+          // Industry display string stays on onboardingData ONLY (root `industry` is an orphan write).
+          ...(brandColor ? { "brand.primaryColor": brandColor } : {}),
           ...(brandProfile.brandTone
             ? { "platformVars.defaultTone": brandProfile.brandTone }
             : {}),
@@ -363,6 +372,7 @@ router.post("/analyze", protect, async (req, res) => {
       success: true,
       scraped: !!scraped,
       ...brandProfile,
+      storeCategory: resolvedStoreCategory,
     });
   } catch (err) {
     log.error(`analyze error: ${err.message}`);
@@ -407,6 +417,8 @@ router.patch("/progress", protect, async (req, res) => {
         "websiteUrl",
         "industry",
         "ecommerceCategories",
+        "storeCategory",
+        "storeCategorySource",
         "conversationVolume",
         "brandProfile",
         "whatsappSkipped",
@@ -436,9 +448,10 @@ router.patch("/progress", protect, async (req, res) => {
         if (bp.logoUrl) $set.businessLogo = String(bp.logoUrl).trim();
         if (bp.tagline) $set.businessDescription = String(bp.tagline).trim().slice(0, 500);
         if (bp.brandColor && normalizeBrandColor(bp.brandColor)) {
-          $set["platformVars.primaryColor"] = normalizeBrandColor(bp.brandColor);
+          $set["brand.primaryColor"] = normalizeBrandColor(bp.brandColor);
         }
-        if (bp.productCategory) $set.industry = String(bp.productCategory).trim();
+        // Industry display string stays on onboardingData ONLY (root `industry` is an orphan write).
+        if (bp.productCategory) $set["onboardingData.industry"] = String(bp.productCategory).trim();
       }
     }
 
@@ -455,8 +468,26 @@ router.patch("/progress", protect, async (req, res) => {
 // POST /api/onboarding/flow/generate
 // Body: all collected wizardData (goals, brandName, persona, etc.)
 // Generates a flow + WhatsAppFlow doc, returns a simplified preview payload.
+//
+// **Deprecated 2026-06-18 (Phase 4.3 of FLOW-WIZARD plan)** — no UI calls this
+// route. Production traffic should go through `POST /api/wizard/:clientId/complete`
+// instead, which uses the Commerce wizard pack and the canonical mapper.
+//
+// Returns 410 Gone by default to surface accidental callers; set
+// `ENABLE_LEGACY_ONBOARDING_FLOW_GENERATE=true` to re-enable.
 // ───────────────────────────────────────────────────────────────────────────
 router.post("/flow/generate", protect, async (req, res) => {
+  if (process.env.ENABLE_LEGACY_ONBOARDING_FLOW_GENERATE !== "true") {
+    return res.status(410).json({
+      success: false,
+      deprecated: true,
+      error: "deprecated_route",
+      message:
+        "POST /api/onboarding/flow/generate is deprecated. Use POST /api/wizard/:clientId/complete from the Commerce Flow Wizard.",
+      replacement: "/api/wizard/:clientId/complete",
+    });
+  }
+
   const clientId = req.user.clientId;
   const wizardData = req.body || {};
 
