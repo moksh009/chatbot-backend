@@ -34,7 +34,8 @@ router.get('/status', async (req, res) => {
       availableOpenaiModels: status.availableOpenaiModels || OPENAI_MODELS,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[GET /ai-wallet/status]', err);
+    res.status(500).json({ error: err.message || 'Failed to load AI wallet status' });
   }
 });
 

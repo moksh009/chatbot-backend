@@ -571,6 +571,38 @@ router.get('/', protect, apiCache(30), async (req, res) => {
 });
 
 
+// GET /api/flow/templates — installable e-commerce flow template catalog
+router.get('/templates', protect, async (req, res) => {
+  try {
+    const { listTemplateCatalog } = require('../utils/flow/flowTemplateCatalog');
+    res.json({ success: true, templates: listTemplateCatalog() });
+  } catch (err) {
+    console.error('[GET /flow/templates]', err);
+    res.status(500).json({ success: false, message: err.message || 'Failed to list templates' });
+  }
+});
+
+// POST /api/flow/templates/:key/install — generate + persist template pack as DRAFT
+router.post('/templates/:key/install', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { installFlowTemplate } = require('../utils/flow/flowTemplateInstaller');
+    const replace = req.body?.replace === true;
+    const result = await installFlowTemplate(client, req.params.key, { replace });
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error('[POST /flow/templates/:key/install]', err);
+    res.status(status).json({ success: false, message: err.message || 'Template install failed' });
+  }
+});
+
 // GET /api/flow/flows
 router.get('/flows', protect, apiCache(30), async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');

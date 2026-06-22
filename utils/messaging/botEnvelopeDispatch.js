@@ -1,6 +1,6 @@
 const Conversation = require('../../models/Conversation');
-const AdLead = require('../../models/AdLead');
 const { sendEnvelope } = require('./sendEnvelope');
+const { findLeadByPhone } = require('../commerce/inboundReOptInService');
 
 async function resolveBotContext(client, phone, opts = {}) {
   let conversationId = opts.conversationId;
@@ -18,9 +18,7 @@ async function resolveBotContext(client, phone, opts = {}) {
   }
 
   if (!contactId) {
-    const lead = await AdLead.findOne({ clientId: client.clientId, phoneNumber: phone })
-      .select('_id')
-      .lean();
+    const lead = await findLeadByPhone(client.clientId, phone);
     contactId = lead?._id;
   }
 
@@ -59,7 +57,34 @@ async function dispatchBotEnvelope({
     envelope.options = { ...(envelope.options || {}), complianceExempt: true };
   }
 
-  const result = await sendEnvelope(envelope);
+  let result = await sendEnvelope(envelope);
+
+  const source = String(opts.source || '');
+  const isDualBrain = source.startsWith('dualBrainEngine');
+  const consentBlocked =
+    result.status === 'blocked' &&
+    result.blockedBy === 'consent' &&
+    result.reason === 'recipient_opted_out';
+
+  if (consentBlocked && isDualBrain && !opts._reoptInRetried) {
+    try {
+      const { executeInboundReOptIn } = require('../commerce/inboundReOptInService');
+      const reopt = await executeInboundReOptIn({
+        client,
+        phone,
+        source: 'inbound_message',
+        silent: true,
+      });
+      if (reopt.success && !reopt.skipped) {
+        result = await sendEnvelope({
+          ...envelope,
+          idempotency: { key: `${ctx.idempotencyKey}:reopt-retry` },
+        });
+      }
+    } catch (_) {
+      /* fall through to blocked response */
+    }
+  }
 
   if (result.status === 'sent' || result.status === 'queued') {
     return {

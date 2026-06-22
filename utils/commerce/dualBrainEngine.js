@@ -792,87 +792,80 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
     }
 
-    // Re-opt-in only on explicit START/SUBSCRIBE keywords (not every inbound).
-    if (channel === "whatsapp") {
-      const waConsentStatus = String(
-        lead?.channelConsent?.whatsapp?.status || lead?.optStatus || ""
-      ).toLowerCase();
-      const wasOptedOut = waConsentStatus === "opted_out";
-      const inboundText = String(
+    let wasOptedOutAtInbound = false;
+
+    if (channel === 'whatsapp') {
+      const {
+        isLeadOptedOut,
+        executeInboundReOptIn,
+        isUserInitiatedInbound,
+      } = require('./inboundReOptInService');
+      const {
+        matchesOptOutKeyword,
+        getOptOutAutoReply,
+      } = require('./marketingConsentConfig');
+      const complianceEarly = client?.growthCompliance || {};
+      const earlyTextRaw = (
         parsedMessage.text?.body ||
-          parsedMessage.button?.text ||
-          parsedMessage.interactive?.button_reply?.title ||
-          ""
-      )
-        .trim()
-        .toLowerCase();
-      const { matchesOptInKeyword } = require("./marketingConsentConfig");
-      if (wasOptedOut && inboundText && matchesOptInKeyword(inboundText)) {
+        parsedMessage.interactive?.button_reply?.title ||
+        parsedMessage.interactive?.list_reply?.title ||
+        parsedMessage.interactive?.button_reply?.id ||
+        parsedMessage.interactive?.list_reply?.id ||
+        ''
+      ).trim();
+
+      wasOptedOutAtInbound = isLeadOptedOut(lead);
+
+      if (earlyTextRaw && matchesOptOutKeyword(earlyTextRaw, complianceEarly)) {
+        log.info(`🛑 Early opt-out detected for ${phone}. Running global kill switch.`);
+        const { executeGlobalOptOut } = require('./optOutKillSwitch');
+        await executeGlobalOptOut({
+          client,
+          phone,
+          source: 'keyword_stop',
+          keyword: earlyTextRaw,
+          conversationId: convo._id,
+          sendConfirmation: true,
+          confirmationMessage: getOptOutAutoReply(client),
+          io,
+        });
+        const NotificationService = require('../core/notificationService');
+        await NotificationService.sendAdminAlert(client, {
+          customerPhone: phone,
+          conversationId: convo._id,
+          topic: '🔕 USER OPTED OUT',
+          triggerSource: `User sent "${earlyTextRaw}". Bot is now PAUSED; pending jobs cancelled.`,
+          channel: 'both',
+        });
+        perf.finish('opt_out_handled');
+        return true;
+      }
+
+      if (wasOptedOutAtInbound && isUserInitiatedInbound(parsedMessage)) {
         try {
-          const now = new Date();
-          await Promise.all([
-            AdLead.updateOne(
-              { _id: lead._id },
-              {
-                $set: {
-                  optStatus: "opted_in",
-                  whatsappMarketingEligible: true,
-                  optOutDate: null,
-                  optOutSource: "",
-                  optOutReason: "",
-                  optOutKeyword: "",
-                  "channelConsent.whatsapp.status": "opted_in",
-                  "channelConsent.whatsapp.source": "inbound_message",
-                  "channelConsent.whatsapp.lastUpdated": now,
-                  "channelConsent.whatsapp.timestamp": now,
-                  "channelConsent.whatsapp.unsubscribeAt": null,
-                },
-                $push: {
-                  optInHistory: {
-                    event: "opted_in",
-                    action: "opted_in",
-                    source: "inbound_message",
-                    method: "single",
-                    timestamp: now,
-                    note: "Re-opt-in via START/SUBSCRIBE keyword",
-                  },
-                },
-              }
-            ),
-            Conversation.updateOne(
-              { _id: convo._id },
-              {
-                $set: {
-                  botPaused: false,
-                  isBotPaused: false,
-                  botStatus: "active",
-                  status: "BOT_ACTIVE",
-                  requiresAttention: false,
-                },
-              }
-            ),
-            SuppressionList.deleteOne({ clientId: client.clientId, phone }),
-          ]);
-
-          lead.optStatus = "opted_in";
-          if (!lead.channelConsent) lead.channelConsent = {};
-          if (!lead.channelConsent.whatsapp) lead.channelConsent.whatsapp = {};
-          lead.channelConsent.whatsapp.status = "opted_in";
-          convo.botPaused = false;
-          convo.status = "BOT_ACTIVE";
-          convo.isBotPaused = false;
-          convo.botStatus = "active";
-
-          log.info(
-            `[DualBrain] Keyword re-opted-in for ${client.clientId}:${phone} (${inboundText})`
-          );
+          const reopt = await executeInboundReOptIn({
+            client,
+            phone,
+            lead,
+            convo,
+            source: 'inbound_message',
+            io,
+            silent: true,
+          });
+          if (reopt.success && !reopt.skipped) {
+            if (reopt.lead) lead = reopt.lead;
+            if (reopt.convo) convo = reopt.convo;
+            log.info(`[DualBrain] Silent re-opt-in for ${client.clientId}:${phone}`);
+          }
         } catch (reoptErr) {
           log.warn(
-            `[DualBrain] Auto re-opt-in failed for ${client.clientId}:${phone}: ${reoptErr.message}`
+            `[DualBrain] Silent re-opt-in failed for ${client.clientId}:${phone}: ${reoptErr.message}`
           );
         }
       }
     }
+
+    parsedMessage._wasOptedOutAtInbound = wasOptedOutAtInbound;
 
     // Resolve media IDs for live chat preview (image/video/audio/document/sticker)
     if (channel === 'whatsapp' && !parsedMessage.mediaUrl) {
@@ -1421,6 +1414,21 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // --- STEP 1b: KEYWORD TRIGGERS (canonical via keywordResolver) ---
   if (inboundText && !convo.botPaused) {
+    const { isLeadOptedOut, executeInboundReOptIn } = require('./inboundReOptInService');
+    if (isLeadOptedOut(lead)) {
+      const reopt = await executeInboundReOptIn({
+        client,
+        phone,
+        lead,
+        convo,
+        source: 'inbound_message',
+        io,
+        silent: true,
+      });
+      if (reopt.lead) lead = reopt.lead;
+      if (reopt.convo) convo = reopt.convo;
+    }
+
     let matchedTrigger = null;
     if (triggerMatch?.type === 'keyword') {
       matchedTrigger = triggerMatch.match;
@@ -1833,66 +1841,10 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  if (matchesOptInKeyword(userTextRaw)) {
-    const updatedLead = await AdLead.findOneAndUpdate(
-      { phoneNumber: phone, clientId: client.clientId },
-      {
-        $set: buildKeywordOptInSetFields(),
-        $push: {
-          optInHistory: buildKeywordOptInHistoryEntry(),
-        },
-      },
-      { new: true }
-    );
-    if (!updatedLead) {
-      log.warn(`[DualBrain] Keyword opt-in could not find lead for ${phone}`);
-      return true;
-    }
-    log.info(`✅ Opt-in detected for ${phone}. Resuming bot.`);
-
-    await Conversation.findByIdAndUpdate(convo._id, {
-      botPaused: false,
-      isBotPaused: false,
-      botStatus: 'active',
-      status: 'BOT_ACTIVE',
-    });
-    try {
-      const SuppressionList = require('../../models/SuppressionList');
-      const { phoneVariants } = require('./optOutKillSwitch');
-      await SuppressionList.deleteMany({
-        clientId: client.clientId,
-        phone: { $in: phoneVariants(phone) },
-      });
-    } catch (_) {}
-
-    try {
-      const { transitionLeadTags } = require('./leadTagOps');
-      await transitionLeadTags({
-        filter: { _id: updatedLead._id, clientId: client.clientId },
-        add: ['Opted In'],
-        remove: ['Opted Out'],
-      });
-    } catch (_) {}
-
-    // Broadcast update
-    if (io) {
-      const { broadcastConversationPatches } = require('./optOutKillSwitch');
-      await broadcastConversationPatches({
-        clientId: client.clientId,
-        phone,
-        patch: {
-          botPaused: false,
-          isBotPaused: false,
-          botStatus: 'active',
-          status: 'BOT_ACTIVE',
-        },
-        io,
-      });
-      io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone, optStatus: 'opted_in' });
-    }
-
+  if (matchesOptInKeyword(userTextRaw) && parsedMessage._wasOptedOutAtInbound) {
+    log.info(`✅ Explicit START/SUBSCRIBE re-opt-in confirmation for ${phone}.`);
     await sendWhatsAppText(client, phone, getOptInAutoReply(client), 'whatsapp', { complianceExempt: true });
-    return true; // Stop execution
+    // Continue processing — flow can run on same turn (Apex menu, etc.)
   }
 
   const userText = userTextLower;
@@ -1990,6 +1942,20 @@ async function runDualBrainEngine(parsedMessage, client) {
       resumeKeywords.test(t) &&
       convo.status !== "OPTED_OUT";
     if (canResumeFromHandoff || canResumeFromPausedBot) {
+      const { isLeadOptedOut, executeInboundReOptIn } = require('./inboundReOptInService');
+      if (isLeadOptedOut(lead)) {
+        const reopt = await executeInboundReOptIn({
+          client,
+          phone,
+          lead,
+          convo,
+          source: 'inbound_message',
+          io,
+          silent: true,
+        });
+        if (reopt.lead) lead = reopt.lead;
+        if (reopt.convo) convo = reopt.convo;
+      }
       log.info(`[DualBrain] Resuming bot for ${phone} (keyword: "${t}", handoff=${!!canResumeFromHandoff}, paused=${!!canResumeFromPausedBot})`);
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: {
@@ -2011,9 +1977,19 @@ async function runDualBrainEngine(parsedMessage, client) {
       convo.requiresAttention = false;
       convo.lastStepId = null;
     } else if (convo.status === "OPTED_OUT") {
-      log.info(`⏸️ Opted out for ${phone}. Skipping.`);
-      analyzeConversationIntelligence(client, phone, convo);
-      return true;
+      const { executeInboundReOptIn } = require('./inboundReOptInService');
+      const reopt = await executeInboundReOptIn({
+        client,
+        phone,
+        lead,
+        convo,
+        source: 'inbound_message',
+        io,
+        silent: true,
+      });
+      if (reopt.lead) lead = reopt.lead;
+      if (reopt.convo) convo = reopt.convo;
+      log.info(`[DualBrain] OPTED_OUT convo ${phone} — resumed after user re-engagement`);
     } else {
       log.info(`⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
       analyzeConversationIntelligence(client, phone, convo);
@@ -3637,21 +3613,28 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
-  // 2. Segment Node: CRM-based branching
+  // 2. Segment Node: Audience Hub segments + legacy preset rules
   if (node.type === 'segment') {
     const segments = node.data?.segments || [];
-    let selectedSegment = 'fallback';
+    const { leadMatchesAudienceSegment } = require('../../services/segmentMembership');
+    let selectedSegment = null;
 
     for (const seg of segments) {
+      if (seg.type === 'fallback') continue;
       let match = false;
-      const score = lead?.leadScore || 0;
-      const purchaseCount = lead?.ordersCount || 0;
-      const totalSpend = lead?.totalSpent || 0;
 
-      if (seg.type === 'vip' && score > 500) match = true;
-      else if (seg.type === 'returning' && purchaseCount > 1) match = true;
-      else if (seg.type === 'high_spend' && totalSpend > 5000) match = true;
-      else if (seg.type === 'new' && !purchaseCount) match = true;
+      if (seg.segmentId) {
+        match = await leadMatchesAudienceSegment(client.clientId, lead, seg.segmentId);
+      } else {
+        const score = lead?.leadScore || 0;
+        const purchaseCount = lead?.ordersCount || 0;
+        const totalSpend = lead?.totalSpent || 0;
+
+        if (seg.type === 'vip' && score > 500) match = true;
+        else if (seg.type === 'returning' && purchaseCount > 1) match = true;
+        else if (seg.type === 'high_spend' && totalSpend > 5000) match = true;
+        else if (seg.type === 'new' && !purchaseCount) match = true;
+      }
 
       if (match) {
         selectedSegment = seg.id;
@@ -3659,7 +3642,8 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     }
 
-    const handleId = selectedSegment || 'fallback';
+    const fallbackBranch = segments.find((s) => s.type === 'fallback');
+    const handleId = selectedSegment || fallbackBranch?.id || 'fallback';
     const nextEdge = flowEdges.find(
       (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === handleId
     );
@@ -3689,10 +3673,25 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // --- ENTERPRISE & COMMERCE NODES (Phase 3) ---
 
-  // 6. Payment Link Node
+  // 6. Payment Link Node — removed from product; skip legacy nodes
   if (node.type === 'payment_link') {
-    const { handleNodeAction } = require('../flow/nodeActions');
-    await handleNodeAction('GENERATE_PAYMENT', node, client, phone, convo, lead);
+    log.warn('[FlowEngine] payment_link node is deprecated — skipping', { nodeId, clientId: client.clientId });
+    const nextEdge = flowEdges.find((e) => e.source === nodeId);
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
+    return;
   }
 
   // 7. Order Action Node — with context validation for returns
@@ -4721,6 +4720,17 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       attentionReason: '🙋 Human support requested via flow',
       lastInteraction: new Date(),
     }));
+    const assigneeId = node.data?.assignedAgentId || node.data?.assigneeId;
+    if (assigneeId) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        assignedTo: assigneeId,
+        assignedAt: new Date(),
+        assignedBy: 'flow_handoff',
+      });
+      if (io) {
+        io.to(`client_${client.clientId}`).emit('agent_assigned', { phone, agentId: assigneeId });
+      }
+    }
     try {
       const { applyNeedHelpTag } = require('./needHelpTag');
       await applyNeedHelpTag(client.clientId, phone);
@@ -4953,7 +4963,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       }
       const clipped = safeBody.substring(0, 4096);
       const imgRaw = (data.imageUrl || '').trim();
-      const imgOk = imgRaw && /^https?:\/\//i.test(imgRaw);
+      const imgOk = data.sendImage && imgRaw && /^https?:\/\//i.test(imgRaw);
       if (imgOk) {
         await WhatsApp.sendImage(client, phone, imgRaw, clipped.substring(0, 1024));
       } else {
@@ -4964,9 +4974,9 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'interactive':
     case 'InteractiveNode': {
-      let body = data.text || data.body || 'Please Choose:';
+      let body = data.text || data.body || '';
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-      body = _sanitizeOutbound(body, "Please choose an option below.");
+      body = _sanitizeOutbound(body, body ? body : 'Please choose an option below.');
 
       if (data.btnUrlLink) {
         let interactive = {

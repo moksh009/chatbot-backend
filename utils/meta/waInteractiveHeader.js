@@ -12,13 +12,25 @@ function buildInteractiveHeaderFromNodeData(data) {
 
   const ht = String(data.listHeaderType || data.headerType || "").toLowerCase().trim();
   const img = sanitizeInteractiveImageUrl(
-    data.headerImageUrl || data.headerMediaUrl || data.imageUrl || ""
+    data.mediaUrl ||
+      data.headerImageUrl ||
+      data.headerMediaUrl ||
+      data.imageUrl ||
+      ""
   );
-  const vid = sanitizeInteractiveImageUrl(data.headerVideoUrl || "");
-  const doc = sanitizeInteractiveImageUrl(data.headerDocumentUrl || "");
-  const docNameRaw = String(data.headerDocumentFilename || "document.pdf").trim();
+  const vid = sanitizeInteractiveImageUrl(
+    data.mediaUrl || data.headerVideoUrl || ""
+  );
+  const doc = sanitizeInteractiveImageUrl(
+    data.mediaUrl || data.headerDocumentUrl || ""
+  );
+  const docNameRaw = String(
+    data.documentFilename || data.headerDocumentFilename || "document.pdf"
+  ).trim();
   const docName = docNameRaw.slice(0, 240) || "document.pdf";
-  const txt = String(data.header || data.listHeaderText || "").trim();
+  const txt = String(
+    data.headerText || data.header || data.listHeaderText || ""
+  ).trim();
 
   const imgSafe = img && !img.includes("{{");
   const vidSafe = vid && !vid.includes("{{");

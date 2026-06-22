@@ -53,6 +53,7 @@ describe('09 — STOP / global opt-out', () => {
 
     const updated = await AdLead.findOne({ clientId, phoneNumber: phone }).lean();
     assert.strictEqual(updated.optStatus, 'opted_out');
+    assert.strictEqual(updated.channelConsent?.whatsapp?.status, 'opted_out');
 
     const seq = await FollowUpSequence.findOne({ clientId, leadId: lead._id }).lean();
     assert.strictEqual(seq.status, 'cancelled');

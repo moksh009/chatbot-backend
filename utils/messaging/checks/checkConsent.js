@@ -18,7 +18,14 @@ function checkConsent({ contact, channel, intent, strictMode = true, complianceE
     return { pass: true, consentSnapshot: consent };
   }
 
+  const intentNorm = String(intent || 'service').toLowerCase();
+
   if (status === 'opted_out') {
+    // Service/session bot replies (flows, interactive menus, order help) are allowed.
+    // Marketing templates, campaigns, and cart-recovery promos stay blocked until re-engagement.
+    if (intentNorm === 'service' || intentNorm === 'transactional' || intentNorm === 'utility') {
+      return { pass: true, consentSnapshot: consent };
+    }
     return { ...blocked, reason: channel === 'email' ? 'email_opted_out' : 'recipient_opted_out' };
   }
 

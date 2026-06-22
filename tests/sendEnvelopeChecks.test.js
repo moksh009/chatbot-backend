@@ -18,11 +18,11 @@ async function run() {
   );
   assert.strictEqual(
     checkConsent({ contact: contactOut, channel: 'whatsapp', intent: 'transactional', strictMode: true }).pass,
-    false
+    true
   );
   assert.strictEqual(
     checkConsent({ contact: contactOut, channel: 'whatsapp', intent: 'service', strictMode: true }).pass,
-    false
+    true
   );
   assert.strictEqual(
     checkConsent({

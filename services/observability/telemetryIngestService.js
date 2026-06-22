@@ -172,43 +172,48 @@ async function ingestAnalyticsEvents(user, events = [], req = {}) {
   const sessionId = req.teSessionId || req.body?.sessionId;
   const userAgent = req.headers['user-agent'];
   const accepted = [];
+  const skipped = [];
 
   for (const ev of events.slice(0, 20)) {
     const kind = ev?.kind;
     if (!['page_view', 'feature_click', 'hub_tab_view', 'funnel_step'].includes(kind)) continue;
-    const result = await persistEvent({
-      clientId: user.clientId,
-      userId: user._id,
-      sessionId,
-      kind,
-      feature: ev.feature,
-      route: ev.route,
-      message: ev.message,
-      userAgent,
-      metadata: ev.metadata,
-    });
-    if (kind === 'feature_click' && result.inserted) {
-      try {
-        const DailyTenantUsageCost = require('../../models/DailyTenantUsageCost');
-        const feature = ev.feature || 'dashboard';
-        const action = ev.metadata?.action || 'feature_click';
-        const dateKey = new Date().toISOString().split('T')[0];
-        await DailyTenantUsageCost.findOneAndUpdate(
-          { clientId: user.clientId, date: dateKey },
-          {
-            $inc: { [`usage.${feature}.${action}`]: 1, [`usage.${feature}._total`]: 1 },
-            $set: { lastEventAt: new Date() },
-          },
-          { upsert: true }
-        );
-      } catch {
-        /* non-fatal */
+    try {
+      const result = await persistEvent({
+        clientId: user.clientId,
+        userId: user._id,
+        sessionId,
+        kind,
+        feature: ev.feature,
+        route: ev.route,
+        message: ev.message,
+        userAgent,
+        metadata: ev.metadata,
+      });
+      if (kind === 'feature_click' && result.inserted) {
+        try {
+          const DailyTenantUsageCost = require('../../models/DailyTenantUsageCost');
+          const feature = ev.feature || 'dashboard';
+          const action = ev.metadata?.action || 'feature_click';
+          const dateKey = new Date().toISOString().split('T')[0];
+          await DailyTenantUsageCost.findOneAndUpdate(
+            { clientId: user.clientId, date: dateKey },
+            {
+              $inc: { [`usage.${feature}.${action}`]: 1, [`usage.${feature}._total`]: 1 },
+              $set: { lastEventAt: new Date() },
+            },
+            { upsert: true }
+          );
+        } catch {
+          /* non-fatal */
+        }
       }
+      accepted.push({ kind, ...result });
+    } catch (e) {
+      skipped.push({ kind, reason: e.message });
     }
-    accepted.push({ kind, ...result });
   }
 
-  return { accepted };
+  return { accepted, skipped };
 }
 
 async function resolveFunnelState(clientId) {

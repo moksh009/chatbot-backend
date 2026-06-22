@@ -413,10 +413,14 @@ async function backfillKeyPreviewsIfNeeded(wallet) {
 }
 
 async function getWalletStatus(clientId) {
-  await syncLegacyKey(clientId);
+  try {
+    await syncLegacyKey(clientId);
+  } catch (err) {
+    console.warn('[getWalletStatus] syncLegacyKey skipped:', err?.message || err);
+  }
   let wallet = await AiWallet.findOne({ clientId });
   wallet = await backfillKeyPreviewsIfNeeded(wallet);
-  const sanitized = sanitizeWallet(wallet);
+  const sanitized = sanitizeWallet(wallet) || { clientId, mode: 'not_configured', anyConnected: false };
   const usage = await getUsageBreakdown(clientId);
   return { ...sanitized, usage };
 }

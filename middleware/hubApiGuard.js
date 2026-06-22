@@ -38,6 +38,7 @@ const EXEMPT_PREFIXES = [
   '/api/health',
   '/api/webhook',
   '/api/dashboard',
+  '/api/telemetry',
 ];
 
 function resolveHubSectionForApi(path) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const User = require('../models/User');
 const {
   ingestClientEvents,
@@ -49,6 +50,20 @@ function isSuperAdminUser(user) {
   return user?.role === 'SUPER_ADMIN';
 }
 
+/** Resolve tenant for telemetry — honors super-admin impersonation header. */
+function telemetryActor(req) {
+  if (!req.user?._id) return null;
+  const clientId = tenantClientId(req) || req.user.clientId;
+  if (!clientId) return null;
+  return {
+    _id: req.user._id,
+    id: req.user.id || String(req.user._id),
+    clientId,
+    role: req.user.role,
+    telemetryConsent: req.user.telemetryConsent,
+  };
+}
+
 /** Merchants only need sessionId for cookie fallback — analytics fields are admin-only. */
 function sanitizeSessionPayload(user, meta = {}) {
   const base = {
@@ -72,7 +87,8 @@ const telemetryLimiter = rateLimit({
 
 async function handleSessionTouch(req, res, { lightPing = false } = {}) {
   try {
-    if (!req.user?.clientId) {
+    const actor = telemetryActor(req);
+    if (!actor?.clientId) {
       return res.json({
         success: true,
         skipped: true,
@@ -84,11 +100,11 @@ async function handleSessionTouch(req, res, { lightPing = false } = {}) {
     const analyticsConsent =
       req.body?.analyticsConsent === true
         ? 'analytics'
-        : req.user?.telemetryConsent || '';
+        : actor.telemetryConsent || '';
 
     const meta = await touchOrCreateSession({
       sessionId: req.teSessionId,
-      user: req.user,
+      user: actor,
       req,
       analyticsConsent,
       refreshCookie: true,
@@ -148,6 +164,17 @@ router.get('/session', protect, telemetryLimiter, async (req, res) => {
 
 router.post('/events', protect, telemetryLimiter, async (req, res) => {
   try {
+    const actor = telemetryActor(req);
+    if (!actor?.clientId) {
+      return res.json({
+        success: true,
+        skipped: true,
+        reason: 'no_tenant_context',
+        essential: { accepted: [], skipped: [] },
+        analytics: { accepted: [] },
+      });
+    }
+
     attachSessionId(req);
     const events = Array.isArray(req.body?.events) ? req.body.events : [];
     if (!events.length) {
@@ -155,11 +182,11 @@ router.post('/events', protect, telemetryLimiter, async (req, res) => {
     }
 
     const analyticsConsent = req.body?.analyticsConsent === true;
-    const essential = await ingestClientEvents(req.user, events, req);
+    const essential = await ingestClientEvents(actor, events, req);
 
-    let analytics = { accepted: [] };
+    let analytics = { accepted: [], skipped: [] };
     if (analyticsConsent) {
-      analytics = await ingestAnalyticsEvents(req.user, events, req);
+      analytics = await ingestAnalyticsEvents(actor, events, req);
     }
 
     if (req.teSessionId) {

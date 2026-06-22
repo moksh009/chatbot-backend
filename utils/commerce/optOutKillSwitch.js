@@ -81,6 +81,11 @@ async function executeGlobalOptOut({
     optOutSource: source,
     optOutReason: source,
     whatsappMarketingEligible: false,
+    'channelConsent.whatsapp.status': 'opted_out',
+    'channelConsent.whatsapp.source': source === 'keyword_stop' ? 'stop_keyword' : source,
+    'channelConsent.whatsapp.timestamp': now,
+    'channelConsent.whatsapp.lastUpdated': now,
+    'channelConsent.whatsapp.unsubscribeAt': now,
   };
   if (keyword) leadUpdate.optOutKeyword = keyword;
   if (email) leadUpdate.email = String(email).toLowerCase();
