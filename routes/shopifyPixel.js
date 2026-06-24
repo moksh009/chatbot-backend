@@ -22,6 +22,13 @@ const {
   getCheckoutOptInInstallStatus,
 } = require('../utils/shopify/checkoutConsentExtension');
 const { getActiveVisitorCount } = require('../utils/commerce/pixelActiveVisitors');
+const {
+  buildCheckoutFunnelMetrics,
+  buildRetargetingAudienceMetrics,
+  enrichRetargetingDisplay,
+} = require('../utils/commerce/storefrontPixelMetrics');
+const { resolvePixelEventUrl } = require('../utils/commerce/pixelEventUrlUtils');
+const { backfillDerivedProductViews } = require('../utils/commerce/productViewDerivation');
 
 /** Empty — bypass disabled so dashboard status + install reflect real web pixel registration. */
 const PIXEL_STATUS_BYPASS_CLIENTS = new Set([]);
@@ -158,6 +165,7 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
     const { clientId } = req.params;
     const { eventName, url, sessionId, metadata, shopifyClientId, visitorId, email, phone } =
       req.body;
+    const resolvedUrl = resolvePixelEventUrl({ url, metadata, pathname: metadata?.pathname }, {});
     const eventData = {
       ...(metadata && typeof metadata === 'object' ? metadata : {}),
       ...(email ? { email } : {}),
@@ -173,7 +181,7 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, pixelRateLimiter, asy
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
       data: eventData,
-      url,
+      url: resolvedUrl,
       sessionId,
       visitorId: visitorId || readCookie(req, 'te_visitor_id'),
       shopifyClientId,
@@ -285,7 +293,59 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
         }).catch(function() {});
     }
 
-    sendEvent("page_view");
+    function productHandleFromPath(pathname) {
+        if (!pathname || pathname.indexOf("/products/") === -1) return null;
+        var parts = pathname.split("/products/");
+        if (!parts[1]) return null;
+        var handle = parts[1].split("/")[0].split("?")[0];
+        try { handle = decodeURIComponent(handle); } catch (e) {}
+        return handle || null;
+    }
+
+    var TE_LAST_TRACKED_PATH = null;
+    var TE_LAST_PRODUCT_VIEW = {};
+    var TE_PRODUCT_DEDUPE_MS = 30000;
+
+    function trackPageAndProduct(navSource) {
+        var href = window.location.href;
+        var path = window.location.pathname;
+        if (TE_LAST_TRACKED_PATH === path) return;
+        TE_LAST_TRACKED_PATH = path;
+        sendEvent("page_view", { url: href, navigationSource: navSource || "load" });
+        var handle = productHandleFromPath(path);
+        if (!handle) return;
+        var now = Date.now();
+        var last = TE_LAST_PRODUCT_VIEW[handle] || 0;
+        if (now - last < TE_PRODUCT_DEDUPE_MS) return;
+        TE_LAST_PRODUCT_VIEW[handle] = now;
+        sendEvent("product_view", {
+            url: href,
+            product: { handle: handle },
+            derivedFrom: navSource || "url",
+        });
+    }
+
+    trackPageAndProduct("load");
+
+    function hookHistoryNavigation() {
+        var pushState = history.pushState;
+        var replaceState = history.replaceState;
+        history.pushState = function() {
+            pushState.apply(history, arguments);
+            TE_LAST_TRACKED_PATH = null;
+            trackPageAndProduct("spa");
+        };
+        history.replaceState = function() {
+            replaceState.apply(history, arguments);
+            TE_LAST_TRACKED_PATH = null;
+            trackPageAndProduct("spa");
+        };
+        window.addEventListener("popstate", function() {
+            TE_LAST_TRACKED_PATH = null;
+            trackPageAndProduct("popstate");
+        });
+    }
+    hookHistoryNavigation();
 
     if (window.Shopify && window.Shopify.checkout) {
         const eventName = window.location.pathname.includes("thank_you") ? "checkout_completed" : "checkout_started";
@@ -370,7 +430,20 @@ router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) =
             if (url && (url.includes("/cart/add.js") || url.includes("/cart/add") || url.includes("/cart/update"))) {
                 response.clone().json().then(function(data) {
                     localStorage.setItem("te_pixel_has_cart", "1");
-                    sendEvent("product_added_to_cart", { product: data, hasCartContext: true });
+                    var item = (data && data.items && data.items[0]) ? data.items[0] : data;
+                    if (!item) return;
+                    sendEvent("product_added_to_cart", {
+                        product: {
+                            productId: item.product_id || item.id,
+                            variantId: item.variant_id,
+                            title: item.title || item.product_title,
+                            handle: item.handle,
+                            price: item.price,
+                            image: item.image,
+                            quantity: item.quantity || 1
+                        },
+                        hasCartContext: true
+                    });
                 }).catch(function() {});
             }
             return response;
@@ -566,8 +639,27 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
       message = 'Checkout pixel registered.';
     }
 
+    await Client.updateOne({ clientId }, { $set: { shopifyTrackingDisabled: false } });
+
+    setImmediate(() => {
+      backfillDerivedProductViews(clientId, 30).catch(() => {});
+    });
+
+    const freshClient = await Client.findOne({ clientId })
+      .select('shopifyWebPixelId shopifyWebPixelInstalledAt shopifyThemePixelInstalledAt')
+      .lean();
+    const isInstalledNow = Boolean(
+      freshClient?.shopifyWebPixelId ||
+        freshClient?.shopifyWebPixelInstalledAt ||
+        freshClient?.shopifyThemePixelInstalledAt ||
+        themeInject?.success ||
+        webPixel?.success
+    );
+
     res.json({
       success: true,
+      isInstalled: isInstalledNow,
+      connectionState: isInstalledNow ? 'connected' : 'not_connected',
       action: webPixel?.action || (themeInject?.success ? 'theme_injected' : 'unknown'),
       themeInjected: themeInject?.success === true,
       webPixelRegistered: webPixel?.success === true,
@@ -614,70 +706,6 @@ router.post('/pixel/:clientId/checkout-opt-in/sync', protect, async (req, res) =
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-async function buildCheckoutFunnelMetrics(clientId, since) {
-  const [
-    pageViews,
-    addToCart,
-    checkoutStarted,
-    contactIdentified,
-    abandoned,
-    recovered,
-  ] = await Promise.all([
-    PixelEvent.countDocuments({
-      clientId,
-      eventName: 'page_view',
-      timestamp: { $gte: since },
-    }),
-    PixelEvent.countDocuments({
-      clientId,
-      eventName: { $in: ['product_added_to_cart', 'add_to_cart'] },
-      timestamp: { $gte: since },
-    }),
-    PixelEvent.countDocuments({
-      clientId,
-      eventName: 'checkout_started',
-      timestamp: { $gte: since },
-    }),
-    PixelEvent.countDocuments({
-      clientId,
-      eventName: {
-        $in: ['checkout_contact_identified', 'checkout_contact_info_submitted', 'contact_identified'],
-      },
-      timestamp: { $gte: since },
-    }),
-    AdLead.countDocuments({
-      clientId,
-      cartStatus: { $in: ['abandoned', 'active'] },
-      cartAbandonedAt: { $gte: since },
-    }),
-    AdLead.countDocuments({
-      clientId,
-      $or: [
-        { cartStatus: 'recovered' },
-        { cartStatus: 'purchased', abandonedCartRecoveredAt: { $exists: true, $gte: since } },
-      ],
-      updatedAt: { $gte: since },
-    }),
-  ]);
-
-  const conversionRate =
-    checkoutStarted > 0
-      ? Math.min(100, Math.round((contactIdentified / checkoutStarted) * 100))
-      : pageViews > 0
-        ? Math.min(100, Math.round((contactIdentified / pageViews) * 100))
-        : 0;
-
-  return {
-    pageViews,
-    addToCart,
-    checkoutStarted,
-    contactIdentified,
-    abandoned,
-    recovered,
-    conversionRate,
-  };
-}
 
 async function buildCartCaptureLeads(clientId, since) {
   const leads = await AdLead.find({
@@ -805,55 +833,62 @@ async function buildPixelStatusPayload(clientId, req) {
   const scriptTag = buildScriptTag(clientId, backendUrl);
   const checkoutPixelSnippet = generateWebPixelScript(clientId, backendUrl);
   const bypassShopifyChecks = shouldBypassShopifyPixelChecks(clientId);
+  const { resolveTrackingInstallStatus } = require('../utils/commerce/trackingInstallStatus');
+  const trackingStatus = await resolveTrackingInstallStatus(clientId);
 
-  const clientDoc = await Client.findOne({ clientId })
+  let clientDoc = await Client.findOne({ clientId })
     .select(
       'shopifyThemePixelInstalledAt shopifyWebPixelId shopifyWebPixelInstalledAt shopDomain shopifyTrackingDisabled'
     )
     .lean();
+  let clientSnapshot = clientDoc;
 
-  if (clientDoc?.shopifyTrackingDisabled) {
+  if (trackingStatus.trackingDisabled) {
     return {
-      success: true,
-      connectionState: 'not_connected',
-      isInstalled: false,
-      isActive: false,
-      eventsLive: false,
-      trackingDisabled: true,
-      themeInjected: false,
-      themeScriptVerified: false,
-      webPixelRegistered: false,
-      webPixelOnShopify: false,
-      bypassMode: bypassShopifyChecks,
-      requiresCheckoutPixel: bypassShopifyChecks,
-      eventsPerMinute: 0,
-      lastEventAt: null,
-      lastEventName: null,
-      totalEvents: 0,
-      eventBreakdown: [],
-      recentEvents: [],
-      anonymousActivity: [],
-      backendUrl,
-      scriptTag,
-      checkoutPixelSnippet,
-      checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
-      shopDomain: clientDoc?.shopDomain || null,
-      captureLayers: [],
-      trackingHealth: null,
-      checkoutFunnel: null,
-      activeVisitorCount: 0,
-      identifiedLeads24h: [],
-      cartCaptureLeads: [],
-      statusHint: 'Tracking disconnected. Click one-click install to reconnect storefront + checkout capture.',
+        success: true,
+        connectionState: 'not_connected',
+        isInstalled: false,
+        isActive: false,
+        eventsLive: false,
+        trackingDisabled: true,
+        themeInjected: false,
+        themeScriptVerified: false,
+        webPixelRegistered: false,
+        webPixelOnShopify: false,
+        bypassMode: bypassShopifyChecks,
+        requiresCheckoutPixel: bypassShopifyChecks,
+        eventsPerMinute: 0,
+        lastEventAt: null,
+        lastEventName: null,
+        totalEvents: 0,
+        eventBreakdown: [],
+        recentEvents: [],
+        anonymousActivity: [],
+        backendUrl,
+        scriptTag,
+        checkoutPixelSnippet,
+        checkoutPixelSteps: CHECKOUT_PIXEL_STEPS,
+        shopDomain: clientSnapshot?.shopDomain || null,
+        captureLayers: [],
+        trackingHealth: null,
+        checkoutFunnel: null,
+        retargetingAudiences: null,
+        activeVisitorCount: 0,
+        identifiedLeads24h: [],
+        cartCaptureLeads: [],
+        statusHint:
+          'Tracking disconnected. Click one-click install to reconnect storefront + checkout capture.',
     };
   }
+
+  clientDoc = clientSnapshot;
 
   const fiveMinutesAgo = moment().subtract(5, 'minutes').toDate();
   const fifteenMinutesAgo = moment().subtract(15, 'minutes').toDate();
   const thirtyDaysAgo = moment().subtract(30, 'days').toDate();
   const sevenDaysAgo = moment().subtract(7, 'days').toDate();
 
-  const [count, lastEvent, eventBreakdown, recentEvents, anonymousCartEvents] = await Promise.all([
+  const [count, lastEvent, eventBreakdown, recentEvents, browsingEvents] = await Promise.all([
     PixelEvent.countDocuments({
       clientId,
       timestamp: { $gte: fiveMinutesAgo },
@@ -872,20 +907,21 @@ async function buildPixelStatusPayload(clientId, req) {
       .lean(),
     PixelEvent.find({
       clientId,
-      leadId: null,
+      timestamp: { $gte: sevenDaysAgo },
       eventName: {
         $in: [
           'page_view',
+          'product_view',
           'product_added_to_cart',
+          'add_to_cart',
           'checkout_started',
           'contact_identified',
           'checkout_contact_identified',
         ],
       },
-      timestamp: { $gte: sevenDaysAgo },
     })
       .sort({ timestamp: -1 })
-      .limit(40)
+      .limit(120)
       .select('eventName timestamp url sessionId metadata')
       .lean(),
   ]);
@@ -938,14 +974,21 @@ async function buildPixelStatusPayload(clientId, req) {
   const totalEventsLast30d = eventBreakdown.reduce((sum, row) => sum + (row.count || 0), 0);
   const themeActuallyReady =
     themeScriptVerified || eventsLive || themeMarkedInstalled || health?.storefrontActive;
-  const isInstalled =
-    !webPixelScopeMissing &&
-    (themeMarkedInstalled ||
-      webPixelRegistered ||
+  const hasDbRegistration = Boolean(
+    clientDoc?.shopifyWebPixelId ||
+      clientDoc?.shopifyWebPixelInstalledAt ||
+      clientDoc?.shopifyThemePixelInstalledAt
+  );
+  const isInstalled = Boolean(
+    hasDbRegistration ||
       webPixelOnShopify ||
-      totalEventsLast30d > 0 ||
-      health?.storefrontActive ||
-      themeActuallyReady);
+      (!webPixelScopeMissing &&
+        (themeMarkedInstalled ||
+          webPixelRegistered ||
+          totalEventsLast30d > 0 ||
+          health?.storefrontActive ||
+          themeActuallyReady))
+  );
   const connectionState = eventsLive
     ? 'live'
     : isInstalled
@@ -953,8 +996,20 @@ async function buildPixelStatusPayload(clientId, req) {
       : 'not_connected';
 
   const sessionsMap = new Map();
-  for (const ev of anonymousCartEvents) {
-    const sid = ev.sessionId || ev.metadata?.visitorId || 'unknown';
+  const CONTACT_EVENTS = new Set([
+    'contact_identified',
+    'checkout_contact_identified',
+    'checkout_contact_info_submitted',
+  ]);
+  const ATC_EVENTS = new Set(['product_added_to_cart', 'add_to_cart']);
+
+  for (const ev of browsingEvents) {
+    const sid =
+      (ev.sessionId && String(ev.sessionId).trim()) ||
+      (ev.metadata?.visitorId && String(ev.metadata.visitorId).trim()) ||
+      null;
+    if (!sid) continue;
+
     if (!sessionsMap.has(sid)) {
       sessionsMap.set(sid, {
         sessionId: sid,
@@ -963,6 +1018,7 @@ async function buildPixelStatusPayload(clientId, req) {
         lastUrl: ev.url || null,
         hasCart: false,
         hasContact: false,
+        hasPageView: false,
         eventCount: 0,
       });
     }
@@ -973,16 +1029,19 @@ async function buildPixelStatusPayload(clientId, req) {
       session.lastEventName = ev.eventName;
       session.lastUrl = ev.url || session.lastUrl;
     }
-    if (ev.eventName === 'product_added_to_cart') session.hasCart = true;
-    if (['contact_identified', 'checkout_contact_identified'].includes(ev.eventName)) {
-      session.hasContact = true;
-    }
+    if (ATC_EVENTS.has(ev.eventName)) session.hasCart = true;
+    if (ev.eventName === 'page_view') session.hasPageView = true;
+    if (CONTACT_EVENTS.has(ev.eventName)) session.hasContact = true;
   }
-  const anonymousActivity = Array.from(sessionsMap.values()).slice(0, 8);
+
+  const anonymousActivity = Array.from(sessionsMap.values())
+    .filter((s) => !s.hasContact && (s.hasPageView || s.hasCart))
+    .sort((a, b) => new Date(b.lastEventAt) - new Date(a.lastEventAt))
+    .slice(0, 8);
 
   const twentyFourHoursAgo = moment().subtract(24, 'hours').toDate();
 
-  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent, lastCheckoutContactEvent, checkoutFunnel, activeVisitorCount, identifiedLeadDocs, cartCaptureLeads] =
+  const [lastWebhookLead, lastLiveExtensionEvent, lastLiveThemeEvent, lastCheckoutContactEvent, checkoutFunnel, retargetingAudiences, activeVisitorCount, identifiedLeadDocs, cartCaptureLeads] =
     await Promise.all([
       AdLead.findOne({ clientId, checkoutInitiatedCount: { $gt: 0 } })
         .sort({ lastCartEventAt: -1 })
@@ -1014,6 +1073,7 @@ async function buildPixelStatusPayload(clientId, req) {
         .select('timestamp metadata')
         .lean(),
       buildCheckoutFunnelMetrics(clientId, thirtyDaysAgo),
+      buildRetargetingAudienceMetrics(clientId, thirtyDaysAgo),
       getActiveVisitorCount(clientId),
       AdLead.find({
         clientId,
@@ -1106,11 +1166,8 @@ async function buildPixelStatusPayload(clientId, req) {
   } else if (bypassShopifyChecks && !themeActuallyReady) {
     storefrontHint =
       'Bypass mode: install the theme script and checkout custom pixel to start receiving signals.';
-  } else if (eventsLive) {
-    storefrontHint = 'Receiving storefront signals.';
-  } else if (isInstalled) {
-    storefrontHint =
-      'Tracking connected — visit your storefront to confirm live signals.';
+  } else if (eventsLive || isInstalled) {
+    storefrontHint = '';
   } else {
     storefrontHint = 'Click one-click install to register storefront + checkout tracking.';
   }
@@ -1158,6 +1215,7 @@ async function buildPixelStatusPayload(clientId, req) {
     trackingHealth: health,
     captureLayers,
     checkoutFunnel,
+    retargetingAudiences: enrichRetargetingDisplay(retargetingAudiences, checkoutFunnel),
     activeVisitorCount: activeVisitorCount || 0,
     identifiedLeads24h,
     cartCaptureLeads,

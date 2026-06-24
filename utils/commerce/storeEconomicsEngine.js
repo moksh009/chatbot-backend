@@ -204,13 +204,13 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
 
   const waterfall = [
     { label: 'Gross Revenue', value: totalGrossRevenue, type: 'positive' },
-    { label: 'COGS', value: -totalCogs, type: 'negative' },
-    { label: 'CAC', value: -totalCac, type: 'negative' },
+    { label: 'Product costs', value: -totalCogs, type: 'negative' },
+    { label: 'Marketing (CAC)', value: -totalCac, type: 'negative' },
     { label: 'Packaging', value: -totalPackagingCost, type: 'negative' },
-    { label: 'Shipping', value: -totalShippingCost, type: 'negative' },
-    { label: 'RTO Losses', value: -totalRtoLoss, type: 'negative' },
-    { label: 'Gateway & Shopify Fees', value: -totalGatewayAndShopifyFees, type: 'negative' },
-    { label: 'Fixed Overheads', value: -totalFixedOverheads, type: 'negative' },
+    { label: 'Delivery', value: -totalShippingCost, type: 'negative' },
+    { label: 'Return losses (RTO)', value: -totalRtoLoss, type: 'negative' },
+    { label: 'Payment & Shopify fees', value: -totalGatewayAndShopifyFees, type: 'negative' },
+    { label: 'Fixed costs', value: -totalFixedOverheads, type: 'negative' },
   ];
 
   if (config.gstEnabled && config.gstRate > 0) {
@@ -264,13 +264,13 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
   // Cost composition for donut chart (percentage of total costs)
   const totalCosts = totalCogs + totalPackagingCost + totalShippingCost + totalRtoLoss + totalGatewayAndShopifyFees + totalCac + totalFixedOverheads;
   const costComposition = totalCosts > 0 ? [
-    { name: 'COGS', value: Math.round((totalCogs / totalCosts) * 10000) / 100 },
+    { name: 'Product costs', value: Math.round((totalCogs / totalCosts) * 10000) / 100 },
     { name: 'Packaging', value: Math.round((totalPackagingCost / totalCosts) * 10000) / 100 },
-    { name: 'Shipping', value: Math.round((totalShippingCost / totalCosts) * 10000) / 100 },
-    { name: 'RTO Losses', value: Math.round((totalRtoLoss / totalCosts) * 10000) / 100 },
-    { name: 'Gateway Fees', value: Math.round((totalGatewayAndShopifyFees / totalCosts) * 10000) / 100 },
-    { name: 'CAC', value: Math.round((totalCac / totalCosts) * 10000) / 100 },
-    { name: 'Fixed Overheads', value: Math.round((totalFixedOverheads / totalCosts) * 10000) / 100 }
+    { name: 'Delivery', value: Math.round((totalShippingCost / totalCosts) * 10000) / 100 },
+    { name: 'Return losses', value: Math.round((totalRtoLoss / totalCosts) * 10000) / 100 },
+    { name: 'Payment fees', value: Math.round((totalGatewayAndShopifyFees / totalCosts) * 10000) / 100 },
+    { name: 'Marketing', value: Math.round((totalCac / totalCosts) * 10000) / 100 },
+    { name: 'Fixed costs', value: Math.round((totalFixedOverheads / totalCosts) * 10000) / 100 }
   ] : [];
 
   return {
@@ -402,10 +402,10 @@ function determinePrimaryCostDriver(product, config) {
     : (product.packagingCost || 0);
 
   const components = {
-    'High CAC': config.cacPerCustomer || 0,
-    'High Packaging': effectivePackaging,
-    'High Shipping': config.deliveryCostPerOrder || 0,
-    'Low Margin': Math.max(0, product.sellingPrice - (product.cogs || 0) - (product.netProfit || 0)) // Just using relative weight
+    'High ad spend': config.cacPerCustomer || 0,
+    'High packaging': effectivePackaging,
+    'High delivery': config.deliveryCostPerOrder || 0,
+    'Thin product margin': Math.max(0, product.sellingPrice - (product.cogs || 0) - (product.netProfit || 0))
   };
 
   return Object.entries(components).sort((a, b) => b[1] - a[1])[0][0];

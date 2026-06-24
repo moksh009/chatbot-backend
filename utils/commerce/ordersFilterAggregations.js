@@ -123,6 +123,7 @@ async function getOrdersByStateInRange(clientId, startDate, endDate) {
     {
       $project: {
         shippingAddress: 1,
+        billingAddress: 1,
         state: 1,
         address: 1,
         city: 1,
@@ -132,12 +133,37 @@ async function getOrdersByStateInRange(clientId, startDate, endDate) {
     {
       $group: {
         _id: {
-          province: { $ifNull: ['$shippingAddress.province', ''] },
-          provinceCode: { $ifNull: ['$shippingAddress.province_code', ''] },
-          shipState: { $ifNull: ['$shippingAddress.state', ''] },
+          province: {
+            $ifNull: [
+              '$shippingAddress.province',
+              { $ifNull: ['$billingAddress.province', ''] },
+            ],
+          },
+          provinceCode: {
+            $ifNull: [
+              '$shippingAddress.province_code',
+              { $ifNull: ['$billingAddress.province_code', ''] },
+            ],
+          },
+          shipState: {
+            $ifNull: [
+              '$shippingAddress.state',
+              { $ifNull: ['$billingAddress.state', '$state', ''] },
+            ],
+          },
           topState: { $ifNull: ['$state', ''] },
-          city: { $ifNull: ['$shippingAddress.city', '$city', ''] },
-          address1: { $ifNull: ['$shippingAddress.address1', '$address', ''] },
+          city: {
+            $ifNull: [
+              '$shippingAddress.city',
+              { $ifNull: ['$billingAddress.city', '$city', ''] },
+            ],
+          },
+          address1: {
+            $ifNull: [
+              '$shippingAddress.address1',
+              { $ifNull: ['$billingAddress.address1', '$address', ''] },
+            ],
+          },
         },
         orderCount: { $sum: 1 },
         totalRevenue: { $sum: '$totalPrice' },
@@ -165,6 +191,107 @@ async function getOrdersByStateInRange(clientId, startDate, endDate) {
   }
 
   return Object.values(stateMap).sort((a, b) => b.orderCount - a.orderCount);
+}
+
+function normalizeCityLabel(raw) {
+  const city = String(raw || '').trim();
+  if (!city) return null;
+  return city
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * City distribution for a date window — shipping city + normalized state label.
+ */
+async function getOrdersByCityInRange(clientId, startDate, endDate) {
+  const match = { clientId };
+  if (startDate || endDate) {
+    match.createdAt = {};
+    if (startDate) match.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      match.createdAt.$lte = end;
+    }
+  }
+
+  const buckets = await Order.aggregate([
+    { $match: match },
+    {
+      $project: {
+        shippingAddress: 1,
+        billingAddress: 1,
+        state: 1,
+        address: 1,
+        city: 1,
+        totalPrice: { $ifNull: ['$totalPrice', '$amount', 0] },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          city: {
+            $ifNull: [
+              '$shippingAddress.city',
+              { $ifNull: ['$billingAddress.city', '$city', ''] },
+            ],
+          },
+          province: {
+            $ifNull: [
+              '$shippingAddress.province',
+              { $ifNull: ['$billingAddress.province', ''] },
+            ],
+          },
+          provinceCode: {
+            $ifNull: [
+              '$shippingAddress.province_code',
+              { $ifNull: ['$billingAddress.province_code', ''] },
+            ],
+          },
+          shipState: {
+            $ifNull: [
+              '$shippingAddress.state',
+              { $ifNull: ['$billingAddress.state', '$state', ''] },
+            ],
+          },
+          topState: { $ifNull: ['$state', ''] },
+          address1: {
+            $ifNull: [
+              '$shippingAddress.address1',
+              { $ifNull: ['$billingAddress.address1', '$address', ''] },
+            ],
+          },
+        },
+        orderCount: { $sum: 1 },
+        totalRevenue: { $sum: '$totalPrice' },
+      },
+    },
+  ]);
+
+  const cityMap = {};
+  for (const row of buckets) {
+    const id = row._id || {};
+    const city = normalizeCityLabel(id.city);
+    if (!city) continue;
+    const state =
+      extractStateFromAddress({
+        province: id.province,
+        province_code: id.provinceCode,
+        state: id.shipState || id.topState,
+        city: id.city,
+        address1: id.address1,
+      }) ||
+      extractStateFromAddress(id.topState) ||
+      'Unknown';
+    const key = `${city}|${state}`;
+    if (!cityMap[key]) cityMap[key] = { city, state, orderCount: 0, totalRevenue: 0 };
+    cityMap[key].orderCount += row.orderCount || 0;
+    cityMap[key].totalRevenue += Number(row.totalRevenue) || 0;
+  }
+
+  return Object.values(cityMap).sort((a, b) => b.orderCount - a.orderCount);
 }
 
 /** COD vs prepaid from synced Mongo orders (matches Orders list). */
@@ -247,6 +374,7 @@ module.exports = {
   getDistinctOrderProducts,
   getDistinctOrderStates,
   getOrdersByStateInRange,
+  getOrdersByCityInRange,
   getPaymentMethodSplitInRange,
   getAllCatalogProductsForFilter,
 };

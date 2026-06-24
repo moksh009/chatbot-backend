@@ -18,6 +18,7 @@ const PixelEventSchema = new mongoose.Schema({
             'contact',
             'contact_identified',
             'search',
+            'exit_intent',
         ],
         required: true
     },

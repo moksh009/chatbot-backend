@@ -7,6 +7,7 @@ const log = require('../core/logger')('AttachAnonymousJourney');
 
 const JOURNEY_EVENT_LABELS = {
   page_view: 'Viewed page',
+  product_view: 'Viewed product',
   product_added_to_cart: 'Added to cart',
   add_to_cart: 'Added to cart',
   checkout_started: 'Started checkout',
@@ -29,6 +30,9 @@ function formatJourneyLogEntry(ev) {
   const base = JOURNEY_EVENT_LABELS[ev.eventName] || ev.eventName?.replace(/_/g, ' ') || 'Store event';
   const meta = ev.metadata || {};
   let product = meta.product?.title || meta.product?.name;
+  if (!product && ev.eventName === 'product_view' && meta.product?.handle) {
+    product = String(meta.product.handle).replace(/-/g, ' ');
+  }
   const path = humanizeUrl(ev.url);
 
   if (!product && ev.eventName === 'page_view' && ev.url && ev.url.includes('/products/')) {

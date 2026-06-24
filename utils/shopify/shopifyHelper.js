@@ -326,9 +326,61 @@ async function refreshShopifyToken(client) {
   }
 }
 
+/**
+ * Execute a Shopify Admin GraphQL query with the same auth + retry guarantees as withShopifyRetry.
+ * @param {string} clientId
+ * @param {string} query - GraphQL query string
+ * @param {object} variables - GraphQL variables
+ * @returns {Promise<object>} - parsed GraphQL data object
+ */
+async function withShopifyGraphQL(clientId, query, variables = {}) {
+  return shopifyBreaker.call(async () => {
+    const timer = createTimer('Shopify.withShopifyGraphQL', clientId);
+    try {
+      const clientRecord = await getCachedClient(clientId, SHOPIFY_CLIENT_SELECT);
+      if (!clientRecord) throw new Error('Client not found');
+
+      const creds = resolveShopifyCredentials(clientRecord);
+      const token = creds.tokenPlain;
+      const domain = creds.shopDomain;
+      const apiVersion = clientRecord.shopifyApiVersion || shopifyAdminApiVersion;
+
+      if (!token || !domain) throw new Error('Shopify credentials incomplete');
+
+      const https = require('https');
+      const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20 });
+
+      const response = await axios.post(
+        `https://${domain}/admin/api/${apiVersion}/graphql.json`,
+        { query, variables },
+        {
+          timeout: 12000,
+          httpsAgent,
+          headers: {
+            'X-Shopify-Access-Token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const body = response.data;
+      if (body.errors && body.errors.length > 0) {
+        const msg = body.errors.map((e) => e.message).join('; ');
+        throw new Error(`Shopify GraphQL error: ${msg}`);
+      }
+      timer.finish('success');
+      return body.data;
+    } catch (err) {
+      timer.finish(`error: ${err.message}`);
+      throw err;
+    }
+  });
+}
+
 module.exports = {
     getShopifyClient,
     withShopifyRetry,
+    withShopifyGraphQL,
     refreshShopifyToken,
     injectPixelScript: async (clientId, backendUrl) => {
         return await withShopifyRetry(clientId, async (shop) => {

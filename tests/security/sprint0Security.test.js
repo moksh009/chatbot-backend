@@ -259,6 +259,15 @@ function testAdminWebhookUsesTenantClientId() {
   assert.ok(block.includes('tenantClientId(req)'));
 }
 
+function testWinningProductsTenantScoped() {
+  const src = read('routes/winningProducts.js');
+  assert.ok(src.includes("router.get('/workspace', protect"));
+  assert.ok(src.includes('assertTenant(req, res, clientId)'));
+  assert.ok(src.includes('MetaAudienceQueue.find({ clientId'));
+  assert.ok(src.includes('invalidateWinningProductsCache'));
+  assert.ok(!src.includes('req.user.clientId') || src.includes("req.user?.clientId !== clientId"));
+}
+
 async function main() {
   testSocketAuthModule();
   testSocketJsUsesJwtAuth();
@@ -283,6 +292,7 @@ async function main() {
   testBillingInvoicesTenantScoped();
   testSupportModuleLoads();
   testAdminWebhookUsesTenantClientId();
+  testWinningProductsTenantScoped();
   console.log('? sprint0Security tests passed');
 }
 

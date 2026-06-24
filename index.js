@@ -332,7 +332,11 @@ app.use('/api/shopify', shopifyRoutes);       // Then param-based /:clientId/* r
 const shopifyHubRoutes = require('./routes/shopifyHub');
 app.use('/api/shopify-hub', shopifyHubRoutes);
 const commerceHealthRoutes = require('./routes/commerceHealth');
+const productInsightsRoutes = require('./routes/productInsights');
 app.use('/api/commerce', commerceHealthRoutes);
+app.use('/api/commerce/product-insights', productInsightsRoutes);
+const winningProductsRoutes = require('./routes/winningProducts');
+app.use('/api/winning-products', winningProductsRoutes);
 app.use('/api/hub-health', require('./routes/hubHealth'));
 app.use('/api/email-hub', require('./routes/emailHub'));
 app.use('/api/email', require('./routes/emailTracking')); // tracking routes

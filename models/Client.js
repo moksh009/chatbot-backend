@@ -1076,6 +1076,20 @@ const ClientSchema = new mongoose.Schema({
     estimatedValue: Number,
     generatedAt: Date
   }],
+  insightsNotifications: {
+    daily: { type: Boolean, default: false },
+    weekly: { type: Boolean, default: true },
+    realtimeAlerts: { type: Boolean, default: true },
+    channels: {
+      whatsapp: { type: Boolean, default: true },
+      email: { type: Boolean, default: true },
+      dashboard: { type: Boolean, default: true },
+    },
+  },
+  insightsState: {
+    lastAudienceTier: { type: String, default: null },
+    lastRisingAlertAt: { type: Date, default: null },
+  },
 
   // Phase 18: AI Log
   unansweredQuestions: [{

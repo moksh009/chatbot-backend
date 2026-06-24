@@ -784,6 +784,20 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     perf.checkpoint("session_upserted");
 
+    if (channel === 'whatsapp' && lead?._id) {
+      try {
+        const { ensureImplicitWhatsAppOptIn } = require('./marketingConsentPlatform');
+        const implicit = await ensureImplicitWhatsAppOptIn({
+          clientId: client.clientId,
+          lead,
+          phone,
+        });
+        if (implicit.lead) lead = implicit.lead;
+      } catch (implicitErr) {
+        log.warn(`[DualBrain] Implicit opt-in skipped: ${implicitErr.message}`);
+      }
+    }
+
     if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.type === 'nfm_reply') {
       const nfmHandled = await handleNfmReply(parsedMessage, client, convo, lead, phone, io, channel);
       if (nfmHandled) {
@@ -4130,49 +4144,57 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         }
       } 
       
-      // --- USP 2: ORDER TRACKING (Shopify + local Order — shared resolver) ---
+      // --- Fetch Latest Order (Shopify GraphQL) — the Shopify Action node's sole action ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
-        const { resolveLatestOrderContext, resolveOrderContextByIdentifier } = require('./orderLookupService');
+        const { fetchLatestOrderByPhoneGraphQL, resolveLatestOrderContext } = require('./orderLookupService');
         const silentLookup = !!node.data?.silent;
-        const variable = node.data?.variable;
-        const qVar = node.data?.queryVariable;
-        const identifier = qVar ? String(convo?.metadata?.[qVar] || "").trim() : "";
-        let r;
-        try {
-          if (identifier) {
-            r = await resolveOrderContextByIdentifier({ client, phone, identifier });
-          } else {
-            r = await resolveLatestOrderContext({ client, phone });
-          }
-        } catch (lookupErr) {
-          log.error(`[shopify_call] CHECK_ORDER_STATUS resolver threw: ${lookupErr.message}`);
-          const prevMeta = { ...(convo.metadata || {}) };
-          if (variable) {
-            prevMeta[variable] = null;
-            prevMeta[`${variable}_error`] = lookupErr.message || "lookup_failed";
-          }
-          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: prevMeta } });
-          convo.metadata = prevMeta;
-          r = { found: false, mergedMeta: prevMeta, userMessage: null };
-        }
-        const mergedMeta = { ...(convo.metadata || {}), ...(r.mergedMeta || {}) };
-        await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
-        convo.metadata = mergedMeta;
+        const prevMeta = { ...(convo.metadata || {}) };
 
-        if (!r.found) {
-          if (!silentLookup && r.userMessage) {
-            await sendWhatsAppText(client, phone, r.userMessage);
+        let gqlResult = null;
+        let legacyResult = null;
+
+        // 1. Primary path — Shopify GraphQL (exposes 8 named variables)
+        try {
+          gqlResult = await fetchLatestOrderByPhoneGraphQL({
+            clientId: client.clientId,
+            phone,
+          });
+        } catch (gqlErr) {
+          log.warn(`[shopify_call] GraphQL lookup failed, falling back to REST: ${gqlErr.message}`);
+        }
+
+        if (gqlResult?.found) {
+          // Inject all 8 named variables into conversation metadata
+          const updatedMeta = { ...prevMeta, ...gqlResult.variables };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
+          convo.metadata = updatedMeta;
+
+          if (!silentLookup) {
+            // Build default status message from the resolved variables
+            const v = gqlResult.variables;
+            const lines = [
+              `📦 *Order ${v.order_id}*`,
+              ``,
+              `🗓 Date: ${v.order_date}`,
+              `🛍 Items:\n${v.ordered_items}`,
+              `💰 Total: ${v.order_total}`,
+              `📍 Address: ${v.shipping_address}`,
+              `💳 Payment: ${v.payment_status}`,
+              `🚚 Fulfillment: ${v.fulfillment_status}`,
+              v.delivery_status !== 'NA' ? `📡 Tracking: ${v.delivery_status}` : null,
+            ].filter(Boolean);
+            await sendWhatsAppText(client, phone, lines.join('\n').substring(0, 4096));
           }
-          const noOrderEdge = flowEdges.find(
+
+          const successEdge = flowEdges.find(
             (e) =>
               e.source === nodeId &&
-              (normalizeHandleId(e.sourceHandle) === "not_found" ||
-                normalizeHandleId(e.sourceHandle) === "no_order" ||
-                normalizeHandleId(e.sourceHandle) === "error")
+              (normalizeHandleId(e.sourceHandle) === 'success' ||
+                normalizeHandleId(e.sourceHandle) === 'a')
           );
-          if (noOrderEdge) {
+          if (successEdge) {
             return await executeNode(
-              noOrderEdge.target,
+              successEdge.target,
               flowNodes,
               flowEdges,
               client,
@@ -4184,12 +4206,51 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
               parsedMessage
             );
           }
-          resultData = { error: "No order found for this number" };
+          resultData = gqlResult.variables;
         } else {
-          if (!silentLookup && r.userMessage) {
-            await sendWhatsAppText(client, phone, r.userMessage);
+          // 2. Fallback — legacy REST-based resolver (for stores where GraphQL customer query returns empty)
+          try {
+            legacyResult = await resolveLatestOrderContext({ client, phone });
+          } catch (legacyErr) {
+            log.error(`[shopify_call] Legacy resolver also threw: ${legacyErr.message}`);
           }
-          resultData = r.orderData;
+
+          const updatedMeta = { ...prevMeta, ...(legacyResult?.mergedMeta || {}) };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
+          convo.metadata = updatedMeta;
+
+          if (!legacyResult?.found) {
+            if (!silentLookup && legacyResult?.userMessage) {
+              await sendWhatsAppText(client, phone, legacyResult.userMessage);
+            }
+            const noOrderEdge = flowEdges.find(
+              (e) =>
+                e.source === nodeId &&
+                (normalizeHandleId(e.sourceHandle) === 'not_found' ||
+                  normalizeHandleId(e.sourceHandle) === 'no_order' ||
+                  normalizeHandleId(e.sourceHandle) === 'error')
+            );
+            if (noOrderEdge) {
+              return await executeNode(
+                noOrderEdge.target,
+                flowNodes,
+                flowEdges,
+                client,
+                convo,
+                lead,
+                phone,
+                io,
+                channel,
+                parsedMessage
+              );
+            }
+            resultData = { error: 'No order found for this number' };
+          } else {
+            if (!silentLookup && legacyResult.userMessage) {
+              await sendWhatsAppText(client, phone, legacyResult.userMessage);
+            }
+            resultData = legacyResult.orderData;
+          }
         }
       }
 

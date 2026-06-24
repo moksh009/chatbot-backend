@@ -71,6 +71,7 @@ function registerAllCrons() {
 
   // ── Daily / hourly maintenance (low overlap) ──
   require("./statCacheCron")();
+  require("./productInsightsCron")();
   require("./checkoutLinkRecoveryCron")();
   if (envFlag("CRON_ENABLE_BIRTHDAY", false)) {
     require("./birthdayCron")();
@@ -88,6 +89,7 @@ function registerAllCrons() {
   require("./platformReviewCron")();
   require("./templateCatalogValidationCron")();
   require("./insightsCron")();
+  require("./winningProductsDigestCron").scheduleWinningProductsDigestCron();
   if (envFlag("CRON_ENABLE_AB_TEST_LEGACY", false)) {
     require("./abTestCron")();
     log.info("Legacy hourly A/B evaluator enabled (CRON_ENABLE_AB_TEST_LEGACY=true)");

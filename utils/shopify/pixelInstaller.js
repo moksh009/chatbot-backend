@@ -261,6 +261,7 @@ async function installWebPixel(clientId, options = {}) {
         shopifyWebPixelId: pixel.id,
         shopifyWebPixelInstalledAt: new Date(),
         shopifyWebPixelSettings: settingsObj,
+        shopifyTrackingDisabled: false,
       },
     }
   );

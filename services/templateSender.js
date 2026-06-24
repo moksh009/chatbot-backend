@@ -791,6 +791,34 @@ async function sendForAutomation({
     };
   }
 
+  if (phone) {
+    const { isMarketingAutomationContext } = require('../utils/commerce/marketingConsentPlatform');
+    const { isLeadOptedOutForSend } = require('../utils/commerce/marketingConsent');
+    if (isMarketingAutomationContext({ contextType, slotId, trigger })) {
+      const blocked = await isLeadOptedOutForSend(clientId, phone);
+      if (blocked) {
+        await logTemplateSendAttempt({
+          clientId,
+          template: null,
+          recipient: { clientId, phone, email: resolvedEmail },
+          channel,
+          contextData,
+          result: { whatsapp: { skipped: true, reason: 'opted_out' } },
+          logMeta: {
+            automationSlotId: slotId,
+            contextType,
+            failureCode: SEND_FAILURE_CODES.SKIPPED,
+          },
+        });
+        return {
+          whatsapp: { skipped: true, reason: 'opted_out', failureCode: SEND_FAILURE_CODES.SKIPPED },
+          slotId,
+          metaName,
+        };
+      }
+    }
+  }
+
   if (!phone && isCartRecovery && resolvedEmail) {
     const emailOnly = await sendCartRecoveryEmailFallback({
       clientId,

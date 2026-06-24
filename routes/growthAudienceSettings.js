@@ -94,6 +94,29 @@ function mountGrowthAudienceSettingsRoutes(router) {
       res.status(500).json({ success: false, message: error.message });
     }
   });
+
+  router.get('/:clientId/consent-health', protect, verifyClientAccess, async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      const { auditConsentHealth } = require('../utils/commerce/marketingConsentPlatform');
+      const health = await auditConsentHealth(clientId);
+      res.json({ success: true, health });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  router.post('/:clientId/consent-health/sync', protect, verifyClientAccess, async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      const { syncConsentStateForClient } = require('../utils/commerce/marketingConsentPlatform');
+      const dryRun = req.body?.dryRun === true;
+      const result = await syncConsentStateForClient(clientId, { dryRun });
+      res.json({ success: true, result });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
 }
 
 module.exports = {

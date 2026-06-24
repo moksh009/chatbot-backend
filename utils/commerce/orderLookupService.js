@@ -8,7 +8,7 @@
 
 const Order = require("../../models/Order");
 const { normalizePhone } = require('../core/helpers');
-const { withShopifyRetry } = require('../shopify/shopifyHelper');
+const { withShopifyRetry, withShopifyGraphQL } = require('../shopify/shopifyHelper');
 const { withTimeout } = require('../core/asyncTimeout');
 const log = require('../core/logger')("OrderLookup");
 
@@ -403,9 +403,221 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GraphQL-based Fetch Latest Order — powers the "Fetch Latest Order" Shopify node
+// Returns 8 mapped variables ready to be injected into convo.metadata.
+// All variables fall back to "NA" on missing / null data.
+// ---------------------------------------------------------------------------
+
+const FETCH_LATEST_ORDER_GQL = `
+query getLatestOrderByPhone($phoneString: String!) {
+  customers(first: 1, query: $phoneString) {
+    nodes {
+      lastOrder {
+        name
+        createdAt
+        totalPriceSet {
+          presentmentMoney {
+            amount
+            currencyCode
+          }
+        }
+        displayFinancialStatus
+        displayFulfillmentStatus
+        shippingAddress {
+          formatted
+        }
+        lineItems(first: 50) {
+          nodes {
+            title
+            quantity
+          }
+        }
+        fulfillments(first: 1) {
+          nodes {
+            trackingInfo(first: 1) {
+              status
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
+/**
+ * Build phone search query strings that Shopify's customer search understands.
+ * Shopify normalises customer phones to E.164 in their index, so we try the
+ * most likely formats: raw, with country prefix stripped, and E.164-prefixed.
+ */
+function buildShopifyPhoneQueries(rawPhone) {
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  const e164 = digits.length >= 10 ? `+${digits}` : null;
+  const candidates = new Set();
+
+  if (rawPhone) candidates.add(`phone:${String(rawPhone).trim()}`);
+  if (e164) candidates.add(`phone:${e164}`);
+  if (digits.length === 12 && digits.startsWith('91')) {
+    candidates.add(`phone:+${digits}`);
+    candidates.add(`phone:${digits.slice(2)}`);
+  }
+  if (digits.length === 10) {
+    candidates.add(`phone:+91${digits}`);
+    candidates.add(`phone:${digits}`);
+  }
+
+  return [...candidates].filter(Boolean);
+}
+
+/**
+ * Fallback value — used for every variable that cannot be resolved.
+ */
+const NA = 'NA';
+
+function safeStr(val) {
+  const s = String(val ?? '').trim();
+  return s || NA;
+}
+
+/**
+ * Map a Shopify GraphQL lastOrder object → 8 flat variables.
+ */
+function mapOrderToVariables(lastOrder) {
+  if (!lastOrder) {
+    return {
+      order_id: NA,
+      order_date: NA,
+      ordered_items: NA,
+      order_total: NA,
+      shipping_address: NA,
+      payment_status: NA,
+      fulfillment_status: NA,
+      delivery_status: NA,
+    };
+  }
+
+  const orderId = safeStr(lastOrder.name);
+
+  let orderDate = NA;
+  if (lastOrder.createdAt) {
+    try {
+      orderDate = new Date(lastOrder.createdAt).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    } catch (_) {
+      orderDate = safeStr(lastOrder.createdAt);
+    }
+  }
+
+  const lineNodes = Array.isArray(lastOrder.lineItems?.nodes)
+    ? lastOrder.lineItems.nodes
+    : [];
+  const orderedItems = lineNodes.length
+    ? lineNodes
+        .map((item) => {
+          const qty = Number(item.quantity) || 1;
+          return qty > 1 ? `${qty}x ${item.title}` : item.title;
+        })
+        .join('\n')
+    : NA;
+
+  const money = lastOrder.totalPriceSet?.presentmentMoney;
+  const orderTotal =
+    money?.amount && money?.currencyCode
+      ? `${parseFloat(money.amount).toFixed(2)} ${money.currencyCode}`
+      : NA;
+
+  const formatted = lastOrder.shippingAddress?.formatted;
+  const shippingAddress = Array.isArray(formatted)
+    ? formatted.filter(Boolean).join(', ') || NA
+    : safeStr(formatted);
+
+  const paymentStatus = safeStr(lastOrder.displayFinancialStatus);
+  const fulfillmentStatus = safeStr(lastOrder.displayFulfillmentStatus);
+
+  const trackingNodes = lastOrder.fulfillments?.nodes?.[0]?.trackingInfo;
+  const trackingStatus =
+    Array.isArray(trackingNodes) && trackingNodes[0]?.status
+      ? safeStr(trackingNodes[0].status)
+      : NA;
+
+  return {
+    order_id: orderId,
+    order_date: orderDate,
+    ordered_items: orderedItems,
+    order_total: orderTotal,
+    shipping_address: shippingAddress,
+    payment_status: paymentStatus,
+    fulfillment_status: fulfillmentStatus,
+    delivery_status: trackingStatus,
+  };
+}
+
+/**
+ * Fetch the customer's latest Shopify order using GraphQL.
+ *
+ * @param {object} params
+ * @param {string} params.clientId   - TopEdge client ID
+ * @param {string} params.phone      - WhatsApp E.164 or raw phone number
+ * @returns {Promise<{found: boolean, variables: object}>}
+ *   `variables` always contains all 8 keys; missing data uses "NA".
+ */
+async function fetchLatestOrderByPhoneGraphQL({ clientId, phone }) {
+  const emptyVars = mapOrderToVariables(null);
+
+  const queries = buildShopifyPhoneQueries(phone);
+  if (!queries.length) {
+    log.warn('[fetchLatestOrderByPhoneGraphQL] No phone variants to try', { phone });
+    return { found: false, variables: emptyVars };
+  }
+
+  let lastError = null;
+  for (const phoneQuery of queries) {
+    try {
+      const data = await withShopifyGraphQL(clientId, FETCH_LATEST_ORDER_GQL, {
+        phoneString: phoneQuery,
+      });
+
+      const customerNodes = data?.customers?.nodes;
+      if (!Array.isArray(customerNodes) || customerNodes.length === 0) {
+        continue;
+      }
+
+      const lastOrder = customerNodes[0]?.lastOrder;
+      if (!lastOrder) {
+        continue;
+      }
+
+      return {
+        found: true,
+        variables: mapOrderToVariables(lastOrder),
+      };
+    } catch (err) {
+      lastError = err;
+      log.warn('[fetchLatestOrderByPhoneGraphQL] Query attempt failed', {
+        phoneQuery,
+        message: err.message,
+      });
+    }
+  }
+
+  if (lastError) {
+    log.error('[fetchLatestOrderByPhoneGraphQL] All attempts failed', {
+      clientId,
+      message: lastError.message,
+    });
+  }
+
+  return { found: false, variables: emptyVars };
+}
+
 module.exports = {
   resolveLatestOrderContext,
   resolveOrderContextByIdentifier,
   findLocalOrder,
   phoneSearchVariants,
+  fetchLatestOrderByPhoneGraphQL,
 };

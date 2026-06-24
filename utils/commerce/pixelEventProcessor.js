@@ -10,8 +10,12 @@ const { upsertAbandonedCartLead, resolveLeadQueryForUpsert } = require("./upsert
 const { attachAnonymousJourneyToLead } = require("./attachAnonymousJourney");
 const log = require("../core/logger")("PixelProcessor");
 const { touchActiveVisitor } = require("./pixelActiveVisitors");
+const { rollupProductEvent } = require("./productInsightsRollup");
+const { deriveProductViewFromPageEvent } = require("./productViewDerivation");
+const { enrichPixelMetadata } = require("./pixelEventUrlUtils");
 const { extractUtmFields } = require("./pixelUtmUtils");
 const { emitCartContactCaptured } = require("./pixelSocketEmit");
+const { emitPixelActivity } = require("./pixelActivityEmit");
 
 function mapCartItems(data = {}) {
   const raw =
@@ -197,21 +201,44 @@ async function finalizeCaptureLead({
 
 async function recordPixelEvent(clientId, leadId, eventName, payload) {
   try {
-    const metadata = { ...(payload.metadata || {}) };
+    const { url, metadata } = enrichPixelMetadata(payload, {});
     if (payload.visitorId) metadata.visitorId = payload.visitorId;
-    await PixelEvent.create({
+    if (payload.shopifyClientId) metadata.shopifyClientId = payload.shopifyClientId;
+    const doc = await PixelEvent.create({
       clientId,
       leadId: leadId || undefined,
       eventName,
-      url: payload.url || "",
+      url,
       sessionId: payload.sessionId,
       metadata,
       timestamp: payload.timestamp || new Date(),
       userAgent: payload.userAgent,
       ip: payload.ip,
     });
+    const rollupEvents = ["product_view", "product_added_to_cart", "add_to_cart", "page_view"];
+    if (rollupEvents.includes(eventName)) {
+      await rollupProductEvent(
+        clientId,
+        eventName,
+        { ...metadata, product: metadata.product, url: doc.url },
+        { timestamp: doc.timestamp, url: doc.url }
+      );
+    }
+    let derivedDoc = null;
+    if (eventName === "page_view") {
+      derivedDoc = await deriveProductViewFromPageEvent(clientId, doc, {
+        ...payload,
+        url,
+        metadata,
+        shopifyClientId: payload.shopifyClientId || metadata.shopifyClientId,
+      });
+    }
+    emitPixelActivity(clientId, { eventName });
+    if (derivedDoc) emitPixelActivity(clientId, { eventName: "product_view", derived: true });
+    return doc;
   } catch (err) {
     log.warn(`PixelEvent write failed: ${err.message}`);
+    return null;
   }
 }
 
@@ -242,7 +269,20 @@ async function processPixelEvent(clientId, eventData) {
     );
   }
 
-  const meta = { ...data, sessionId, url, source: data.source || "theme_pixel" };
+  const enriched = enrichPixelMetadata({ url, metadata: data, pathname: data.pathname }, {});
+  const resolvedUrl = enriched.url;
+  const checkoutToken = data.checkoutToken || data.token || data.checkout_token || "";
+  const meta = {
+    ...data,
+    ...enriched.metadata,
+    sessionId,
+    url: resolvedUrl,
+    source: data.source || "theme_pixel",
+  };
+  if (shopifyClientId || data.shopifyClientId) {
+    meta.shopifyClientId = shopifyClientId || data.shopifyClientId;
+  }
+  if (checkoutToken) meta.checkoutToken = checkoutToken;
   const utmFields = extractUtmFields({ ...data, url });
   const email =
     customer?.email || data.email || data.checkout?.email || meta.email || null;
@@ -253,7 +293,6 @@ async function processPixelEvent(clientId, eventData) {
     const digits = normalizePhoneWithCountry(rawPhone, client);
     phone = digits ? normalizeIndianPhone(digits) : null;
   }
-  const checkoutToken = data.checkoutToken || data.token || data.checkout_token || "";
 
   await stitchVisitorIdentity(clientId, client, {
     visitorId: visitorId || data.visitorId,
@@ -278,6 +317,7 @@ async function processPixelEvent(clientId, eventData) {
 
   const trackableEvents = [
     "page_view",
+    "product_view",
     "product_added_to_cart",
     "checkout_started",
     "contact_identified",
@@ -300,9 +340,10 @@ async function processPixelEvent(clientId, eventData) {
         ? await AdLead.findById(filter._id).select('_id').lean()
         : await AdLead.findOne(filter).select('_id').lean();
       await recordPixelEvent(clientId, leadDoc?._id, 'exit_intent', {
-        url,
+        url: resolvedUrl,
         sessionId,
         visitorId: visitorId || data.visitorId,
+        shopifyClientId: shopifyClientId || data.shopifyClientId,
         metadata: { ...meta, source: data.source || 'shopify_web_pixel' },
         timestamp,
         userAgent,
@@ -361,7 +402,7 @@ async function processPixelEvent(clientId, eventData) {
       const lead = result.lead;
 
       await recordPixelEvent(clientId, lead?._id, "checkout_contact_identified", {
-        url,
+        url: resolvedUrl,
         sessionId,
         visitorId: visitorId || data.visitorId,
         metadata: { ...meta, source: data.source || "shopify_web_pixel", captureMode },
@@ -457,7 +498,7 @@ async function processPixelEvent(clientId, eventData) {
       }
 
       await recordPixelEvent(clientId, idLead?._id, "contact_identified", {
-        url,
+        url: resolvedUrl,
         sessionId,
         visitorId: visitorId || data.visitorId,
         metadata: meta,
@@ -514,7 +555,7 @@ async function processPixelEvent(clientId, eventData) {
       }
 
       await recordPixelEvent(clientId, lead?._id, 'checkout_completed', {
-        url,
+        url: resolvedUrl,
         sessionId,
         visitorId: visitorId || data.visitorId,
         metadata: { ...meta, source: data.source || 'shopify_web_pixel', orderId },
@@ -553,7 +594,7 @@ async function processPixelEvent(clientId, eventData) {
 
   const hasIdentity = !!(email || phone) || eventName === "contact_identified";
 
-  if (hasIdentity || ["checkout_started", "product_added_to_cart", "checkout_completed", "page_view"].includes(eventName)) {
+  if (hasIdentity || ["checkout_started", "product_added_to_cart", "checkout_completed", "page_view", "product_view", "search"].includes(eventName)) {
     let lead = null;
     if (phone || email) {
       lead = await AdLead.findOne(
@@ -611,7 +652,7 @@ async function processPixelEvent(clientId, eventData) {
 
       const mappedEvent = eventName === "product_added_to_cart" ? "add_to_cart" : eventName;
       await recordPixelEvent(clientId, lead._id, mappedEvent, {
-        url,
+        url: resolvedUrl,
         sessionId,
         visitorId: visitorId || data.visitorId,
         metadata: meta,
@@ -643,9 +684,10 @@ async function processPixelEvent(clientId, eventData) {
   }
 
   await recordPixelEvent(clientId, null, eventName, {
-    url,
+    url: resolvedUrl,
     sessionId,
     visitorId: visitorId || data.visitorId,
+    shopifyClientId: shopifyClientId || data.shopifyClientId,
     metadata: meta,
     timestamp,
     userAgent,
@@ -661,13 +703,46 @@ function generateWebPixelScript(clientId, baseUrl) {
   var ENDPOINT = "${endpoint}";
   var CLIENT_ID = "${clientId}";
 
+  function pageLocation(event) {
+    var doc = event && event.context && event.context.document;
+    var loc = doc && doc.location;
+    if (!loc && event && event.context && event.context.window) loc = event.context.window.location;
+    if (loc) return { href: loc.href || "", pathname: loc.pathname || "" };
+    return { href: "", pathname: "" };
+  }
+
+  var SESSION_ID = "";
+  try {
+    if (typeof browser !== "undefined" && browser.sessionStorage) {
+      SESSION_ID = browser.sessionStorage.getItem("te_px_sid") || "";
+      if (!SESSION_ID) {
+        SESSION_ID = "sess_" + Math.random().toString(36).slice(2, 11);
+        browser.sessionStorage.setItem("te_px_sid", SESSION_ID);
+      }
+    }
+  } catch (e) {}
+
   function send(eventName, data) {
+    var extra = data || {};
+    var loc = pageLocation(extra._evt);
+    var href = (extra.url) || loc.href || loc.pathname || "";
+    var pathname = extra.pathname || loc.pathname || "";
+    var meta = Object.assign({}, extra);
+    delete meta._evt;
+    delete meta.url;
+    delete meta.pathname;
+    meta.source = "shopify_web_pixel";
+    if (href) meta.url = href;
+    if (pathname) meta.pathname = pathname;
     var payload = {
       eventName: eventName,
-      metadata: Object.assign({}, data || {}, { source: "shopify_web_pixel" }),
+      url: href || undefined,
+      sessionId: SESSION_ID || undefined,
+      metadata: meta,
       timestamp: new Date().toISOString()
     };
-    if (data && data.shopifyClientId) payload.shopifyClientId = data.shopifyClientId;
+    if (extra.shopifyClientId) payload.shopifyClientId = extra.shopifyClientId;
+    if (extra.product) payload.metadata.product = extra.product;
     fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -732,19 +807,78 @@ function generateWebPixelScript(clientId, baseUrl) {
     var prod = merch.product || {};
     send("product_added_to_cart", {
       product: {
-        title: prod.title,
-        id: prod.id,
-        price: merch.price && merch.price.amount
+        productId: prod.id,
+        variantId: merch.id,
+        title: prod.title || merch.title,
+        handle: prod.handle,
+        price: merch.price && merch.price.amount,
+        currency: merch.price && merch.price.currencyCode,
+        image: (merch.image && merch.image.src) || (prod.featuredImage && prod.featuredImage.url),
+        sku: merch.sku,
+        quantity: line.quantity || 1
       },
       shopifyClientId: event.clientId
     });
   });
 
-  analytics.subscribe("page_viewed", function (event) {
-    send("page_view", {
-      url: event.context && event.context.document && event.context.document.location && event.context.document.location.href,
+  analytics.subscribe("product_viewed", function (event) {
+    var v = (event.data && event.data.productVariant) || {};
+    var p = v.product || {};
+    var loc = pageLocation(event);
+    send("product_view", {
+      url: loc.href || loc.pathname,
+      pathname: loc.pathname,
+      product: {
+        productId: p.id,
+        variantId: v.id,
+        title: p.title || v.title,
+        handle: p.handle,
+        price: v.price && v.price.amount,
+        currency: v.price && v.price.currencyCode,
+        image: (v.image && v.image.src) || (p.featuredImage && p.featuredImage.url),
+        sku: v.sku
+      },
+      shopifyClientId: event.clientId,
+      _evt: event
+    });
+  });
+
+  analytics.subscribe("search_submitted", function (event) {
+    var search = event.data && event.data.searchResult;
+    send("search", {
+      url: pageUrl(event),
+      query: (search && search.query) || (event.data && event.data.searchQuery) || "",
       shopifyClientId: event.clientId
     });
+  });
+
+  analytics.subscribe("page_viewed", function (event) {
+    var loc = pageLocation(event);
+    var href = loc.href || loc.pathname;
+    send("page_view", {
+      url: href,
+      pathname: loc.pathname,
+      shopifyClientId: event.clientId,
+      _evt: event
+    });
+    if (href && href.indexOf("/products/") !== -1) {
+      var handle = null;
+      try {
+        var path = loc.pathname || new URL(href, "https://shop.local").pathname;
+        var match = path.match(/\\/products\\/([^/?#]+)/);
+        if (match && match[1]) handle = decodeURIComponent(match[1]);
+      } catch (e) {}
+      if (handle) {
+        send("product_view", {
+          url: href,
+          pathname: loc.pathname,
+          product: { handle: handle },
+          derivedFrom: "page_viewed",
+          shopifyClientId: event.clientId,
+          _evt: event
+        });
+      }
+    }
   });
 })();
 `.trim();
