@@ -1335,6 +1335,30 @@ function buildAdminEscalationEmailHtml({
         </div>`;
 }
 
+/**
+ * Send a plain-text admin alert email (triggered by Flow Builder ADMIN_ALERT node).
+ */
+async function sendAlertEmail({ to, subject, body, clientId, customerPhone }) {
+    if (!to) {
+        console.warn('[EmailService] sendAlertEmail skipped — no recipient.');
+        return false;
+    }
+    const escapedBody = escapeHtml(body || '').replace(/\n/g, '<br/>');
+    const phoneDisplay = customerPhone ? escapeHtml(customerPhone) : '';
+    const html = `
+        <div style="font-family:'Inter',-apple-system,Arial,sans-serif;max-width:560px;margin:32px auto;padding:32px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;">
+            <h2 style="margin:0 0 16px;font-size:18px;font-weight:700;color:#0f172a;">${escapeHtml(subject)}</h2>
+            <div style="padding:16px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;font-size:14px;line-height:1.6;color:#334155;">
+                ${escapedBody}
+            </div>
+            ${phoneDisplay ? `<p style="margin:16px 0 0;font-size:13px;color:#64748b;">Customer phone: <strong style="color:#0f172a;">${phoneDisplay}</strong></p>` : ''}
+            <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 12px;" />
+            <p style="text-align:center;color:#94a3b8;font-size:11px;margin:0;">TopEdge AI · Flow Builder Alert${clientId ? ` · ${escapeHtml(String(clientId))}` : ''}</p>
+        </div>
+    `;
+    return deliverSystemEmail({ to, subject, html });
+}
+
 async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
     const { user: fromUser, pass: fromPass } = getSystemEmailCredentials();
     const hasResend = !!String(process.env.RESEND_API_KEY || '').trim();
@@ -1460,6 +1484,7 @@ module.exports = {
     sendSystemOTPEmail,
     sendTeamInviteEmail,
     sendAdminConfirmationEmail,
+    sendAlertEmail,
     buildPlatformWelcomeEmail,
     sendPlatformWelcomeEmail,
     createSystemEmailTransporter,

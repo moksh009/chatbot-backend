@@ -3870,11 +3870,47 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // 7. Persona Node: Tone shifting
+  // 7. Response by AI — generates AI response using merchant's Knowledge Base + node-specific config
   if (node.type === 'persona') {
-    const persona = node.data?.personaType || 'Concierge';
-    await Conversation.findByIdAndUpdate(convo._id, { 'metadata.activePersona': persona });
-    log.info(`[FlowEngine] Persona shifted to ${persona} for ${phone}`);
+    const aiModel = node.data?.aiModel || client.ai?.chatModel || 'gpt-4o-mini';
+    const maxOutputLength = node.data?.maxOutputLength || 0;
+    const rawSystemPrompt = node.data?.systemPrompt || '';
+    const systemPrompt = rawSystemPrompt ? (injectVariablesLegacy(rawSystemPrompt, { client, lead, convo }) || rawSystemPrompt) : '';
+
+    const hasApiKey = !!(client.ai?.openaiKey || client.openaiApiKey || process.env.OPENAI_API_KEY);
+    const hasKnowledge = !!(client.ai?.knowledgeBase || (Array.isArray(client.ai?.knowledgeDocs) && client.ai.knowledgeDocs.length > 0));
+
+    if (!hasApiKey) {
+      log.warn(`[FlowEngine] Response by AI: no API key configured for ${client.clientId}`);
+      await sendWhatsAppText(client, phone, "I'm sorry, I'm unable to process that right now. A team member will help you shortly.");
+      const nextEdge = flowEdges.find(e => e.source === nodeId);
+      if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+      return;
+    }
+
+    const lastMessage = parsedMessage?.text || parsedMessage?.body || '';
+
+    try {
+      const { generateAiReply } = require('../core/aiReplyService');
+      const reply = await generateAiReply({
+        client,
+        phone,
+        userMessage: lastMessage,
+        systemPrompt,
+        model: aiModel,
+        maxTokens: maxOutputLength > 0 ? maxOutputLength : undefined,
+        conversationId: convo?._id,
+        knowledgeBase: client.ai?.knowledgeBase || '',
+      });
+
+      if (reply && String(reply).trim()) {
+        await sendWhatsAppText(client, phone, String(reply).trim().substring(0, 4096));
+      }
+    } catch (aiErr) {
+      log.error(`[FlowEngine] Response by AI generation failed: ${aiErr.message}`);
+      await sendWhatsAppText(client, phone, "I'm sorry, I couldn't process that. Let me connect you with our team.");
+    }
+
     const nextEdge = flowEdges.find(e => e.source === nodeId);
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
@@ -3937,37 +3973,23 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // Phase 21: Admin Alert Node — dual-channel (WhatsApp template + fallback text, SMTP email) via NotificationService
+  // Phase 21: Admin Alert Node — Email + Dashboard notification (WhatsApp removed)
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
-    const { topic, alertChannel, priority, triggerSource } = node.data || {};
+    const { topic, priority } = node.data || {};
+    const channels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
     const rawTopic = topic || "Human support request";
     const alertMsg = replaceVariables(String(rawTopic), client, lead, convo);
+    const rawBody = node.data?.messageBody || alertMsg;
+    const messageBody = injectVariablesLegacy(rawBody, { client, lead, convo }) || rawBody;
 
-    const rawAdminPhone =
-      (node.data?.phone && String(node.data.phone)) ||
-      client.adminPhone ||
-      client.adminPhoneNumber ||
-      client.platformVars?.adminWhatsappNumber ||
-      client.adminAlertWhatsapp ||
-      "";
-    const adminWaDigits = replaceVariables(String(rawAdminPhone), client, lead, convo).replace(/\D/g, "");
-
-    const meta = convo?.metadata || {};
-    const customerQuery =
-      meta.support_query ||
-      meta.supportQuery ||
-      lead?.capturedData?.support_query ||
-      (parsedMessage?.text?.body ? String(parsedMessage.text.body).trim() : "") ||
-      "";
-
-    // 1. Mark conversation as needing attention (does not pause bot — handoff nodes handle pause)
+    // 1. Mark conversation as needing attention
     await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
       attentionReason: alertMsg,
       lastInteraction: new Date(),
     }));
 
-    // 2. Emit real-time socket event to dashboard
-    if (io) {
+    // 2. Dashboard notification via socket
+    if (channels.includes('Dashboard') && io) {
       io.to(`client_${client.clientId}`).emit("admin_alert", {
         type: "escalation",
         topic: alertMsg,
@@ -3975,34 +3997,35 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         phone,
         conversationId: String(convo._id),
         leadName: lead?.name || "Customer",
+        messageBody,
         timestamp: new Date(),
       });
       io.to(`client_${client.clientId}`).emit("attention_required", {
         phone,
         conversationId: String(convo._id),
-        reason: alertMsg,
+        reason: `Admin Alert: ${alertMsg}`,
         priority: priority || "high",
+        messageBody,
       });
     }
 
-    // 3–4. WhatsApp (Meta utility template + text fallback) + email — honors client.adminAlertPreferences unless node overrides
-    try {
-      const NotificationService = require('../core/notificationService');
-      await NotificationService.sendAdminAlert(client, {
-        customerPhone: phone,
-        conversationId: convo._id,
-        topic: alertMsg,
-        triggerSource: triggerSource || "WhatsApp flow",
-        channel: alertChannel,
-        adminPhoneOverride: adminWaDigits.length >= 10 ? adminWaDigits : undefined,
-        customerQuery,
-        lead,
-      });
-    } catch (err) {
-      log.error(`AdminAlert dispatch failed: ${err.message}`);
+    // 3. Email notification
+    if (channels.includes('Email') && node.data?.alertEmailTo) {
+      try {
+        const { sendAlertEmail } = require('../core/emailService');
+        await sendAlertEmail({
+          to: node.data.alertEmailTo,
+          subject: `[TopEdge Alert] ${alertMsg}`,
+          body: messageBody,
+          clientId: client.clientId,
+          customerPhone: phone,
+        });
+      } catch (err) {
+        log.error(`AdminAlert email dispatch failed: ${err.message}`);
+      }
     }
 
-    log.info(`AdminAlert triggered for ${phone}: ${alertMsg}`);
+    log.info(`AdminAlert triggered for ${phone}: ${alertMsg} via ${channels.join(', ')}`);
     
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
@@ -4814,6 +4837,26 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
     log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);
+
+    // Send handoff alert email if Email channel selected
+    const handoffChannels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
+    if (handoffChannels.includes('Email') && node.data?.handoffEmailTo) {
+      try {
+        const { injectVariablesLegacy: replaceVars } = require('../core/variableInjector');
+        const rawBody = node.data?.handoffAlertBody || `Human support requested for ${phone}`;
+        const emailBody = replaceVars(rawBody, client, lead, convo) || rawBody;
+        const { sendAlertEmail } = require('../core/emailService');
+        await sendAlertEmail({
+          to: node.data.handoffEmailTo,
+          subject: `[TopEdge] Agent Handoff Alert`,
+          body: emailBody,
+          clientId: client.clientId,
+          customerPhone: phone,
+        });
+      } catch (emailErr) {
+        log.warn(`[FlowEngine] LiveChat handoff email failed: ${emailErr.message}`);
+      }
+    }
   }
 
   // Legacy escalate node — same runtime as livechat handoff

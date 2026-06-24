@@ -1424,7 +1424,7 @@ function buildFlow() {
     "data": {
       "label": "Admin alert — support",
       "topic": "Customer needs support — Apex Light",
-      "alertChannel": "both",
+      "notifyChannels": ["Email", "Dashboard"],
       "priority": "high",
       "triggerSource": "WhatsApp support request",
       "useClientAdminSettings": true

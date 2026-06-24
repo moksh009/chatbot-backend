@@ -797,7 +797,7 @@ const ClientSchema = new mongoose.Schema({
   adminEmail: { type: String, default: "" },
   /**
    * Where to deliver flow-triggered admin escalations (human handoff, returns, B2B).
-   * Per-node `admin_alert` may still override with explicit alertChannel when set.
+   * Per-node `admin_alert` uses `notifyChannels` array (Email + Dashboard).
    */
   adminAlertPreferences: {
     type: String,

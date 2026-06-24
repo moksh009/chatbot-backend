@@ -1098,7 +1098,7 @@ Is this the product you need installation help for?`,
     data: {
       label: 'Admin alert — support',
       topic: 'Customer needs support — Apex Light',
-      alertChannel: 'both',
+      notifyChannels: ['Email', 'Dashboard'],
       priority: 'high',
       triggerSource: 'WhatsApp support request',
     },

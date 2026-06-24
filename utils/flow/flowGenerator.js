@@ -1407,7 +1407,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Cancel request — admin",
         priority: "high",
-        alertChannel: "both",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "Cancellation request — {{order_number}}",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested cancellation for *{{order_number}}*.\nReason: {{cancel_reason|Not provided}}\nStatus: {{order_status|unknown}}",
@@ -1507,7 +1507,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Modify request — admin",
         priority: "high",
-        alertChannel: "both",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "Modification request — {{order_number}} ({{modify_type}})",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested a *modification* on *{{order_number}}*.\nType: {{modify_type|Not specified}}\nDetails: {{modify_details|Not provided}}",
@@ -2029,7 +2029,7 @@ function buildInstallSupportBranch(ctx, IDS, content) {
       data: {
         label: "Help request alert",
         priority: "high",
-        alertChannel: "both",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "Order help — {{order_number}}",
         customMessage:
           "Customer ({{phone}}) needs help with order *{{order_number}}*.\nIssue: {{help_issue_type|General}}\nDetails: {{help_issue_detail|—}}",
@@ -2160,7 +2160,7 @@ function buildSupportBranch(ctx, IDS, content) {
       data: {
         label: "Admin Alert",
         priority: "high",
-        alertChannel: "both",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "Agent request — {{brand_name}}",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested an agent.\n\nIssue: {{agent_issue_description|No details provided}}",

@@ -267,36 +267,44 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     }
 
     case "ADMIN_ALERT": {
-      const NotificationService = require('../core/notificationService');
-      const topic = node.data?.topic || "New Priority Request";
-      const nodeChannel = node.data?.alertChannel;
-      const pref = client.adminAlertPreferences;
-      const channel =
-        nodeChannel === "whatsapp" || nodeChannel === "email" || nodeChannel === "both"
-          ? nodeChannel
-          : (pref === "whatsapp" || pref === "email" || pref === "both" ? pref : "both");
-
       const { buildReopenAttentionUpdate } = require('../core/supportConversationMetrics');
+      const topic = node.data?.topic || "New Priority Request";
+      const channels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
+      const rawBody = node.data?.messageBody || topic;
+      const messageBody = replaceVariables(rawBody, { client, lead, convo }) || rawBody;
+
       await Conversation.findOneAndUpdate(
         { phone, clientId: client.clientId },
         buildReopenAttentionUpdate({ attentionReason: topic })
       );
 
-      await NotificationService.sendAdminAlert(client, {
-        customerPhone: phone,
-        conversationId: convo?._id,
-        topic,
-        triggerSource: node.data?.triggerSource || "Automation Flow",
-        channel,
-        adminPhoneOverride: node.data?.phone ? String(node.data.phone).replace(/\D/g, "") : undefined,
-        customerQuery: lead?.capturedData?.support_query || "",
-        lead,
-      });
+      if (channels.includes('Dashboard')) {
+        if (global.io) {
+          global.io.to(`client_${client.clientId}`).emit('attention_required', {
+            phone,
+            reason: `Admin Alert: ${topic}`,
+            priority: 'high',
+            messageBody,
+          });
+        }
+      }
 
-      if (global.io) {
-        global.io.to(`client_${client.clientId}`).emit('attention_required', {
-          phone, reason: `Admin Alert: ${topic}`, priority: 'high'
-        });
+      if (channels.includes('Email')) {
+        const emailTo = node.data?.alertEmailTo;
+        if (emailTo) {
+          try {
+            const { sendAlertEmail } = require('../core/emailService');
+            await sendAlertEmail({
+              to: emailTo,
+              subject: `[TopEdge Alert] ${topic}`,
+              body: messageBody,
+              clientId: client.clientId,
+              customerPhone: phone,
+            });
+          } catch (emailErr) {
+            console.error(`[NodeActions] ADMIN_ALERT email send failed: ${emailErr.message}`);
+          }
+        }
       }
       break;
     }

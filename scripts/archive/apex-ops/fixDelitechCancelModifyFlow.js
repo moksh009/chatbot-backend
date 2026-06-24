@@ -76,7 +76,7 @@ function patchFlow(nodes, edges) {
         data: {
           label: "Modify request — admin",
           priority: "high",
-          alertChannel: "both",
+          notifyChannels: ["Email", "Dashboard"],
           topic: "Modification request — {{order_number}} ({{modify_type}})",
           customMessage:
             "Customer {{customer_name|Unknown}} ({{phone}}) requested a *modification* on *{{order_number}}*.\nType: {{modify_type|Not specified}}\nDetails: {{modify_details|Not provided}}",
