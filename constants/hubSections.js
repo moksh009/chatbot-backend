@@ -14,7 +14,6 @@ const HUB_SECTIONS = [
   { id: 'shopify-automation-center', path: '/shopify-automation-center' },
   { id: 'meta-manager', path: '/meta-manager' },
   { id: 'settings', path: '/settings' },
-  { id: 'billing', path: '/billing' },
 ];
 
 const VALID_SECTION_IDS = new Set(HUB_SECTIONS.map((s) => s.id));

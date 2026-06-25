@@ -17,37 +17,43 @@
  */
 
 const { callAIJSON } = require("../core/aiGateway");
+const { V1_FORBIDDEN_NODE_TYPES } = require("./flowNodeContract");
 
 // ─── CANONICAL NODE TYPE REGISTRY ────────────────────────────────────────────
-// This MUST stay in sync with the nodeTypes object in FlowCanvas.jsx.
-// Gemini is strictly constrained to only these type strings.
+// Synced with FlowCanvas nodeTypes + flowNodeContract.js (V1 shippable set).
 
 const NODE_TYPES = {
-  trigger:        { handles: { out: ['bottom'] }, desc: 'Flow entry point. data: { triggerType: "first_message|keyword|...", keywords?:[], matchMode? }' },
-  message:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send text message. data: { text: "..." } (body is accepted and normalized)' },
-  interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", text: "...", buttonsList:[{id,title}] }' },
-  image:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Image/media message node.' },
-  capture_input:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Save user reply. data: { question: "...", variable: "..." }' },
-  logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Conditional branch. data: { variable, operator, value }' },
-  delay:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Wait node. data: { waitValue, waitUnit }' },
-  shopify_call:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Shopify action. data: { action: "CHECK_ORDER_STATUS|search_products|..." }' },
-  catalog:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'WhatsApp catalog message. data: { catalogType, body/text, header?, footer? }' },
-  cart_handler:   { handles: { in: ['top'], out: ['a'] }, desc: 'Checkout/cart handler. data: { checkoutMessage?: "..." }' },
-  order_action:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Order operation node.' },
-  abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery automation step.' },
-  cod_prepaid:    { handles: { in: ['top'], out: ['paid','cod'] }, desc: 'COD conversion branch.' },
-  review:         { handles: { in: ['top'], out: ['positive','negative'] }, desc: 'Review collection node.' },
-  warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automated warranty lookup by WhatsApp number; single output after Menu.' },
-  email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node.' },
-  tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Tag lead. data: { tag, action }' },
-  admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Alert admin.' },
-  http_request:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Call external API.' },
-  link:           { handles: { in: ['top'], out: ['bottom'] }, desc: 'Redirect/link node.' },
-  automation:     { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automation helper node.' },
-  livechat:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Transfer to live agent.' },
+  trigger:        { handles: { out: ['bottom'] }, desc: 'Flow entry. data: { triggerType: "first_message|keyword|abandoned_cart|...", keywords?:[], matchMode? }' },
+  intent_trigger: { handles: { in: ['top'], out: ['a'] }, desc: 'AI intent match entry. data: { intentName, threshold }' },
+  message:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send text. data: { text: "..." }' },
+  interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", text, buttonsList:[{id,title}] }' },
+  image:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Image/media message.' },
+  email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node. data: { subject, body }' },
+  whatsapp_flow:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Meta WhatsApp Flow form. data: { flowId, buttonLabel }' },
+  capture_input:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Save reply. data: { question, variable }' },
+  logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Branch. data: { variable, operator, value }' },
+  delay:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Wait. data: { waitValue, waitUnit }' },
+  link:           { handles: { in: ['top'], out: ['bottom'] }, desc: 'Jump to another flow folder.' },
+  set_variable:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Set conversation variable.' },
+  ab_test:        { handles: { in: ['top'], out: ['a','b'] }, desc: 'A/B split. data: { splitRatio }' },
+  schedule:       { handles: { in: ['top'], out: ['open','closed'] }, desc: 'Business hours gate.' },
+  catalog:        { handles: { in: ['top'], out: ['bottom','cart'] }, desc: 'WhatsApp catalog. data: { catalogType, body/text }' },
+  shopify_call:   { handles: { in: ['top'], out: ['bottom','success','not_found'] }, desc: 'Shopify action. data: { action }' },
+  cart_handler:   { handles: { in: ['top'], out: ['a'] }, desc: 'Checkout link after catalog cart.' },
+  livechat:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Human agent handoff.' },
+  warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Warranty lookup by phone.' },
+  persona:        { handles: { in: ['top'], out: ['a'] }, desc: 'AI reply from knowledge base.' },
+  admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email admin alert (no WhatsApp).' },
+  tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'CRM tag. data: { tag, action: "add"|"remove" }' },
+  webhook:        { handles: { in: ['top'], out: ['success','error'] }, desc: 'HTTPS webhook.' },
+  http_request:   { handles: { in: ['top'], out: ['success','error'] }, desc: 'HTTP request.' },
+  automation:     { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automation trigger helper.' },
+  template:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Approved Meta template (prefer message for AI drafts).' },
+  folder:         { handles: {}, desc: 'Layout folder only — do not use in AI-generated flows.' },
 };
 
-const SUPPORTED_TYPES = Object.keys(NODE_TYPES);
+const SUPPORTED_TYPES = Object.keys(NODE_TYPES).filter((t) => t !== 'folder');
+const FORBIDDEN_AI_TYPES = new Set(V1_FORBIDDEN_NODE_TYPES);
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
 const buildSystemPrompt = (businessCtx) => `
@@ -57,12 +63,14 @@ You are a WhatsApp Flow Architect. Convert business requirements into production
 1. Use ONLY these exact "type" strings: ${SUPPORTED_TYPES.join(', ')}
 2. Every node MUST have: id (string), type (one of above), position {x, y}, data {}
 3. Every flow MUST start with exactly one "trigger" type node
-4. Edges: { id, source, target, sourceHandle? } — sourceHandle required for interactive, logic, ab_test, cod_prepaid, abandoned_cart
+4. Edges: { id, source, target, sourceHandle? } — sourceHandle required for interactive, logic, ab_test, schedule, webhook, http_request
 5. Positions: start at x=300,y=50 for trigger; add y+220 per step; branches split x±300
 6. Return RAW JSON ONLY: { "nodes": [...], "edges": [...] } — no markdown, no explanation
 7. Minimum 6 nodes, maximum 25 nodes
 8. Every interactive node needs at least 2 buttons in buttonsList with unique ids
-9. EVERY edge originating from an 'interactive' node MUST have a 'sourceHandle' that EXACTLY matches the 'id' of the corresponding button/list item in the node's data.
+9. EVERY edge from an interactive node MUST have sourceHandle matching a button/list row id
+10. V1 scope: NO in-chat order tracking menus, NO cod_prepaid, NO review nodes. Cart recovery = trigger type abandoned_cart + delay + message chain. Admin alerts = email only.
+11. Prefer Indian D2C copy: catalog browse, cancel/modify order, returns, warranty, install help, agent handoff
 
 ## NODE DATA SCHEMAS
 ${Object.entries(NODE_TYPES).map(([k,v]) => `- ${k}: ${v.desc}`).join('\n')}
@@ -176,6 +184,7 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
   for (const node of nodes) {
     // Must have id, type, position
     if (!node.id || !node.type || !node.position) continue;
+    if (FORBIDDEN_AI_TYPES.has(node.type)) continue;
     // Must be a known type
     if (!SUPPORTED_TYPES.includes(node.type)) {
       // Attempt type coercion for common Gemini mistakes
@@ -186,8 +195,10 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
         buttonNode: 'interactive', button: 'interactive',
         escalateNode: 'livechat', human_handoff: 'livechat',
         payment: 'message', payment_link: 'message',
-        order: 'order_action',
-        ab_test: 'logic',
+        order: 'message', order_action: 'message',
+        cod_prepaid: 'message', review: 'message',
+        abandoned_cart: 'message',
+        ab_test: 'ab_test',
         template: 'message', wa_template: 'message',
       };
       const coerced = typeMap[node.type] || typeMap[node.type?.toLowerCase()];

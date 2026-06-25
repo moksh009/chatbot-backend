@@ -85,7 +85,6 @@ function registerAllCrons() {
   require('./phase8Cron').registerPhase8Crons();
   require('./winBackEnrollmentCron').registerWinBackCron();
   require("./templateStatusSyncCron")();
-  require("./billingReminderCron")();
   require("./platformReviewCron")();
   require("./templateCatalogValidationCron")();
   require("./insightsCron")();

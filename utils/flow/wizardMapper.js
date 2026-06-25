@@ -167,7 +167,6 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
 
   setIfTruthy(out, "platformVars.adminWhatsappNumber", wizardData.adminPhone);
   setIfTruthy(out, "adminPhone",                       wizardData.adminPhone);
-  setIfTruthy(out, "adminAlertWhatsapp",               wizardData.adminPhone);
 
   setIfTruthy(out, "adminAlertEmail", wizardData.adminAlertEmail);
   if (wizardData.adminEmail && String(wizardData.adminEmail).trim()) {
@@ -175,9 +174,7 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
     out.adminEmail = em;
     if (!out.adminAlertEmail) out.adminAlertEmail = em;
   }
-  if (wizardData.adminAlertPreferences === "whatsapp" || wizardData.adminAlertPreferences === "email" || wizardData.adminAlertPreferences === "both") {
-    out.adminAlertPreferences = wizardData.adminAlertPreferences;
-  }
+  out.adminAlertPreferences = 'email';
   setIfTruthy(out, "platformVars.baseCurrency",        wizardData.currency || "₹");
   setIfTruthy(out, "brand.currency",                   wizardData.currency || "₹");
   setIfTruthy(out, "platformVars.businessDescription", wizardData.businessDescription);

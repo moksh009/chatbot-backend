@@ -2,19 +2,19 @@
 
 const WELCOME_A = {
   electronics: (brand, bot) =>
-    `Hi {{first_name}} 👋 Welcome to *${brand}*.\nI'm *${bot}* — your tech specialist. Browse smart home & electronics, track orders, or get install help.\n\nTap *Menu* to continue.`,
+    `Hi {{first_name}} 👋 Welcome to *${brand}*.\nI'm *${bot}* — your tech specialist. Browse products, get install help, or reach our support team.\n\nTap *Menu* to continue.`,
   fashion: (brand, bot) =>
-    `Hi {{first_name}} ✨ *${brand}* here — I'm *${bot}*, your style assistant.\nExplore new drops, check sizing & returns, or track your order.\n\nTap *Menu* below.`,
+    `Hi {{first_name}} ✨ *${brand}* here — I'm *${bot}*, your style assistant.\nExplore new drops, check sizing, handle returns, or speak to our team.\n\nTap *Menu* below.`,
   beauty: (brand, bot) =>
-    `Hi {{first_name}} 💄 Welcome to *${brand}*.\nI'm *${bot}* — ask about products, routines, or your order anytime.\n\nTap *Menu* to get started.`,
+    `Hi {{first_name}} 💄 Welcome to *${brand}*.\nI'm *${bot}* — ask about products, routines, or get help with your order anytime.\n\nTap *Menu* to get started.`,
   food: (brand, bot) =>
-    `Hi {{first_name}} 👋 *${brand}* here — I'm *${bot}*.\nReorder favourites, check delivery, or reach our team in one tap.\n\nTap *Menu* below.`,
+    `Hi {{first_name}} 👋 *${brand}* here — I'm *${bot}*.\nBrowse our menu, get order help, or reach our team in one tap.\n\nTap *Menu* below.`,
   salon: (brand, bot) =>
     `Hi {{first_name}} ✂️ Welcome to *${brand}*.\nI'm *${bot}* — book appointments, view services, or message our front desk.\n\nTap *Menu* to continue.`,
   services: (brand, bot) =>
-    `Hi {{first_name}} 👋 *${brand}* here — I'm *${bot}*.\nGet quotes, check status, or connect with our team.\n\nTap *Menu* below.`,
+    `Hi {{first_name}} 👋 *${brand}* here — I'm *${bot}*.\nGet quotes, order help, or connect with our team.\n\nTap *Menu* below.`,
   ecommerce: (brand, bot) =>
-    `Hi {{first_name}} 👋 Welcome to *${brand}*.\nI'm *${bot}* — browse products, track orders, or talk to support.\n\nTap *Menu* to continue.`,
+    `Hi {{first_name}} 👋 Welcome to *${brand}*.\nI'm *${bot}* — browse products, get order help, or talk to our team.\n\nTap *Menu* to continue.`,
 };
 
 const INDUSTRY_MAP = {

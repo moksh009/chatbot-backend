@@ -16,17 +16,16 @@ const CHANNEL_DEFAULTS = {
   instagram: 5,
 };
 
+const HIGH_DEFAULT = Number(process.env.PHASE9_TENANT_CONCURRENCY_DEFAULT || 200);
+
 function resolveMaxParallel(client, channel = 'whatsapp') {
   if (channel === 'webhook') {
     return Number(process.env.PHASE9_WEBHOOK_TENANT_CONCURRENCY || 10);
   }
-  const planSlug = client?.subscriptionPlan || client?.plan || 'diy_lite';
-  resolvePlanLimits(planSlug);
-  const planCap = PLAN_MAX_PARALLEL[planSlug] || PLAN_MAX_PARALLEL.diy_lite;
   const configured = Number(client?.complianceConfig?.concurrency?.[channel]?.maxParallel);
   const channelDefault = CHANNEL_DEFAULTS[channel] || 10;
   const tenantCap = Number.isFinite(configured) && configured > 0 ? configured : channelDefault;
-  return Math.min(planCap, tenantCap);
+  return Math.min(HIGH_DEFAULT, tenantCap);
 }
 
 module.exports = { resolveMaxParallel, PLAN_MAX_PARALLEL };

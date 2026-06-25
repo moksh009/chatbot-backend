@@ -849,7 +849,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           conversationId: convo._id,
           topic: '🔕 USER OPTED OUT',
           triggerSource: `User sent "${earlyTextRaw}". Bot is now PAUSED; pending jobs cancelled.`,
-          channel: 'both',
+          channel: 'email',
         });
         perf.finish('opt_out_handled');
         return true;
@@ -1523,7 +1523,7 @@ async function runDualBrainEngine(parsedMessage, client) {
              conversationId: convo._id,
              topic: '🚨 ROUTING ESCALATION — Attention Needed',
              triggerSource: `Routing rule matched — escalate to management\n🔗 ${DashboardLink}`,
-             channel: 'both',
+             channel: 'email',
              customerQuery: inboundText || '(routing rule)',
            });
            if (io) {
@@ -1850,7 +1850,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       conversationId: convo._id,
       topic: '🔕 USER OPTED OUT',
       triggerSource: `User sent "${userTextRaw}". Bot is now PAUSED; pending jobs cancelled.`,
-      channel: 'both',
+      channel: 'email',
     });
     return true;
   }
@@ -1886,7 +1886,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           conversationId: convo._id,
           topic: "🚨 AGENT REQUEST — Attention Needed",
           triggerSource: `💬 "${userText}"\n👤 ${lead?.name || 'Unknown'}\n🛒 ${cartInfo}\n📦 ${orderInfo}\n🔗 ${DashboardLink}`,
-          channel: 'both',
+          channel: 'email',
           customerQuery: userText,
       });
       if (io) {
@@ -4009,16 +4009,17 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
 
-    // 3. Email notification
-    if (channels.includes('Email') && node.data?.alertEmailTo) {
+    // 3. Email notification via platform sender + workspace alert contacts
+    if (channels.includes('Email')) {
       try {
-        const { sendAlertEmail } = require('../core/emailService');
-        await sendAlertEmail({
-          to: node.data.alertEmailTo,
-          subject: `[TopEdge Alert] ${alertMsg}`,
-          body: messageBody,
-          clientId: client.clientId,
+        const NotificationService = require('../core/notificationService');
+        await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
+          conversationId: convo._id,
+          topic: alertMsg,
+          triggerSource: messageBody,
+          channel: 'email',
+          lead,
         });
       } catch (err) {
         log.error(`AdminAlert email dispatch failed: ${err.message}`);

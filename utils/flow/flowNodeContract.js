@@ -1,3 +1,10 @@
+'use strict';
+
+/**
+ * Flow Builder V1 node contract — single source of truth for shippable types.
+ * Frontend mirror: chatbot-dashboard-frontend-main/src/components/FlowBuilder/flowNodeContract.js
+ */
+
 const NODE_TYPE_ALIASES = {
   templatenode: 'template',
   messageNode: 'message',
@@ -13,43 +20,90 @@ const NODE_TYPE_ALIASES = {
   webhooknode: 'http_request',
   human_handoff: 'livechat',
   escalateNode: 'escalate',
+  escalate: 'livechat',
   triggernode: 'trigger',
   trigger_node: 'trigger',
+  warranty_lookup: 'warranty_check',
+  flow: 'whatsapp_flow',
+  group: 'folder',
 };
 
-const CANONICAL_NODE_TYPES = new Set([
+/** Types the generator, AI builder, and canvas may use in V1. */
+const V1_SHIPPABLE_NODE_TYPES = new Set([
   'trigger',
+  'intent_trigger',
   'message',
   'interactive',
-  'template',
-  'capture_input',
+  'email',
+  'whatsapp_flow',
   'logic',
   'delay',
-  'shopify_call',
-  'http_request',
-  'escalate',
+  'link',
+  'capture_input',
+  'set_variable',
   'ab_test',
-  'payment_link',
-  'cod_prepaid',
-  'warranty_check',
-  'admin_alert',
-  'livechat',
+  'schedule',
   'catalog',
-  'email',
-  'sequence',
+  'shopify_call',
+  'cart_handler',
+  'livechat',
+  'warranty_check',
+  'persona',
+  'admin_alert',
+  'tag_lead',
+  'webhook',
+  'http_request',
+  'automation',
+  'install_guide_entry',
+  'template',
   'folder',
   'image',
-  'persona',
-  'intent_trigger',
-  'automation',
-  'schedule',
-  'link',
-  'sticky',
-  'whatsapp_flow',
-  'webhook',
-  'set_variable',
-  'warranty_lookup',
 ]);
+
+/** Palette-only or legacy — not emitted by generator/AI in V1. */
+const V1_PALETTE_ONLY_TYPES = new Set([
+  'cod_prepaid',
+]);
+
+/** Deprecated — validator blocks publish; migrate to message/equivalent. */
+const V1_FORBIDDEN_NODE_TYPES = new Set([
+  'review',
+  'order_action',
+  'payment_link',
+  'cod_prepaid',
+]);
+
+/** Legacy superset for normalization of old graphs. */
+const CANONICAL_NODE_TYPES = new Set([
+  ...V1_SHIPPABLE_NODE_TYPES,
+  ...V1_PALETTE_ONLY_TYPES,
+  ...V1_FORBIDDEN_NODE_TYPES,
+  'escalate',
+  'sequence',
+  'sticky',
+  'story_mention',
+  'abandoned_cart',
+  'segment',
+]);
+
+/** Core D2C template feature flags (V1 shipped). */
+const V1_CORE_D2C_FEATURES = {
+  enableCatalog: true,
+  enableOrderTracking: false,
+  enableCancelOrder: true,
+  enableReturnsRefunds: true,
+  enableWarranty: true,
+  enableInstallSupport: true,
+  enableFAQ: true,
+  enableAbandonedCart: true,
+  enableReviewCollection: false,
+  enableSupportEscalation: true,
+  enableAIFallback: true,
+  enableBusinessHoursGate: true,
+  enableCodToPrepaid: false,
+  enableAdminAlerts: true,
+  enableB2BWholesale: false,
+};
 
 function normalizeNodeType(input) {
   if (!input) return '';
@@ -62,8 +116,21 @@ function isCanonicalNodeType(type) {
   return CANONICAL_NODE_TYPES.has(type);
 }
 
+function isV1ShippableNodeType(type) {
+  return V1_SHIPPABLE_NODE_TYPES.has(type);
+}
+
+function isV1ForbiddenNodeType(type) {
+  return V1_FORBIDDEN_NODE_TYPES.has(type);
+}
+
 module.exports = {
   normalizeNodeType,
   isCanonicalNodeType,
+  isV1ShippableNodeType,
+  isV1ForbiddenNodeType,
   CANONICAL_NODE_TYPES: Array.from(CANONICAL_NODE_TYPES),
+  V1_SHIPPABLE_NODE_TYPES: Array.from(V1_SHIPPABLE_NODE_TYPES),
+  V1_FORBIDDEN_NODE_TYPES: Array.from(V1_FORBIDDEN_NODE_TYPES),
+  V1_CORE_D2C_FEATURES,
 };

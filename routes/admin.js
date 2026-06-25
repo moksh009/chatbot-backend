@@ -656,99 +656,6 @@ router.get('/clients/:id/credentials', protect, isSuperAdmin, adminSensitiveLimi
   }
 });
 
-/**
- * POST /api/admin/clients/:id/entitlements
- * Secure VIP grant / revoke — mirrors scripts/grantLifetimeAccess.js with audit trail.
- * Body: { action: 'grant'|'revoke', note?, grantUserLifetime?, suspend? }
- */
-router.post('/clients/:id/entitlements', protect, isSuperAdmin, async (req, res) => {
-  try {
-    const query = resolveAdminClientQuery(req.params.id);
-    if (!query) return res.status(400).json({ success: false, message: 'Invalid client id' });
-
-    const existing = await Client.findOne(query).select('clientId name').lean();
-    if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const action = String(req.body?.action || 'grant').toLowerCase();
-    const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require('../utils/core/entitlements');
-    const { auditSecurity } = require('../middleware/securityAudit');
-    const { getAccessForUserClient } = require('../utils/core/accessFlags');
-
-    let client;
-    if (action === 'revoke') {
-      client = await revokeFullWorkspaceAccess(existing.clientId, {
-        suspend: req.body?.suspend === true,
-      });
-      auditSecurity('ADMIN_ENTITLEMENT_REVOKE', {
-        req,
-        tenantId: existing.clientId,
-        targetClientId: existing.clientId,
-        reason: req.body?.note || 'admin_revoke',
-      });
-    } else if (action === 'grant') {
-      client = await grantFullWorkspaceAccess(existing.clientId, {
-        note: req.body?.note || 'Granted via Admin Dashboard',
-        paymentSource: req.body?.paymentSource || 'paytm_offline',
-        grantUserLifetime: req.body?.grantUserLifetime === true,
-        plan: req.body?.plan,
-        tier: req.body?.tier,
-      });
-      auditSecurity('ADMIN_ENTITLEMENT_GRANT', {
-        req,
-        tenantId: existing.clientId,
-        targetClientId: existing.clientId,
-        reason: req.body?.note || 'admin_grant',
-      });
-    } else if (action === 'suspend') {
-      client = await Client.findOneAndUpdate(
-        { clientId: existing.clientId },
-        { $set: { suspendedAt: new Date() } },
-        { new: true }
-      );
-      auditSecurity('ADMIN_CLIENT_SUSPENDED', { req, targetClientId: existing.clientId });
-    } else if (action === 'unsuspend') {
-      client = await Client.findOneAndUpdate(
-        { clientId: existing.clientId },
-        { $unset: { suspendedAt: '' } },
-        { new: true }
-      );
-      auditSecurity('ADMIN_CLIENT_UNSUSPENDED', { req, targetClientId: existing.clientId });
-    } else {
-      return res.status(400).json({ success: false, message: 'action must be grant, revoke, suspend, or unsuspend' });
-    }
-
-    await AuditLog.create({
-      action: `ENTITLEMENT_${action.toUpperCase()}`,
-      performedBy: req.user._id,
-      targetClientId: existing.clientId,
-      details: {
-        note: req.body?.note,
-        grantUserLifetime: req.body?.grantUserLifetime,
-        ip: req.ip,
-      },
-    }).catch(() => {});
-
-    const access = await getAccessForUserClient(req.user, client);
-    const { clearClientCache } = require('../middleware/apiCache');
-    await clearClientCache(existing.clientId).catch(() => {});
-
-    res.json({
-      success: true,
-      client,
-      workspaceAccess: access,
-      message:
-        action === 'grant'
-          ? `Full access granted for ${existing.clientId}`
-          : action === 'revoke'
-            ? `Access revoked for ${existing.clientId}`
-            : `Client ${action} applied`,
-    });
-  } catch (err) {
-    log.error('Entitlements action failed', { error: err.message });
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
 // --- CREATE NEW CLIENT ---
 router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
@@ -1740,9 +1647,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
     if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
-    if (adminAlertPreferences === 'whatsapp' || adminAlertPreferences === 'email' || adminAlertPreferences === 'both') {
-      updateFields.adminAlertPreferences = adminAlertPreferences;
-    }
+    updateFields.adminAlertPreferences = 'email';
     if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
     if (businessName !== undefined) {
       updateFields.businessName = businessName;
@@ -2000,21 +1905,17 @@ router.post('/test-admin-alert', protect, async (req, res) => {
     }
 
     const NotificationService = require('../utils/core/notificationService');
-    const { resolveAdminAlertTemplateName } = require('../utils/core/notificationService');
-    const templateName = resolveAdminAlertTemplateName(client);
-
     const results = await NotificationService.sendAdminAlert(client, {
       customerPhone: req.body?.customerPhone || client.supportPhone || client.adminPhone || '+919999999999',
       topic: 'Test admin alert — please confirm you received this',
       triggerSource: 'Settings test button',
       customerQuery: 'This is a test escalation from TopEdge AI settings.',
       skipDedup: true,
+      channel: 'email',
     });
 
     return res.json({
       success: true,
-      templateApproved: !!templateName,
-      templateName: templateName || 'admin_human_alert',
       results,
     });
   } catch (err) {
@@ -3307,200 +3208,6 @@ router.get('/tenant-economics', protect, authorizeAdminScope('viewMetrics'), asy
       .limit(100)
       .lean();
     res.json({ success: true, rows, disclaimer: 'Revenue and costs are estimates.' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.get('/billing/overview', protect, authorizeAdminScope('viewMetrics'), async (req, res) => {
-  try {
-    const { filter = 'all' } = req.query || {};
-    const scopedClientFilter = applyClientScopeFilter({}, req);
-    const clients = await Client.find(scopedClientFilter)
-      .select('clientId name businessName plan isLifetimeAdmin trialEndsAt billing')
-      .lean();
-    const clientMap = new Map(clients.map((c) => [String(c.clientId), c]));
-    const clientIds = clients.map((c) => String(c.clientId));
-
-    const subs = await Subscription.find({ clientId: { $in: clientIds } })
-      .select('clientId plan status currentPeriodEnd amount updatedAt')
-      .lean();
-    const invoices = await Invoice.find({ clientId: { $in: clientIds } })
-      .sort({ createdAt: -1 })
-      .select('clientId createdAt paidAt amount status')
-      .lean();
-    const latestInvoiceMap = new Map();
-    for (const inv of invoices) {
-      const key = String(inv.clientId);
-      if (!latestInvoiceMap.has(key)) latestInvoiceMap.set(key, inv);
-    }
-
-    const rows = clients.map((client) => {
-      const sub = subs.find((s) => String(s.clientId) === String(client.clientId));
-      const inv = latestInvoiceMap.get(String(client.clientId));
-      return {
-        clientId: client.clientId,
-        clientName: client.name || client.businessName || client.clientId,
-        plan: sub?.plan || client.plan || 'trial',
-        status: sub?.status || (client.isLifetimeAdmin ? 'vip' : 'trial'),
-        currentPeriodEnd: sub?.currentPeriodEnd || client.trialEndsAt || null,
-        estimatedMrrInr: sub?.amount ? Math.round(Number(sub.amount) / 100) : 0,
-        lastInvoiceAt: inv?.paidAt || inv?.createdAt || null,
-        isLifetimeAdmin: !!client.isLifetimeAdmin,
-      };
-    }).filter((row) => {
-      if (filter === 'trial_7d') {
-        const dt = row.currentPeriodEnd ? new Date(row.currentPeriodEnd) : null;
-        if (!dt || Number.isNaN(dt.getTime())) return false;
-        const ms = dt.getTime() - Date.now();
-        return ms >= 0 && ms <= 7 * 24 * 60 * 60 * 1000 && row.status === 'trial';
-      }
-      if (filter === 'past_due') return row.status === 'past_due';
-      if (filter === 'vip') return row.isLifetimeAdmin === true;
-      return true;
-    });
-
-    res.json({ success: true, rows });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post('/billing/:clientId/extend-trial', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
-  try {
-    const targetClientId = String(req.params.clientId || '').trim();
-    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
-    const days = Math.max(1, Math.min(60, Number(req.body?.days) || 7));
-    const nextTrialDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-    await Client.updateOne(
-      { clientId: targetClientId },
-      {
-        $set: {
-          trialActive: true,
-          trialEndsAt: nextTrialDate,
-          'billing.trialActive': true,
-          'billing.trialEndsAt': nextTrialDate,
-        },
-      }
-    );
-    res.json({ success: true, clientId: targetClientId, trialEndsAt: nextTrialDate });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post('/billing/:clientId/grant-vip', protect, authorizeAdminScope('grantVIP'), async (req, res) => {
-  try {
-    const targetClientId = String(req.params.clientId || '').trim();
-    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
-    const { grantFullWorkspaceAccess } = require('../utils/core/entitlements');
-    const out = await grantFullWorkspaceAccess(targetClientId, {
-      grantedBy: req.user?._id || req.user?.id || null,
-      reason: req.body?.note || 'admin_billing_ops_grant',
-      grantUserLifetime: true,
-    });
-    res.json({ success: true, client: out });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post('/billing/:clientId/resend-reminder', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
-  try {
-    const targetClientId = String(req.params.clientId || '').trim();
-    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
-    const [client, sub, adminUser] = await Promise.all([
-      Client.findOne({ clientId: targetClientId }).lean(),
-      Subscription.findOne({ clientId: targetClientId }).lean(),
-      User.findOne({ clientId: targetClientId, role: 'CLIENT_ADMIN' }).select('name email phone').lean(),
-    ]);
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!sub) return res.status(400).json({ success: false, message: 'No subscription found' });
-
-    const sentForKey = `manual-billing-reminder:${targetClientId}:${Date.now()}`;
-    const periodEnd = sub.currentPeriodEnd
-      ? new Date(sub.currentPeriodEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-      : 'your renewal date';
-    const amount = sub.amount ? Math.round(Number(sub.amount) / 100) : 0;
-    const billingUrl = `${String(process.env.TOPEDGE_DASHBOARD_URL || 'https://dash.topedgeai.com').replace(/\/$/, '')}/billing`;
-
-    if (adminUser?.email) {
-      const html = renderBrandedEmail({
-        brandName: 'TopEdge AI',
-        title: 'Billing reminder',
-        bodyHtml: `Hi ${adminUser.name || client.name || 'there'}, your plan renews on ${periodEnd}. Upcoming amount: ${amount ? formatInr(amount) : 'as per your plan'}.`,
-        ctaUrl: billingUrl,
-        ctaLabel: 'Open billing',
-      });
-      const ok = await sendSystemEmail({ to: adminUser.email, subject: 'TopEdge billing reminder', html });
-      await LifecycleAutomationLog.create({
-        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'billing_reminder',
-        channel: 'email', status: ok ? 'sent' : 'failed', reason: ok ? '' : 'send_failed', sentForKey,
-      }).catch(() => {});
-    }
-    if (adminUser?.phone) {
-      const wa = await sendPlatformWhatsAppTemplate({
-        toPhone: adminUser.phone,
-        templateName: String(process.env.TOPEDGE_BILLING_REMINDER_TEMPLATE_NAME || '').trim() || 'topedge_billing_reminder_7d_v1',
-        components: [{ type: 'body', parameters: [{ type: 'text', text: adminUser.name || client.name || 'there' }, { type: 'text', text: periodEnd }, { type: 'text', text: amount ? formatInr(amount) : 'your plan amount' }] }],
-      });
-      await LifecycleAutomationLog.create({
-        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'billing_reminder',
-        channel: 'whatsapp', status: wa.sent ? 'sent' : wa.skipped ? 'skipped' : 'failed', reason: wa.reason || '', sentForKey,
-      }).catch(() => {});
-    }
-
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post('/billing/:clientId/resend-receipt', protect, authorizeAdminScope('assignPlans'), async (req, res) => {
-  try {
-    const targetClientId = String(req.params.clientId || '').trim();
-    if (!denyUnlessAdminClientAccess(req, res, targetClientId)) return;
-    const [client, sub, adminUser, latestInvoice] = await Promise.all([
-      Client.findOne({ clientId: targetClientId }).lean(),
-      Subscription.findOne({ clientId: targetClientId }).lean(),
-      User.findOne({ clientId: targetClientId, role: 'CLIENT_ADMIN' }).select('name email phone').lean(),
-      Invoice.findOne({ clientId: targetClientId }).sort({ createdAt: -1 }).lean(),
-    ]);
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!sub) return res.status(400).json({ success: false, message: 'No subscription found' });
-
-    const sentForKey = `manual-payment-receipt:${targetClientId}:${Date.now()}`;
-    const amount = latestInvoice?.amount ? Math.round(Number(latestInvoice.amount) / 100) : (sub.amount ? Math.round(Number(sub.amount) / 100) : 0);
-    const periodEnd = sub.currentPeriodEnd
-      ? new Date(sub.currentPeriodEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-      : 'your current billing period';
-
-    if (adminUser?.email) {
-      const html = renderBrandedEmail({
-        brandName: 'TopEdge AI',
-        title: 'Payment received',
-        bodyHtml: `Hi ${adminUser.name || client.name || 'there'}, we received your payment${amount ? ` of ${formatInr(amount)}` : ''}. Plan: ${sub.plan || 'TopEdge'}. Next renewal: ${periodEnd}.`,
-        ctaUrl: latestInvoice?.invoiceUrl || '',
-        ctaLabel: latestInvoice?.invoiceUrl ? 'View invoice' : 'Open dashboard',
-      });
-      const ok = await sendSystemEmail({ to: adminUser.email, subject: 'TopEdge payment receipt', html });
-      await LifecycleAutomationLog.create({
-        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'payment_success',
-        channel: 'email', status: ok ? 'sent' : 'failed', reason: ok ? '' : 'send_failed', sentForKey,
-      }).catch(() => {});
-    }
-    if (adminUser?.phone) {
-      const wa = await sendPlatformWhatsAppTemplate({
-        toPhone: adminUser.phone,
-        templateName: String(process.env.TOPEDGE_PAYMENT_SUCCESS_TEMPLATE_NAME || '').trim() || 'topedge_payment_success_v1',
-        components: [{ type: 'body', parameters: [{ type: 'text', text: adminUser.name || client.name || 'there' }, { type: 'text', text: amount ? formatInr(amount) : 'your payment' }, { type: 'text', text: periodEnd }] }],
-      });
-      await LifecycleAutomationLog.create({
-        clientId: targetClientId, clientName: client.name || client.businessName || '', automationType: 'payment_success',
-        channel: 'whatsapp', status: wa.sent ? 'sent' : wa.skipped ? 'skipped' : 'failed', reason: wa.reason || '', sentForKey,
-      }).catch(() => {});
-    }
-    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }

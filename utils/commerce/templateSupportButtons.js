@@ -61,7 +61,7 @@ async function handleTemplateSupportButtonTap({
       conversationId: convo._id,
       topic: "🙋 Customer requested support",
       triggerSource: `Template button: "${userText}"\n👤 ${lead?.name || "Customer"}\n🛒 ${cartInfo}\n📦 ${orderInfo}\n🔗 ${DashboardLink}`,
-      channel: "both",
+      channel: "email",
       customerQuery: userText,
     });
   } catch (err) {

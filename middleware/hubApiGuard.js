@@ -25,7 +25,6 @@ const API_HUB_RULES = [
   { prefix: '/api/meta-templates', sectionId: 'meta-manager' },
   { prefix: '/api/whatsapp-flows', sectionId: 'meta-manager' },
   { prefix: '/api/auto-templates', sectionId: 'meta-manager' },
-  { prefix: '/api/billing', sectionId: 'billing' },
   { prefix: '/api/settings', sectionId: 'settings' },
   { prefix: '/api/wizard', sectionId: 'settings' },
   { prefix: '/api/admin/my-settings', sectionId: 'settings' },

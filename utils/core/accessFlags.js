@@ -78,42 +78,29 @@ async function resolveSubscriptionForClient(client) {
  */
 function computeAccessPayload(client, sub, user) {
   const isAdminBypass = user?.role === 'SUPER_ADMIN' || user?.isLifetimeAdmin;
-  if (client?.isLifetimeAdmin) {
+  if (isAdminBypass || client?.isLifetimeAdmin) {
     return {
       manuallySuspended: false,
       trialWindowActive: true,
       hasPaidAccess: true,
-      dashboardLocked: false
+      dashboardLocked: false,
     };
   }
-  if (isAdminBypass) {
+
+  if (isHardSuspended(client)) {
     return {
-      manuallySuspended: false,
-      trialWindowActive: true,
-      hasPaidAccess: true,
-      dashboardLocked: false
+      manuallySuspended: true,
+      trialWindowActive: false,
+      hasPaidAccess: false,
+      dashboardLocked: true,
     };
   }
-
-  const trialWindowActive = isTrialWindowActive(client, sub);
-  const paid = hasPaidEntitlements(client, sub);
-
-  /**
-   * Red "Account Suspended" UX: honest revoke with no entitlement left — not a poisoned trialActive flag.
-   * Mid-trial / paid hard stop: use Client.suspendedAt (or adjust trialEndsAt in admin).
-   */
-  const manuallySuspended =
-    isHardSuspended(client) ||
-    (hasAdminAccessToggleOff(client) && !trialWindowActive && !paid);
-
-  const dashboardLocked =
-    manuallySuspended === true ? true : !trialWindowActive && !paid;
 
   return {
-    manuallySuspended,
-    trialWindowActive,
-    hasPaidAccess: paid,
-    dashboardLocked
+    manuallySuspended: false,
+    trialWindowActive: true,
+    hasPaidAccess: true,
+    dashboardLocked: false,
   };
 }
 
@@ -150,26 +137,22 @@ async function ensureTrialSubscriptionRecord(clientIdString, trialEndsAt) {
 
 const TRIAL_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** New workspace: 14-day trial on Client + Subscription (signup, OAuth, repaired orphan user). */
+/** New workspace: full access (billing removed 2026-06). */
 async function provisionNewClientTrial(client) {
   if (!client?.clientId) return client;
   const cid = String(client.clientId);
-  const ends = new Date(Date.now() + TRIAL_MS);
   await Client.updateOne(
     { clientId: cid },
     {
       $set: {
         trialActive: true,
-        trialEndsAt: ends,
+        isPaidAccount: true,
         'billing.trialActive': true,
-        'billing.trialEndsAt': ends,
-        isPaidAccount: false,
-        'billing.isPaidAccount': false
+        'billing.isPaidAccount': true,
       },
-      $unset: { suspendedAt: '' }
+      $unset: { suspendedAt: '', trialEndsAt: '', 'billing.trialEndsAt': '' },
     }
   );
-  await ensureTrialSubscriptionRecord(cid, ends);
   return Client.findOne({ clientId: cid }).lean();
 }
 

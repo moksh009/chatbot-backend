@@ -223,25 +223,25 @@ function flowPos(col, row) {
 function buildMainMenuRows(F) {
   const rows = [];
   if (F.enableCatalog) {
-    rows.push({ id: "mnu_browse", title: "🛍️ Browse Products", description: "Explore our collection" });
+    rows.push({ id: "mnu_browse", title: "🛍️ Browse Products", description: "Shop our full collection" });
   }
   if (F.enableOrderTracking) {
-    rows.push({ id: "mnu_track", title: "📦 Track My Order", description: "Status & tracking link" });
+    rows.push({ id: "mnu_track", title: "📦 Check Order Status", description: "View your latest order" });
   }
   if (F.enableCancelOrder) {
-    rows.push({ id: "mnu_cancel", title: "❌ Cancel / Modify Order", description: "Change or cancel an order" });
+    rows.push({ id: "mnu_cancel", title: "✏️ Modify / Cancel Order", description: "Change or cancel an order" });
   }
   if (F.enableInstallSupport) {
-    rows.push({ id: "mnu_help", title: "🤝 Help With My Order", description: "Delivery, returns, setup" });
+    rows.push({ id: "mnu_help", title: "🤝 Order Help", description: "Delivery issues, returns & support" });
   }
   if (F.enableWarranty) {
-    rows.push({ id: "mnu_warranty", title: "🛡️ Warranty Details", description: "Coverage & claims" });
+    rows.push({ id: "mnu_warranty", title: "🛡️ Warranty & Repairs", description: "Coverage details & claims" });
   }
   if (F.enableAIFallback) {
-    rows.push({ id: "mnu_ai", title: "🆘 Need Help?", description: "Ask us anything" });
+    rows.push({ id: "mnu_ai", title: "💬 Quick Question", description: "Ask our bot anything" });
   }
   if (F.enableSupportEscalation) {
-    rows.push({ id: "mnu_agent", title: "👨‍💼 Talk to Agent", description: "Speak with our team" });
+    rows.push({ id: "mnu_agent", title: "👤 Talk to Our Team", description: "Speak with a real person" });
   }
   if (!rows.length) {
     rows.push({ id: "mnu_menu", title: "📋 Main Menu", description: "Get started" });
@@ -568,15 +568,6 @@ function buildIDs(client, wizardData) {
     sup_livechat:     `sup_livechat_${ts}`,
     // FAQ
     faq_msg:          `faq_msg_${ts}`,
-    // Order confirm + COD
-    conf_msg:         `conf_msg_${ts}`,
-    cod_check:        `cod_check_${ts}`,
-    cod_node:         `cod_node_${ts}`,
-    cod_paid_msg:     `cod_paid_msg_${ts}`,
-    // Review
-    rev_request:      `rev_request_${ts}`,
-    rev_positive:     `rev_positive_${ts}`,
-    rev_negative:     `rev_negative_${ts}`,
     // B2B
     b2b_trigger:      `b2b_trigger_${ts}`,
     b2b_capture:      `b2b_capture_${ts}`,
@@ -648,7 +639,7 @@ function consolidateMenuRows(branches, F) {
         ? {
             ...r,
             title: "📦 Orders & returns",
-            description: "Track, cancel, modify, or return",
+            description: "Cancel, modify, or return",
           }
         : r
     );
@@ -669,11 +660,10 @@ async function generateAIContent(ctx) {
   const prompt = `You are a top-tier D2C growth copy chief. Create JSON marketing copy for a WhatsApp commerce bot.
 Use AIDA (Attention, Interest, Desire, Action) where appropriate. For cart_recovery_1 use empathy + hook (no hard sell).
 For cart_recovery_2 add authentic scarcity / velocity (selling fast, cart not held) without fake countdown timers.
-For cart_recovery_3 add FOMO + clear CTA + optional incentive framing (no fabricated coupon codes unless brand-agnostic like "active offers").
-For cod_nudge: contrast COD friction (slower dispatch, verification) vs prepaid benefits (priority ship, cashback using {{currency}}{{discount_amount}} placeholders).
-For order_confirmed_msg: premium reassurance + anticipation of tracking.
+For cart_recovery_3 add FOMO + clear CTA (no fabricated coupon codes unless brand-agnostic like "active offers").
 For warranty_* strings: confident, legal-safe, enterprise tone — no guarantees beyond stated {{warranty_duration}}.
-Keep placeholders EXACTLY as token names: {{first_name}},{{brand_name}},{{bot_name}},{{line_items_list}},{{cart_total}},{{checkout_url}},{{first_product_title}},{{order_number}},{{order_total}},{{payment_method}},{{shipping_address}},{{currency}},{{discount_amount}},{{payment_link}},{{warranty_duration}} — do not rename.
+Keep placeholders EXACTLY as token names: {{first_name}},{{brand_name}},{{bot_name}},{{line_items_list}},{{cart_total}},{{checkout_url}},{{first_product_title}},{{order_number}},{{order_total}},{{payment_method}},{{shipping_address}},{{currency}},{{discount_amount}},{{warranty_duration}} — do not rename.
+Do NOT generate copy for order tracking, COD-to-prepaid nudges, or review collection — those are not in V1 flows.
 BRAND=${businessName}
 DESCRIPTION=${businessDescription}
 BOT=${botName}
@@ -681,7 +671,7 @@ TONE=${tone}
 LANGUAGE=${botLanguage}
 PRODUCTS:
 ${productsSummary}
-Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,warranty_reg_success,warranty_active_msg,warranty_expired_msg,warranty_none_msg,support_hours_msg,return_photo_prompt`;
+Return only JSON with keys: welcome_a,welcome_b,product_menu_text,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,referral_msg,cart_recovery_1,cart_recovery_2,cart_recovery_3,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,warranty_reg_success,warranty_active_msg,warranty_expired_msg,warranty_none_msg,support_hours_msg,return_photo_prompt`;
 
   try {
     const apiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
@@ -859,7 +849,8 @@ function buildCatalogBranch(ctx, IDS) {
     menuSections = menuSplit.primarySections;
     menuSplit.primary.forEach((c) => listRows.push(collectionToRow(c)));
   } else {
-    listRows.push({ id: "featured", title: "Featured", description: "Bestsellers and trending picks" });
+    listRows.push({ id: "all", title: "🛍️ View All Products", description: "Browse our full range" });
+    listRows.push({ id: "featured", title: "⭐ Featured picks", description: "Bestsellers & trending" });
     if (sortedCategories.length) {
       sortedCategories.forEach(([name, items], idx) => {
         listRows.push({
@@ -869,9 +860,9 @@ function buildCatalogBranch(ctx, IDS) {
         });
       });
     } else {
-      listRows.push({ id: "cat_0", title: "General", description: "Core products" });
+      listRows.push({ id: "cat_0", title: "General", description: "All products" });
     }
-    menuSections = [{ title: "{{brand_name}} store", rows: listRows }];
+    menuSections = [{ title: "{{brand_name}} collections", rows: listRows }];
   }
 
   const featuredCatalogData =
@@ -912,10 +903,10 @@ function buildCatalogBranch(ctx, IDS) {
     {
       id: IDS.cat_list, type: "catalog", position: flowPos(5, 1),
       data: {
-        label: "WhatsApp Catalog",
+        label: "Full Catalog",
         catalogType: "full",
         header: "{{brand_name}}",
-        body: "Browse {{brand_name}} products directly in WhatsApp. Add to cart and continue when ready.",
+        body: "Browse all *{{brand_name}}* products — add to cart and tap *Checkout* when you're ready. 🛍️",
         footer: "Secure checkout",
         heatmapCount: 0
       }
@@ -930,13 +921,13 @@ function buildCatalogBranch(ctx, IDS) {
         text: useShopCols
           ? useMpmCatalog
             ? hasOverflowMenu
-              ? "✨ *Explore our store*\n\nTop collections below — tap *More categories* for additional ranges."
-              : "✨ *Explore our store*\n\nTap a collection, then *View items* for the WhatsApp carousel."
+              ? "✨ *{{brand_name}} store*\n\nBrowse by collection — tap *More categories* for additional ranges."
+              : "✨ *{{brand_name}} store*\n\nPick a collection, then *View items* to browse the WhatsApp carousel."
             : hasOverflowMenu
-              ? "Pick a collection — tap *More categories* for the rest."
-              : "Pick a collection to see products in WhatsApp."
-          : "Want curated products? Pick a collection:",
-        buttonText: useShopCols ? "Explore products" : "View collections",
+              ? "✨ *{{brand_name}} store*\n\nPick a collection — tap *More categories* for the full list."
+              : "✨ *{{brand_name}} store*\n\nPick a collection to browse products in WhatsApp. 👇"
+          : "✨ *{{brand_name}} store*\n\nPick a category or tap *View All* to see everything. 👇",
+        buttonText: "Explore products",
         populateFromShopify: useShopCols,
         sections: menuSections,
         heatmapCount: 0
@@ -973,10 +964,10 @@ function buildCatalogBranch(ctx, IDS) {
       data: {
         label: "Catalog next actions",
         interactiveType: "button",
-        text: "Opened the catalog. What should I help you with next?",
+        text: "Found something you like? 🛒 Get your checkout link below, or ask if you need help first.",
         buttonsList: [
-          { id: "checkout", title: "🛒 Checkout link" },
-          { id: "support", title: "🎧 Product help" },
+          { id: "checkout", title: "🛒 Get checkout link" },
+          { id: "support", title: "🎧 Ask a question" },
           { id: "menu", title: "⬅️ Main Menu" }
         ],
         heatmapCount: 0
@@ -1094,7 +1085,7 @@ function buildCatalogBranch(ctx, IDS) {
   }
 
   edges.push(
-    { id: `e_${IDS.cat_list}_cats`, source: IDS.cat_list, target: IDS.cat_category_menu },
+    { id: `e_${IDS.cat_list}_done`, source: IDS.cat_list, target: IDS.cat_addr_prompt },
     { id: `e_${IDS.cat_featured}_next`, source: IDS.cat_featured, target: IDS.cat_addr_prompt },
     { id: `e_${IDS.cat_list}_cart`, source: IDS.cat_list, target: IDS.cat_cart_handler, sourceHandle: "cart" },
     { id: `e_${IDS.cat_featured}_cart`, source: IDS.cat_featured, target: IDS.cat_cart_handler, sourceHandle: "cart" },
@@ -1104,12 +1095,20 @@ function buildCatalogBranch(ctx, IDS) {
     { id: `e_${IDS.cat_addr_prompt}_menu`, source: IDS.cat_addr_prompt, target: IDS.main_menu, sourceHandle: "menu" }
   );
   if (!useShopCols) {
-    edges.push({
-      id: `e_${IDS.cat_category_menu}_featured`,
-      source: IDS.cat_category_menu,
-      target: IDS.cat_featured,
-      sourceHandle: "featured",
-    });
+    edges.push(
+      {
+        id: `e_${IDS.cat_category_menu}_all`,
+        source: IDS.cat_category_menu,
+        target: IDS.cat_list,
+        sourceHandle: "all",
+      },
+      {
+        id: `e_${IDS.cat_category_menu}_featured`,
+        source: IDS.cat_category_menu,
+        target: IDS.cat_featured,
+        sourceHandle: "featured",
+      }
+    );
   }
 
   if (hasOverflowMenu) {
@@ -1216,11 +1215,11 @@ function buildCatalogBranch(ctx, IDS) {
           data: {
             label: "Checkout follow-up",
             interactiveType: "button",
-            text: "Need help finishing checkout?",
+            text: "Still need help finishing your purchase? 🛒 Let us know and we'll get you sorted.",
             buttonsList: [
-              { id: "resend", title: "🔁 Resend link" },
-              { id: "support", title: "🎧 Support" },
-              { id: "done", title: "✅ Done" }
+              { id: "resend", title: "🔁 Resend checkout link" },
+              { id: "support", title: "🎧 I have a question" },
+              { id: "done", title: "✅ Already purchased" }
             ],
             heatmapCount: 0
           }
@@ -1254,7 +1253,7 @@ function buildCatalogBranch(ctx, IDS) {
     nodes,
     edges,
     menuRow: { id: "mnu_browse", title: "🛍️ Browse Products" },
-    entryNodeId: IDS.cat_list,
+    entryNodeId: IDS.cat_category_menu,
     sourceHandle: "mnu_browse",
   };
 }
@@ -1265,6 +1264,9 @@ function buildCancelOrderBranch(ctx, IDS, content) {
   const edges = [];
   const requireReason = F.cancelRequireReason !== false;
   const allowModify = F.cancelAllowModify !== false;
+  const useAdminAlerts = F.enableAdminAlerts !== false;
+  const postCancelNode = useAdminAlerts ? IDS.can_flow_alert : IDS.can_flow_done;
+  const postModFailNode = useAdminAlerts ? IDS.can_flow_mod_alert : IDS.can_flow_mod_done;
 
   nodes.push(
     {
@@ -1400,7 +1402,8 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         heatmapCount: 0,
       },
     },
-    {
+    ...(useAdminAlerts
+      ? [{
       id: IDS.can_flow_alert,
       type: "admin_alert",
       position: flowPos(11, 10),
@@ -1414,7 +1417,8 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         phone: adminPhone || client.adminPhone || "",
         heatmapCount: 0,
       },
-    },
+    }]
+      : []),
     {
       id: IDS.can_flow_done,
       type: "message",
@@ -1500,7 +1504,8 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         heatmapCount: 0,
       },
     },
-    {
+    ...(useAdminAlerts
+      ? [{
       id: IDS.can_flow_mod_alert,
       type: "admin_alert",
       position: flowPos(12, 12),
@@ -1514,7 +1519,8 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         phone: adminPhone || client.adminPhone || "",
         heatmapCount: 0,
       },
-    },
+    }]
+      : []),
     {
       id: IDS.can_flow_mod_done,
       type: "message",
@@ -1539,7 +1545,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
     { id: `e_${IDS.can_flow_resolve}_nf`, source: IDS.can_flow_resolve, target: IDS.can_flow_ask, sourceHandle: "not_found" },
     { id: `e_${IDS.can_logic}_ship`, source: IDS.can_logic, target: IDS.can_flow_shipped, sourceHandle: "true" },
     { id: `e_${IDS.can_logic}_ok`, source: IDS.can_logic, target: IDS.can_flow_choice, sourceHandle: "false" },
-    { id: `e_${IDS.can_flow_choice}_cn`, source: IDS.can_flow_choice, target: requireReason ? IDS.can_flow_reason : IDS.can_flow_alert, sourceHandle: "action_cancel" },
+    { id: `e_${IDS.can_flow_choice}_cn`, source: IDS.can_flow_choice, target: requireReason ? IDS.can_flow_reason : postCancelNode, sourceHandle: "action_cancel" },
     ...(allowModify
       ? [{ id: `e_${IDS.can_flow_choice}_md`, source: IDS.can_flow_choice, target: IDS.can_flow_modify, sourceHandle: "action_modify" }]
       : []),
@@ -1547,8 +1553,10 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       ? [{ id: `e_${IDS.can_flow_choice}_ret`, source: IDS.can_flow_choice, target: IDS.ret_hub, sourceHandle: "action_return" }]
       : []),
     { id: `e_${IDS.can_flow_choice}_mm`, source: IDS.can_flow_choice, target: IDS.main_menu, sourceHandle: "action_back" },
-    { id: `e_${IDS.can_flow_reason}_al`, source: IDS.can_flow_reason, target: IDS.can_flow_alert },
-    { id: `e_${IDS.can_flow_alert}_dn`, source: IDS.can_flow_alert, target: IDS.can_flow_done },
+    { id: `e_${IDS.can_flow_reason}_al`, source: IDS.can_flow_reason, target: postCancelNode },
+    ...(useAdminAlerts
+      ? [{ id: `e_${IDS.can_flow_alert}_dn`, source: IDS.can_flow_alert, target: IDS.can_flow_done }]
+      : []),
     { id: `e_${IDS.can_flow_done}_sp`, source: IDS.can_flow_done, target: IDS.sup_capture },
     { id: `e_${IDS.can_flow_shipped}_mm`, source: IDS.can_flow_shipped, target: IDS.main_menu, sourceHandle: "shipped_menu" },
     { id: `e_${IDS.can_flow_shipped}_ag`, source: IDS.can_flow_shipped, target: IDS.sup_capture, sourceHandle: "shipped_agent" },
@@ -1560,11 +1568,13 @@ function buildCancelOrderBranch(ctx, IDS, content) {
           { id: `e_${IDS.can_flow_modify}_oth`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_other" },
           { id: `e_${IDS.can_flow_mod_capture}_chk`, source: IDS.can_flow_mod_capture, target: IDS.can_flow_mod_check },
           { id: `e_${IDS.can_flow_mod_check}_addr`, source: IDS.can_flow_mod_check, target: IDS.can_flow_addr_sync, sourceHandle: "true" },
-          { id: `e_${IDS.can_flow_mod_check}_oth`, source: IDS.can_flow_mod_check, target: IDS.can_flow_mod_alert, sourceHandle: "false" },
+          { id: `e_${IDS.can_flow_mod_check}_oth`, source: IDS.can_flow_mod_check, target: postModFailNode, sourceHandle: "false" },
           { id: `e_${IDS.can_flow_addr_sync}_ok`, source: IDS.can_flow_addr_sync, target: IDS.can_flow_addr_ok, sourceHandle: "success" },
-          { id: `e_${IDS.can_flow_addr_sync}_fail`, source: IDS.can_flow_addr_sync, target: IDS.can_flow_mod_alert, sourceHandle: "error" },
+          { id: `e_${IDS.can_flow_addr_sync}_fail`, source: IDS.can_flow_addr_sync, target: postModFailNode, sourceHandle: "error" },
           { id: `e_${IDS.can_flow_addr_ok}_mm`, source: IDS.can_flow_addr_ok, target: IDS.main_menu },
-          { id: `e_${IDS.can_flow_mod_alert}_dn`, source: IDS.can_flow_mod_alert, target: IDS.can_flow_mod_done },
+          ...(useAdminAlerts
+            ? [{ id: `e_${IDS.can_flow_mod_alert}_dn`, source: IDS.can_flow_mod_alert, target: IDS.can_flow_mod_done }]
+            : []),
           { id: `e_${IDS.can_flow_mod_done}_mm`, source: IDS.can_flow_mod_done, target: IDS.main_menu },
         ]
       : []),
@@ -1658,7 +1668,7 @@ function buildAiHelpDeskBranch(ctx, IDS) {
   return {
     nodes,
     edges,
-    menuRow: { id: "mnu_ai", title: "🆘 Need Help?" },
+    menuRow: { id: "mnu_ai", title: "💬 Quick Question" },
     entryNodeId: IDS.ai_capture,
     sourceHandle: "mnu_ai",
   };
@@ -1798,8 +1808,9 @@ function buildReturnsBranch(ctx, IDS, content) {
       data: {
         label: "Return admin alert",
         priority: "high",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "Return request — {{brand_name}}",
-        phone: adminPhone || client.adminPhone || "",
+        messageBody: "Customer {{customer_name|Unknown}} ({{phone}}) started a return for *{{order_number}}*.",
         heatmapCount: 0
       }
     });
@@ -1880,6 +1891,8 @@ function buildInstallSupportBranch(ctx, IDS, content) {
   const { F, adminPhone, client } = ctx;
   const nodes = [];
   const edges = [];
+  const useAdminAlerts = F.enableAdminAlerts !== false;
+  const postHelpNode = useAdminAlerts ? IDS.help_alert : IDS.help_done;
   const hasInstall = F.helpIncludeInstallGuide !== false;
   const lib = ctx.productGuideLibrary || client?.productGuideLibrary || {};
   const guideCategories = Array.isArray(lib.categories)
@@ -2022,7 +2035,8 @@ function buildInstallSupportBranch(ctx, IDS, content) {
         heatmapCount: 0,
       },
     },
-    {
+    ...(useAdminAlerts
+      ? [{
       id: IDS.help_alert,
       type: "admin_alert",
       position: flowPos(8, 16),
@@ -2036,7 +2050,8 @@ function buildInstallSupportBranch(ctx, IDS, content) {
         phone: adminPhone || client.adminPhone || "",
         heatmapCount: 0,
       },
-    },
+    }]
+      : []),
     {
       id: IDS.help_done,
       type: "message",
@@ -2072,17 +2087,19 @@ function buildInstallSupportBranch(ctx, IDS, content) {
   }
 
   edges.push(
-    { id: `e_${IDS.help_menu}_nr`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_not_received" },
-    { id: `e_${IDS.help_menu}_dm`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_damaged" },
+    { id: `e_${IDS.help_menu}_nr`, source: IDS.help_menu, target: postHelpNode, sourceHandle: "help_not_received" },
+    { id: `e_${IDS.help_menu}_dm`, source: IDS.help_menu, target: postHelpNode, sourceHandle: "help_damaged" },
     {
       id: `e_${IDS.help_menu}_rt`,
       source: IDS.help_menu,
-      target: F.enableReturnsRefunds ? IDS.ret_hub : IDS.help_alert,
+      target: F.enableReturnsRefunds ? IDS.ret_hub : postHelpNode,
       sourceHandle: "help_return",
     },
     { id: `e_${IDS.help_menu}_ot`, source: IDS.help_menu, target: IDS.help_other_cap, sourceHandle: "help_other" },
-    { id: `e_${IDS.help_other_cap}_al`, source: IDS.help_other_cap, target: IDS.help_alert },
-    { id: `e_${IDS.help_alert}_dn`, source: IDS.help_alert, target: IDS.help_done },
+    { id: `e_${IDS.help_other_cap}_al`, source: IDS.help_other_cap, target: postHelpNode },
+    ...(useAdminAlerts
+      ? [{ id: `e_${IDS.help_alert}_dn`, source: IDS.help_alert, target: IDS.help_done }]
+      : []),
     { id: `e_${IDS.help_done}_mm`, source: IDS.help_done, target: IDS.main_menu }
   );
 
@@ -2093,7 +2110,7 @@ function buildInstallSupportBranch(ctx, IDS, content) {
     sourceHandle: "mnu_help",
   };
   if (!F.enableAIFallback) {
-    out.menuRow = { id: "mnu_help", title: "🤝 Help With My Order", description: "Delivery, returns, setup" };
+    out.menuRow = { id: "mnu_help", title: "🤝 Order Help", description: "Delivery issues, returns & support" };
   }
   return out;
 }
@@ -2187,7 +2204,7 @@ function buildSupportBranch(ctx, IDS, content) {
   return {
     nodes,
     edges,
-    menuRow: { id: "mnu_agent", title: "👨‍💼 Talk to Agent" },
+    menuRow: { id: "mnu_agent", title: "👤 Talk to Our Team" },
     entryNodeId: F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture,
     sourceHandle: "mnu_agent",
   };
@@ -2253,57 +2270,6 @@ function buildAbandonedCart(ctx, IDS, content, opts = {}) {
   return { nodes, edges };
 }
 
-function buildOrderConfirmAndCod(ctx, IDS, content) {
-  const { F } = ctx;
-  const nodes = [
-    { id: IDS.trig_order, type: "trigger", position: autoPos(0, 0),
-      data: { label: "Order Placed Trigger", triggerType: "order_placed", heatmapCount: 0 } },
-    { id: IDS.conf_msg, type: "message", position: autoPos(1, 0),
-      data: {
-        label: "Order Confirmed",
-        text: content.order_confirmed_msg,
-        heatmapCount: 0,
-        suppressAIFallbackLink: true,
-        imageUrl: '{{first_product_image}}',
-      } }
-  ];
-  let edges = [
-    { id: `e_${IDS.trig_order}_cm`, source: IDS.trig_order, target: IDS.conf_msg },
-    { id: `e_${IDS.conf_msg}_mm`, source: IDS.conf_msg, target: IDS.main_menu }
-  ];
-
-  if (F.enableCodToPrepaid) {
-    nodes.push(
-      { id: IDS.cod_check, type: "logic", position: autoPos(2, 0),
-        data: { label: "Is COD?", variable: "payment_method", operator: "contains", value: "cod", heatmapCount: 0 } },
-      { id: IDS.cod_node, type: "cod_prepaid", position: autoPos(3, 0),
-        data: { label: "COD Nudge", action: "CONVERT_COD_TO_PREPAID",
-          discountAmount: F.codDiscountAmount, text: content.cod_nudge, heatmapCount: 0 } },
-      { id: IDS.cod_paid_msg, type: "message", position: autoPos(4, 0),
-        data: {
-          label: "Paid Online Confirmed",
-          text: "🎉 Amazing! Payment confirmed for {{order_number}}! Your order gets priority shipping. Thank you!",
-          heatmapCount: 0,
-          suppressAIFallbackLink: true,
-        } }
-    );
-    edges.push(
-      { id: `e_${IDS.conf_msg}_cod`, source: IDS.conf_msg, target: IDS.cod_check },
-      { id: `e_${IDS.cod_check}_t`,  source: IDS.cod_check, target: IDS.cod_node, sourceHandle: "true" },
-      { id: `e_${IDS.cod_node}_pd`,  source: IDS.cod_node, target: IDS.cod_paid_msg, sourceHandle: "paid" },
-      { id: `e_${IDS.cod_node}_cd`,  source: IDS.cod_node, target: IDS.main_menu, sourceHandle: "cod" }
-    );
-    // Remove straight conf→menu when COD branch takes over (first edge wins in engine — keep menu after paid path)
-    edges = edges.filter((e) => e.id !== `e_${IDS.conf_msg}_mm`);
-    edges.push(
-      { id: `e_${IDS.cod_check}_f`, source: IDS.cod_check, target: IDS.main_menu, sourceHandle: "false" },
-      { id: `e_${IDS.cod_paid_msg}_mm`, source: IDS.cod_paid_msg, target: IDS.main_menu }
-    );
-  }
-
-  return { nodes, edges };
-}
-
 function buildB2BBranch(ctx, IDS) {
   const { adminPhone, client } = ctx;
   const nodes = [
@@ -2318,8 +2284,10 @@ function buildB2BBranch(ctx, IDS) {
       data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
     { id: IDS.b2b_alert, type: "admin_alert", position: autoPos(3, 9),
       data: { label: "B2B Alert", priority: "high",
+        notifyChannels: ["Email", "Dashboard"],
         topic: "B2B Lead — {{brand_name}}",
-        phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
+        messageBody: "New wholesale inquiry from {{phone}}: {{b2b_requirement}}",
+        heatmapCount: 0 } },
     { id: IDS.b2b_confirm, type: "message", position: autoPos(4, 9),
       data: { label: "B2B Confirm",
         text: "Thanks — *{{brand_name}}* wholesale will reach out on WhatsApp with pricing and MOQs.", heatmapCount: 0 } }

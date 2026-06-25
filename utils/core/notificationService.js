@@ -1,6 +1,5 @@
 "use strict";
 
-const WhatsApp = require('../meta/whatsapp');
 const { normalizePhone } = require('./helpers');
 const {
   sendSystemEmail,
@@ -13,34 +12,6 @@ const log = require('./logger')('NotificationService');
 
 const ADMIN_ALERT_DEDUP_SEC = Number(process.env.ADMIN_ALERT_DEDUP_SEC || 900);
 const ADMIN_ALERT_MAX_RECIPIENTS = Number(process.env.ADMIN_ALERT_MAX_RECIPIENTS || 10);
-
-async function logAdminAlertWhatsAppSend(clientId, {
-  templateName,
-  recipientPhone,
-  success,
-  errorMessage,
-  topic,
-  triggerSource,
-  skippedReason,
-}) {
-  try {
-    const TemplateSendLog = require('../../models/TemplateSendLog');
-    await TemplateSendLog.create({
-      clientId,
-      templateName: templateName || 'admin_human_alert',
-      automationSlotId: 'admin_alert',
-      contextType: 'admin_alert',
-      failureCode: success ? 'sent' : (skippedReason || 'send_error'),
-      channel: 'whatsapp',
-      recipientPhone: String(recipientPhone || ''),
-      contextData: { topic, triggerSource, skippedReason },
-      status: success ? 'sent' : 'failed',
-      errorMessage: errorMessage || null,
-    });
-  } catch (_) {
-    /* non-blocking */
-  }
-}
 
 function buildTakeoverLink({ baseUrl, conversationId, customerPhone }) {
   const base = String(baseUrl || process.env.DASHBOARD_URL || 'https://dash.topedgeai.com').replace(/\/$/, '');
@@ -144,100 +115,9 @@ async function resolveCustomerDisplayName({ clientId, customerPhone, conversatio
   return 'Customer';
 }
 
-function resolveAdminAlertChannel(client, explicitChannel) {
-  if (explicitChannel === 'whatsapp' || explicitChannel === 'email' || explicitChannel === 'both') {
-    return explicitChannel;
-  }
-  const pref = client.adminAlertPreferences;
-  if (pref === 'whatsapp' || pref === 'email' || pref === 'both') return pref;
-  return 'both';
-}
-
-const ADMIN_ALERT_TEMPLATE_CANDIDATES = ['admin_human_alert', 'admin_handoff', 'admin_notification_v1'];
-
-function isAdminAlertTemplateApproved(client = {}, templateName) {
-  const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
-  const hit = synced.find(
-    (t) => String(t?.name || '') === templateName && String(t?.status || '').toUpperCase() === 'APPROVED'
-  );
-  return !!hit;
-}
-
-function resolveAdminAlertTemplateName(client = {}) {
-  const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
-  for (const name of ADMIN_ALERT_TEMPLATE_CANDIDATES) {
-    const hit = synced.find(
-      (t) => String(t?.name || '') === name && String(t?.status || '').toUpperCase() === 'APPROVED'
-    );
-    if (hit) return name;
-  }
-  return null;
-}
-
-function templateHasUrlButton(client = {}, templateName) {
-  if (templateName === 'admin_notification_v1') return true;
-  const synced = (client.syncedMetaTemplates || []).find((t) => String(t?.name || '') === templateName);
-  if (!synced) return templateName === 'admin_human_alert';
-  const components = Array.isArray(synced.components) ? synced.components : [];
-  return components.some(
-    (c) =>
-      String(c?.type || '').toUpperCase() === 'BUTTONS' &&
-      (c.buttons || []).some((b) => String(b?.type || '').toUpperCase() === 'URL')
-  );
-}
-
-function buildAdminAlertWhatsAppComponents(
-  templateName,
-  client,
-  { customerPhone, topic, triggerSource, customerQuery, customerName, conversationId, issueSummary }
-) {
-  const phoneText = String(customerPhone || '—').slice(0, 256);
-  const issueContext = String(
-    issueSummary ||
-      [topic, triggerSource, customerQuery].filter(Boolean).join(' — ') ||
-      'Needs urgent support'
-  ).slice(0, 256);
-
-  if (templateName === 'admin_notification_v1') {
-    return [
-      {
-        type: 'body',
-        parameters: [
-          { type: 'text', text: String(topic || 'New Request').slice(0, 256) },
-          { type: 'text', text: String(triggerSource || 'Manual Trigger').slice(0, 256) },
-        ],
-      },
-      {
-        type: 'button',
-        sub_type: 'url',
-        index: '0',
-        parameters: [{ type: 'text', text: buildAdminAlertUrlSuffix({ conversationId, customerPhone }) }],
-      },
-    ];
-  }
-
-  const customerLabel = String(customerName || customerQuery || topic || 'Customer').slice(0, 256);
-  const components = [
-    {
-      type: 'body',
-      parameters: [
-        { type: 'text', text: customerLabel },
-        { type: 'text', text: phoneText },
-        { type: 'text', text: issueContext },
-      ],
-    },
-  ];
-
-  if (templateHasUrlButton(client, templateName)) {
-    components.push({
-      type: 'button',
-      sub_type: 'url',
-      index: '0',
-      parameters: [{ type: 'text', text: buildAdminAlertUrlSuffix({ conversationId, customerPhone }) }],
-    });
-  }
-
-  return components;
+/** Admin alerts are email-only (platform sender). Legacy whatsapp/both prefs map to email. */
+function resolveAdminAlertChannel() {
+  return 'email';
 }
 
 function parseRecipientList(csv, fallback = '') {
@@ -252,24 +132,6 @@ function parseRecipientList(csv, fallback = '') {
   return [...new Set([...items, ...fb])];
 }
 
-function resolveAdminWhatsappRecipients(client = {}, adminPhoneOverride = '') {
-  let adminWhatsapps = parseRecipientList(client.adminAlertWhatsapp);
-  if (client.config?.adminPhones && Array.isArray(client.config.adminPhones)) {
-    adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
-  }
-  const primary = String(
-    adminPhoneOverride ||
-      client.adminPhone ||
-      client.brand?.adminPhone ||
-      client.platformVars?.adminWhatsappNumber ||
-      ''
-  ).trim();
-  if (primary) {
-    adminWhatsapps = [...new Set([primary, ...adminWhatsapps])];
-  }
-  return [...new Set(adminWhatsapps)].slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
-}
-
 function resolveAdminEmailRecipients(client = {}) {
   return parseRecipientList(client.adminAlertEmail, client.adminEmail).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
 }
@@ -280,23 +142,18 @@ async function hydrateClientForAdminAlert(client) {
     const Client = require('../../models/Client');
     return Client.findOne({ clientId: client })
       .select(
-        'clientId adminPhone adminAlertWhatsapp adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config syncedMetaTemplates'
+        'clientId adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config'
       )
       .lean();
   }
   const clientId = client.clientId;
   if (!clientId) return client;
-  const hasPhone =
-    client.adminPhone ||
-    client.adminAlertWhatsapp ||
-    client.platformVars?.adminWhatsappNumber ||
-    client.brand?.adminPhone;
   const hasEmail = client.adminEmail || client.adminAlertEmail;
-  if (hasPhone || hasEmail) return client;
+  if (hasEmail) return client;
   const Client = require('../../models/Client');
   const doc = await Client.findOne({ clientId })
     .select(
-      'clientId adminPhone adminAlertWhatsapp adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config syncedMetaTemplates'
+      'clientId adminEmail adminAlertEmail adminAlertPreferences platformVars brand businessName name config'
     )
     .lean();
   return doc || client;
@@ -326,16 +183,15 @@ const NotificationService = {
     skipDedup = false,
   }) {
     client = (await hydrateClientForAdminAlert(client)) || client;
-    const channel = resolveAdminAlertChannel(client, channelParam);
+    const channel = resolveAdminAlertChannel();
     const clientId = client?.clientId || String(client);
 
     if (!skipDedup && await shouldSkipAdminAlertDedup(clientId, customerPhone, topic)) {
       log.info(`[sendAdminAlert] Dedup skip for ${clientId} ${customerPhone}`);
-      return { deduped: true, whatsapp: [], email: [] };
+      return { deduped: true, email: [] };
     }
 
     const adminEmails = resolveAdminEmailRecipients(client);
-    const adminWhatsapps = resolveAdminWhatsappRecipients(client, adminPhoneOverride);
 
     const baseUrl = process.env.DASHBOARD_URL || 'https://dash.topedgeai.com';
     const transcriptBundle = await loadRecentChatTranscript(
@@ -375,105 +231,13 @@ const NotificationService = {
         'Needs urgent support'
     ).slice(0, 256);
 
-    const results = { whatsapp: [], email: [] };
-    const approvedTemplate = resolveAdminAlertTemplateName(client);
-
-    // 1. WhatsApp — approved Meta template only (no free-form text to admins)
-    if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length === 0) {
-      log.warn('[sendAdminAlert] WhatsApp channel selected but no admin numbers on file');
-      try {
-        await NotificationService.createNotification(client, {
-          type: 'system',
-          title: 'Admin WhatsApp alert not delivered',
-          message:
-            'A customer triggered a human escalation, but no admin WhatsApp number is configured. Add Admin Phone or Admin WhatsApp Alert(s) under Settings → Workspace → Alert contacts.',
-          customerPhone,
-          metadata: { topic, triggerSource },
-        });
-      } catch (_) { /* non-blocking */ }
-    }
-
-    if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length > 0 && !approvedTemplate) {
-      log.warn('[sendAdminAlert] WhatsApp skipped — admin_human_alert not approved on Meta');
-      results.whatsapp.push({ status: 'skipped', error: 'admin_human_alert template not approved' });
-      try {
-        await NotificationService.createNotification(client, {
-          type: 'system',
-          title: 'Approve admin alert template',
-          message:
-            'A shopper needs human help. Your admin numbers are saved, but WhatsApp alerts need the admin_human_alert template approved in Meta Manager — then sync templates.',
-          customerPhone,
-          metadata: { topic, triggerSource, takeoverLink },
-        });
-      } catch (_) { /* non-blocking */ }
-    }
-
-    if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length > 0 && approvedTemplate) {
-      const customerNorm = normalizePhone(customerPhone);
-      await Promise.all(adminWhatsapps.map(async (number) => {
-        const adminNorm = normalizePhone(number);
-        if (customerNorm && adminNorm && adminNorm === customerNorm) {
-          log.warn(
-            `[sendAdminAlert] Skipping WhatsApp to ${number} — same number as customer`
-          );
-          results.whatsapp.push({ number, status: 'skipped', error: 'same_as_customer' });
-          return;
-        }
-        try {
-          log.info(`Sending WhatsApp Admin Alert to ${number} via ${approvedTemplate}`);
-          const components = buildAdminAlertWhatsAppComponents(approvedTemplate, client, {
-            customerPhone,
-            topic,
-            triggerSource,
-            customerQuery,
-            customerName,
-            conversationId: resolvedConvoId,
-            issueSummary,
-          });
-          const res = await WhatsApp.sendTemplate(
-            client,
-            number,
-            approvedTemplate,
-            'en',
-            components
-          );
-          results.whatsapp.push({ number, status: 'success', res, templateName: approvedTemplate });
-          await logAdminAlertWhatsAppSend(clientId, {
-            templateName: approvedTemplate,
-            recipientPhone: number,
-            success: true,
-            topic,
-            triggerSource,
-          });
-        } catch (err) {
-          log.error(`WhatsApp Admin Alert failed for ${number}`, { error: err.message });
-          results.whatsapp.push({ number, status: 'failed', error: err.message, templateName: approvedTemplate });
-          await logAdminAlertWhatsAppSend(clientId, {
-            templateName: approvedTemplate,
-            recipientPhone: number,
-            success: false,
-            errorMessage: err.message,
-            topic,
-            triggerSource,
-          });
-          try {
-            await NotificationService.createNotification(client, {
-              type: 'system',
-              title: 'Admin WhatsApp alert failed',
-              message: `Could not deliver admin_human_alert to ${number}. Confirm the template is approved and matches the latest blueprint in Meta Manager.`,
-              customerPhone,
-              metadata: { topic, triggerSource, error: err.message },
-            });
-          } catch (_) { /* non-blocking */ }
-        }
-      }));
-    }
+    const results = { email: [] };
 
     const brandName =
       client.businessName || client.name || client.brand?.businessName || client.clientId || 'Your brand';
 
-    // 2. Email — platform owner mail (SYSTEM_EMAIL / RESEND), not merchant Gmail
-    if ((channel === 'email' || channel === 'both') && adminEmails.length > 0) {
+    // Email — platform sender (SYSTEM_EMAIL / RESEND), not merchant Gmail
+    if (adminEmails.length > 0) {
       if (!isSystemEmailReady()) {
         log.warn('Admin email alert skipped — platform system email not configured');
         results.email.push({
@@ -534,15 +298,22 @@ const NotificationService = {
           }
         }));
       }
-    } else if (channel === 'email' || channel === 'both') {
-      log.warn('[sendAdminAlert] Email channel selected but no adminAlertEmail / adminEmail on file');
+    } else {
+      log.warn('[sendAdminAlert] No adminAlertEmail / adminEmail on file');
+      try {
+        await NotificationService.createNotification(client, {
+          type: 'system',
+          title: 'Admin email alert not delivered',
+          message:
+            'A customer triggered an escalation, but no admin email is configured. Add alert emails under Settings → Workspace → Alert contacts.',
+          customerPhone,
+          metadata: { topic, triggerSource },
+        });
+      } catch (_) { /* non-blocking */ }
     }
 
-    log.info(`Dispatching alert for ${clientId}`, {
-      channels: channel,
+    log.info(`Dispatching email alert for ${clientId}`, {
       emailCount: adminEmails.length,
-      whatsappCount: adminWhatsapps.length,
-      template: approvedTemplate || 'none',
     });
 
     return results;
@@ -582,10 +353,5 @@ const NotificationService = {
 };
 
 module.exports = NotificationService;
-module.exports.resolveAdminAlertTemplateName = resolveAdminAlertTemplateName;
-module.exports.isAdminAlertTemplateApproved = isAdminAlertTemplateApproved;
-module.exports.buildAdminAlertWhatsAppComponents = buildAdminAlertWhatsAppComponents;
 module.exports.buildTakeoverLink = buildTakeoverLink;
-module.exports.templateHasUrlButton = templateHasUrlButton;
-module.exports.resolveAdminWhatsappRecipients = resolveAdminWhatsappRecipients;
 module.exports.resolveAdminEmailRecipients = resolveAdminEmailRecipients;

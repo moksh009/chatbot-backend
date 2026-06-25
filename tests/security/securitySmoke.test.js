@@ -39,9 +39,10 @@ function testRequireRoleNoHardcodedBypass() {
   assert.ok(!src.includes('delitech2708'));
 }
 
-function testRazorpayWebhook401() {
-  const src = read('routes/razorpayWebhook.js');
-  assert.ok(src.includes('status(401)'));
+function testRequirePaidOrTrialPassthrough() {
+  const src = read('middleware/requirePaidOrTrial.js');
+  assert.ok(src.includes('next()'));
+  assert.ok(!src.includes('402'));
 }
 
 function testLegacyRoutes410() {
@@ -55,12 +56,10 @@ function testLegacyRoutes410() {
 function testReplayWired() {
   const shopify = read('routes/shopifyWebhook.js');
   const master = read('routes/masterWebhook.js');
-  const razorpay = read('routes/razorpayWebhook.js');
   const dynamic = read('routes/dynamicClientRouter.js');
   const ig = read('controllers/igAutomation/webhookController.js');
   assert.ok(shopify.includes('shopifyReplay'));
   assert.ok(master.includes('metaPayloadReplayGuard'));
-  assert.ok(razorpay.includes('razorpayReplay'));
   assert.ok(dynamic.includes('metaPayloadReplayGuard'));
   assert.ok(ig.includes('igWebhookReplayGuard'));
 }
@@ -71,7 +70,7 @@ async function main() {
   testMiddlewareExists();
   testGdprScripts();
   testRequireRoleNoHardcodedBypass();
-  testRazorpayWebhook401();
+  testRequirePaidOrTrialPassthrough();
   testLegacyRoutes410();
   testReplayWired();
   console.log('✓ securitySmoke tests passed');

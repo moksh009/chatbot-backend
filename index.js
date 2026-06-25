@@ -381,7 +381,6 @@ const emailWebhookRoutes = require('./routes/emailWebhook');
 // DUPLICATE MOUNT — same /api/email prefix; emailTracking (above) + emailWebhook (below)
 app.use('/api/email', emailWebhookRoutes);
 app.use('/api/payment', require('./routes/payment'));
-app.use('/api/billing', require('./routes/billing'));
 
 // app.use('/api/client/0001', turfClientRoutes);
 // app.use('/api/client/0002', vedClientRoutes);
@@ -451,7 +450,6 @@ app.use('/api/webhooks', require('./routes/thirdPartyCheckoutWebhooks'));
 // Unified Meta master webhook — handles account_update, quality updates, ES merchants
 app.use('/api/webhooks/meta-master', require('./routes/metaMasterWebhook'));
 
-app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
 
