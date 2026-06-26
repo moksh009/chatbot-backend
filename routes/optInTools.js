@@ -121,6 +121,21 @@ router.delete('/saved-templates/:savedId', protect, async (req, res) => {
 });
 
 /**
+ * POST /api/opt-in-tools/sync-theme — re-inject theme snippet
+ */
+router.post('/sync-theme', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'clientId required' });
+    const result = await optInService.syncThemeEmbed(clientId, resolveBackendUrl(req));
+    return res.status(result.success ? 200 : result.status || 400).json(result);
+  } catch (e) {
+    console.error('[optInTools] sync-theme', e);
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
  * POST /api/opt-in-tools
  */
 router.post('/', protect, async (req, res) => {

@@ -3,9 +3,13 @@
 const { normalizePhone } = require('./helpers');
 const {
   sendSystemEmail,
-  buildAdminEscalationEmailHtml,
   isSystemEmailReady,
 } = require('./emailService');
+const {
+  buildAdminEscalationEmailHtml,
+  buildAdminEscalationEmailText,
+  buildAdminEscalationSubject,
+} = require('./adminEscalationEmailTemplate');
 const { getAppRedis } = require('./redisFactory');
 const { indianPhoneSuffix, indianPhoneDigits } = require('./normalizeIndianPhone');
 const log = require('./logger')('NotificationService');
@@ -29,10 +33,20 @@ function buildAdminAlertUrlSuffix({ conversationId, customerPhone }) {
   return indianPhoneDigits(customerPhone) || 'customer';
 }
 
-async function shouldSkipAdminAlertDedup(clientId, customerPhone, topic) {
+function buildAdminAlertDedupKey(clientId, customerPhone, conversationId, dedupBucket = '') {
+  const phone = normalizePhone(customerPhone) || 'unknown';
+  const convo = conversationId ? String(conversationId).slice(0, 64) : 'no_convo';
+  const bucket = String(dedupBucket || '').trim().slice(0, 48);
+  if (bucket) {
+    return `admin_alert:${clientId}:${bucket}`;
+  }
+  return `admin_alert:${clientId}:${phone}:${convo}`;
+}
+
+async function shouldSkipAdminAlertDedup(clientId, customerPhone, conversationId, dedupBucket = '') {
   const redis = getAppRedis();
   if (!redis || redis.status !== 'ready') return false;
-  const key = `admin_alert:${clientId}:${normalizePhone(customerPhone)}:${String(topic || 'alert').slice(0, 64)}`;
+  const key = buildAdminAlertDedupKey(clientId, customerPhone, conversationId, dedupBucket);
   try {
     const set = await redis.set(key, '1', 'EX', ADMIN_ALERT_DEDUP_SEC, 'NX');
     return set === null;
@@ -120,48 +134,32 @@ function resolveAdminAlertChannel() {
   return 'email';
 }
 
-function parseRecipientList(csv, fallback = '') {
-  const items = String(csv || '')
+function parseRecipientList(csv) {
+  return String(csv || '')
     .split(/[,;\n]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const fb = String(fallback || '')
-    .split(/[,;\n]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return [...new Set([...items, ...fb])];
 }
 
+function dedupeEmails(emails = []) {
+  return [...new Set(emails.map((e) => e.toLowerCase()))]
+    .map((lower) => emails.find((e) => e.toLowerCase() === lower))
+    .filter(Boolean);
+}
+
+/** Alert emails field is canonical; primary business email is fallback only when alert list is empty. */
 function resolveAdminEmailRecipients(client = {}) {
-  return parseRecipientList(client.adminAlertEmail, client.adminEmail).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+  const alertList = dedupeEmails(parseRecipientList(client.adminAlertEmail));
+  if (alertList.length) {
+    return alertList.slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+  }
+  return dedupeEmails(parseRecipientList(client.adminEmail)).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
 }
 
-/** Workspace alert contacts + team inboxes (CLIENT_ADMIN, AGENT, RECEPTIONIST). */
+/** Settings alert contacts only (+ optional flow-node extras). No team User auto-merge. */
 async function resolveAllAdminEmailRecipients(client = {}, extraCsv = '') {
-  const clientId = client?.clientId;
   const merged = [...resolveAdminEmailRecipients(client), ...parseRecipientList(extraCsv)];
-  if (clientId) {
-    try {
-      const User = require('../../models/User');
-      const users = await User.find({
-        clientId,
-        email: { $exists: true, $nin: ['', null] },
-        role: { $in: ['CLIENT_ADMIN', 'AGENT', 'RECEPTIONIST'] },
-      })
-        .select('email')
-        .lean();
-      for (const u of users) {
-        const em = String(u.email || '').trim();
-        if (em) merged.push(em);
-      }
-    } catch (err) {
-      log.warn(`[resolveAllAdminEmailRecipients] team lookup failed: ${err.message}`);
-    }
-  }
-  return [...new Set(merged.map((e) => e.toLowerCase()))]
-    .map((lower) => merged.find((e) => e.toLowerCase() === lower))
-    .filter(Boolean)
-    .slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+  return dedupeEmails(merged).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
 }
 
 function sanitizeNotifyChannels(channels) {
@@ -204,7 +202,7 @@ const NotificationService = {
    * Dispatches an alert to the configured admin channels.
    *
    * @param {Object} client - The Client document
-   * @param {Object} params - { customerPhone, conversationId, topic, triggerSource, channel?, adminPhoneOverride?, customerQuery?, lead?, skipDedup?, extraEmails? }
+   * @param {Object} params - { customerPhone, conversationId, topic, triggerSource, channel?, adminPhoneOverride?, customerQuery?, lead?, skipDedup?, extraEmails?, dedupBucket?, emailOverrides?, isTest? }
    * @returns {Promise<Object>} - Per-channel dispatch results
    */
   async sendAdminAlert(client, {
@@ -218,18 +216,33 @@ const NotificationService = {
     lead = null,
     skipDedup = false,
     extraEmails = '',
+    dedupBucket = '',
+    emailOverrides = null,
+    isTest = false,
   }) {
     client = (await hydrateClientForAdminAlert(client)) || client;
     const channel = resolveAdminAlertChannel();
     const clientId = client?.clientId || String(client);
 
-    if (!skipDedup && await shouldSkipAdminAlertDedup(clientId, customerPhone, topic)) {
+    if (!skipDedup && await shouldSkipAdminAlertDedup(clientId, customerPhone, conversationId, dedupBucket)) {
       log.info(`[sendAdminAlert] Dedup skip for ${clientId} ${customerPhone}`);
       return { deduped: true, email: [] };
     }
 
     const extraCsv = Array.isArray(extraEmails) ? extraEmails.join(',') : String(extraEmails || '');
-    const adminEmails = await resolveAllAdminEmailRecipients(client, extraCsv);
+    let adminEmails = await resolveAllAdminEmailRecipients(client, extraCsv);
+
+    if (emailOverrides && typeof emailOverrides === 'object') {
+      const overrideList = dedupeEmails([
+        ...parseRecipientList(emailOverrides.adminAlertEmail),
+        ...(parseRecipientList(emailOverrides.adminAlertEmail).length
+          ? []
+          : parseRecipientList(emailOverrides.adminEmail)),
+      ]);
+      if (overrideList.length) {
+        adminEmails = overrideList.slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+      }
+    }
 
     const baseUrl = process.env.DASHBOARD_URL || 'https://dash.topedgeai.com';
     const transcriptBundle = await loadRecentChatTranscript(
@@ -274,6 +287,20 @@ const NotificationService = {
     const brandName =
       client.businessName || client.name || client.brand?.businessName || client.clientId || 'Your brand';
 
+    const emailSubject = buildAdminEscalationSubject({ brandName, customerPhone });
+    const emailHtmlParams = {
+      brandName,
+      topic: topic || 'Priority support',
+      triggerSource: triggerSource || 'Automation flow',
+      customerPhone: customerPhone || '—',
+      customerName,
+      customerQuery: issueSummary || customerQuery,
+      takeoverLink,
+      recentMessages,
+      recentOrders,
+      isTest: isTest || /^test admin alert/i.test(String(topic || '')),
+    };
+
     // Email — platform sender (SYSTEM_EMAIL / RESEND), not merchant Gmail
     if (adminEmails.length > 0) {
       if (!isSystemEmailReady()) {
@@ -298,21 +325,13 @@ const NotificationService = {
         await Promise.all(adminEmails.map(async (email) => {
           try {
             log.info(`Sending Email Admin Alert to ${email}`);
-            const html = buildAdminEscalationEmailHtml({
-              brandName,
-              topic: topic || 'Priority support',
-              triggerSource: triggerSource || 'Automation flow',
-              customerPhone: customerPhone || '—',
-              customerName,
-              customerQuery: issueSummary || customerQuery,
-              takeoverLink,
-              recentMessages,
-              recentOrders,
-            });
+            const html = buildAdminEscalationEmailHtml(emailHtmlParams);
+            const text = buildAdminEscalationEmailText(emailHtmlParams);
             const ok = await sendSystemEmail({
               to: email,
-              subject: `🚨 ${brandName}: human help needed — ${customerPhone || 'customer'}`,
+              subject: emailSubject,
               html,
+              text,
             });
             results.email.push({
               email,
@@ -392,6 +411,9 @@ const NotificationService = {
 
 module.exports = NotificationService;
 module.exports.buildTakeoverLink = buildTakeoverLink;
+module.exports.buildAdminAlertDedupKey = buildAdminAlertDedupKey;
 module.exports.resolveAdminEmailRecipients = resolveAdminEmailRecipients;
 module.exports.resolveAllAdminEmailRecipients = resolveAllAdminEmailRecipients;
 module.exports.sanitizeNotifyChannels = sanitizeNotifyChannels;
+module.exports.parseRecipientList = parseRecipientList;
+module.exports.dedupeEmails = dedupeEmails;

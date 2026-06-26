@@ -14,7 +14,7 @@
   }
 
   var phoneApi = window.TopEdgeOptIn.phone || {};
-  var isValidIndianPhone = phoneApi.isValidIndianPhone || function () { return false; };
+  var isValidPhoneForCountry = phoneApi.isValidPhoneForCountry || phoneApi.isValidIndianPhone || function () { return false; };
   var postJson = phoneApi.postJson || function () { return Promise.resolve({}); };
 
   function resolvePopupSuccessColors(d, thankYou) {
@@ -72,7 +72,7 @@
       host.setAttribute('data-topedge-optin', ctx.tool.id);
 
       var consentDefault = d.consentPreChecked === true;
-      var state = { consent: consentDefault, phone: '', name: '', email: '', dateOfBirth: '', step: 'form', coupon: '' };
+      var state = { consent: consentDefault, phone: '', countryCode: '', name: '', email: '', dateOfBirth: '', step: 'form', coupon: '' };
       var autoSubmitOnPhone = d.autoSubmitOnPhone === true;
 
       function api(path) {
@@ -92,10 +92,13 @@
           '<p class="te-optin-sub">' + esc(d.subheadline || '') + '</p>' +
           (d.offerText ? '<p class="te-optin-sub">' + esc(d.offerText) + '</p>' : '') +
           extraHtml +
-          '<div class="te-optin-phone-wrap">' +
-          '<span class="te-optin-cc">' + esc(d.countryCode || '+91') + '</span>' +
-          '<input class="te-optin-phone" type="tel" inputmode="numeric" maxlength="14" placeholder="' + esc(d.phonePlaceholder || '10-digit mobile') + '" />' +
-          '</div>' +
+          (phoneApi.buildPhoneFieldHtml
+            ? phoneApi.buildPhoneFieldHtml(d, { classPrefix: 'te-optin' })
+            : '<div class="te-optin-phone-wrap"><span class="te-optin-cc">' +
+              esc(d.countryCode || '+91') +
+              '</span><input class="te-optin-phone" type="tel" placeholder="' +
+              esc(d.phonePlaceholder || '10-digit mobile') +
+              '" /></div>') +
           '<label class="te-optin-consent"><input type="checkbox" class="te-optin-consent-cb"' + (consentDefault ? ' checked' : '') + ' /> <span>' + esc(d.consentText || 'I agree to receive WhatsApp messages.') + '</span></label>' +
           ctaHtml +
           '</div>'
@@ -162,17 +165,20 @@
       }
 
       function bindForm() {
-        var phoneEl = host.querySelector('.te-optin-phone');
+        var phoneEl = host.querySelector('.te-optin-phone-input') || host.querySelector('.te-optin-phone');
         var consentEl = host.querySelector('.te-optin-consent-cb');
         var btn = host.querySelector('.te-optin-submit');
         if (!phoneEl || !consentEl) return;
+        if (phoneApi.bindPhoneField) phoneApi.bindPhoneField(host, state, d);
 
         consentEl.addEventListener('change', function () {
           state.consent = consentEl.checked;
         });
-        phoneEl.addEventListener('input', function () {
-          state.phone = phoneEl.value;
-        });
+        if (!phoneApi.bindPhoneField) {
+          phoneEl.addEventListener('input', function () {
+            state.phone = phoneEl.value;
+          });
+        }
         if (phoneApi.bindOptionalFields) phoneApi.bindOptionalFields(host, state);
         if (autoSubmitOnPhone) {
           ctx.autoSubmitOnPhone = true;
@@ -201,7 +207,7 @@
               btn.textContent = 'Complete all fields';
               return;
             }
-            if (!isValidIndianPhone(state.phone)) {
+            if (!isValidPhoneForCountry(state.phone, state.countryCode || '+91')) {
               btn.textContent = 'Enter valid 10-digit mobile';
               return;
             }

@@ -1905,12 +1905,23 @@ router.post('/test-admin-alert', protect, async (req, res) => {
     }
 
     const NotificationService = require('../utils/core/notificationService');
+    const emailOverrides =
+      req.body?.adminAlertEmail !== undefined || req.body?.adminEmail !== undefined
+        ? {
+            adminAlertEmail: req.body?.adminAlertEmail,
+            adminEmail: req.body?.adminEmail,
+          }
+        : null;
+
     const results = await NotificationService.sendAdminAlert(client, {
       customerPhone: req.body?.customerPhone || client.supportPhone || client.adminPhone || '+919999999999',
       topic: 'Test admin alert — please confirm you received this',
       triggerSource: 'Settings test button',
       customerQuery: 'This is a test escalation from TopEdge AI settings.',
       skipDedup: true,
+      dedupBucket: 'test',
+      isTest: true,
+      emailOverrides,
       channel: 'email',
     });
 

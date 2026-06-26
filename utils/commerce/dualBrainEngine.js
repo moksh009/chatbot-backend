@@ -5053,7 +5053,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     if (!s || s === "null" || s === "undefined" || s === "[object Object]") return fallback;
     return s;
   };
-  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review', 'tag_lead', 'TagNode', 'livechat'].includes(type)) {
+  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review', 'tag_lead', 'TagNode', 'livechat', 'admin_alert', 'AdminAlertNode'].includes(type)) {
     const { handleNodeAction } = require('../flow/nodeActions');
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
       log.error(`Action Error (${node.data.action}):`, { error: err.message });

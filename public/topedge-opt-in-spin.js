@@ -14,7 +14,7 @@
   }
 
   var phoneApi = window.TopEdgeOptIn.phone || {};
-  var isValidIndianPhone = phoneApi.isValidIndianPhone || function () { return false; };
+  var isValidPhoneForCountry = phoneApi.isValidPhoneForCountry || phoneApi.isValidIndianPhone || function () { return false; };
   var postJson = phoneApi.postJson || function () { return Promise.resolve({}); };
 
   function drawWheel(canvas, prizes, colors, rotation) {
@@ -122,7 +122,7 @@
       var resultSlot = host.querySelector('.te-spin-result');
       var canvas = host.querySelector('.te-spin-canvas');
       var consentDefault = d.consentPreChecked === true;
-      var state = { phone: '', consent: consentDefault, spun: false, name: '', email: '', dateOfBirth: '' };
+      var state = { phone: '', countryCode: '', consent: consentDefault, spun: false, name: '', email: '', dateOfBirth: '' };
       var autoSubmitOnPhone = d.autoSubmitOnPhone === true;
 
       function optionalFieldsHtml() {
@@ -151,6 +151,7 @@
           embedKey: ctx.embedKey,
           toolId: ctx.tool.id,
           phone: state.phone,
+          countryCode: state.countryCode,
           consent: true,
           name: state.name,
           email: state.email,
@@ -212,15 +213,15 @@
             esc(beforeSpin ? d.spinButtonText || 'Try my luck!' : state.spun ? d.buttonText || 'Get coupon' : d.spinButtonText || 'Try my luck!') +
             '</button>';
         formSlot.innerHTML =
-          '<div class="te-spin-phone" style="display:' +
-          (beforeSpin || !state.spun ? 'flex' : 'none') +
-          ';gap:8px;margin-bottom:10px">' +
-          '<span style="padding:10px;border-radius:10px;background:rgba(255,255,255,.2)">' +
-          esc(d.fallbackCountryCode || '+91') +
-          '</span>' +
-          '<input type="tel" class="te-spin-phone-input" placeholder="' +
-          esc(d.phonePlaceholder || '10-digit mobile') +
-          '" style="flex:1;padding:10px;border-radius:10px;border:none" /></div>' +
+          (beforeSpin || !state.spun
+            ? phoneApi.buildPhoneFieldHtml
+              ? phoneApi.buildPhoneFieldHtml(d, { classPrefix: 'te-spin', phoneWrapStyle: 'margin-bottom:10px;background:rgba(255,255,255,.12);border:none' })
+              : '<div class="te-spin-phone" style="display:flex;gap:8px;margin-bottom:10px"><span>' +
+                esc(d.fallbackCountryCode || '+91') +
+                '</span><input type="tel" class="te-spin-phone-input" placeholder="' +
+                esc(d.phonePlaceholder || '10-digit mobile') +
+                '" style="flex:1;padding:10px;border-radius:10px;border:none" /></div>'
+            : '') +
           optionalFieldsHtml() +
           '<label style="display:' +
           (beforeSpin || !state.spun ? 'flex' : 'none') +
@@ -240,7 +241,8 @@
         if (emailEl) emailEl.addEventListener('input', function () { state.email = emailEl.value; });
         if (dobEl) dobEl.addEventListener('change', function () { state.dateOfBirth = dobEl.value; });
         if (phoneEl) {
-          phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
+          if (phoneApi.bindPhoneField) phoneApi.bindPhoneField(formSlot, state, d);
+          else phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
           if (autoSubmitOnPhone) {
             // Wire auto-submit: debounce fires → submitAndSpin
             ctx.autoSubmitOnPhone = true;
@@ -277,7 +279,7 @@
               btn.textContent = 'Accept consent to continue';
               return;
             }
-            if (!isValidIndianPhone(state.phone)) {
+            if (!isValidPhoneForCountry(state.phone, state.countryCode || '+91')) {
               btn.textContent = 'Enter valid 10-digit mobile';
               return;
             }

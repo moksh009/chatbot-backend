@@ -14,7 +14,7 @@
   }
 
   var phoneApi = window.TopEdgeOptIn.phone || {};
-  var isValidIndianPhone = phoneApi.isValidIndianPhone || function () { return false; };
+  var isValidPhoneForCountry = phoneApi.isValidPhoneForCountry || phoneApi.isValidIndianPhone || function () { return false; };
   var postJson = phoneApi.postJson || function () { return Promise.resolve({}); };
 
   function completedStateColors(d, lose) {
@@ -63,7 +63,7 @@
       var resultSlot = host.querySelector('.te-myst-result');
       var card = host.querySelector('.te-myst-card');
       var consentDefault = d.consentPreChecked === true;
-      var state = { phone: '', name: '', email: '', dateOfBirth: '', consent: consentDefault, revealed: false };
+      var state = { phone: '', countryCode: '', name: '', email: '', dateOfBirth: '', consent: consentDefault, revealed: false };
       var autoSubmitOnPhone = d.autoSubmitOnPhone === true;
 
       function api(path) {
@@ -137,15 +137,15 @@
             '</button>';
         formSlot.innerHTML =
           (showPhone ? extraHtml : '') +
-          '<div class="te-myst-phone" style="display:' +
-          (showPhone ? 'flex' : 'none') +
-          ';gap:8px;margin-bottom:10px">' +
-          '<span style="padding:10px;border-radius:10px;background:rgba(255,255,255,.15)">' +
-          esc(d.fallbackCountryCode || '+91') +
-          '</span>' +
-          '<input type="tel" class="te-myst-phone-input" placeholder="' +
-          esc(d.phonePlaceholder || '10-digit mobile') +
-          '" style="flex:1;padding:10px;border-radius:10px;border:none" /></div>' +
+          (showPhone
+            ? phoneApi.buildPhoneFieldHtml
+              ? phoneApi.buildPhoneFieldHtml(d, { classPrefix: 'te-myst', phoneWrapStyle: 'margin-bottom:10px;background:rgba(255,255,255,.12);border:none' })
+              : '<div class="te-myst-phone" style="display:flex;gap:8px;margin-bottom:10px"><span>' +
+                esc(d.fallbackCountryCode || '+91') +
+                '</span><input type="tel" class="te-myst-phone-input" placeholder="' +
+                esc(d.phonePlaceholder || '10-digit mobile') +
+                '" style="flex:1;padding:10px;border-radius:10px;border:none" /></div>'
+            : '') +
           '<label style="display:' +
           (showPhone ? 'flex' : 'none') +
           ';gap:8px;font-size:11px;margin-bottom:12px;text-align:left">' +
@@ -158,7 +158,8 @@
         var btn = formSlot.querySelector('.te-myst-action');
         if (consentEl) consentEl.addEventListener('change', function () { state.consent = consentEl.checked; });
         if (phoneEl) {
-          phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
+          if (phoneApi.bindPhoneField) phoneApi.bindPhoneField(formSlot, state, d);
+          else phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
           if (phoneApi.bindOptionalFields) phoneApi.bindOptionalFields(formSlot, state);
           if (autoSubmitOnPhone) {
             ctx.autoSubmitOnPhone = true;
@@ -204,7 +205,7 @@
               btn.textContent = 'Complete all fields';
               return;
             }
-            if (!isValidIndianPhone(state.phone)) {
+            if (!isValidPhoneForCountry(state.phone, state.countryCode || '+91')) {
               btn.textContent = 'Enter valid mobile';
               return;
             }

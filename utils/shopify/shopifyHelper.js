@@ -492,40 +492,18 @@ module.exports = {
      */
     injectOptInScript: async (clientId, backendUrl, embedKey) => {
         const {
-            injectOptInScriptIntoLiquid,
-            themeHasOptInScript,
-        } = require('../optIn/optInThemeInject');
+            injectOptInThemeEmbed,
+            formatOptInThemeInjectError,
+        } = require('../optIn/optInShopifyThemePublish');
 
-        return await withShopifyRetry(clientId, async (shop) => {
-            const client = await Client.findOne({ clientId }).select('growthEmbedPublicKey');
-            const key = embedKey || client?.growthEmbedPublicKey;
-            if (!key) throw new Error('growthEmbedPublicKey missing — create an opt-in tool first');
-
-            const themesRes = await shop.get('/themes.json');
-            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
-            if (!mainTheme) throw new Error('Main theme not found');
-
-            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
-                params: { 'asset[key]': 'layout/theme.liquid' },
-            });
-            const liquid = assetRes.data.asset?.value;
-            if (!liquid) throw new Error('Could not read theme.liquid');
-
-            const finalBackendUrl =
-                backendUrl || process.env.BACKEND_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
-
-            if (themeHasOptInScript(liquid, clientId)) {
-                return { success: true, message: 'Opt-in script already injected', alreadyPresent: true };
-            }
-
-            const { liquid: nextLiquid } = injectOptInScriptIntoLiquid(liquid, finalBackendUrl, key, clientId);
-
-            await shop.put(`/themes/${mainTheme.id}/assets.json`, {
-                asset: { key: 'layout/theme.liquid', value: nextLiquid },
-            });
-
-            return { success: true, message: 'Opt-in script injected', alreadyPresent: false };
-        });
+        try {
+            return await withShopifyRetry(clientId, async (shop) =>
+                injectOptInThemeEmbed(clientId, shop, { backendUrl, embedKey })
+            );
+        } catch (err) {
+            console.error('[injectOptInScript]', clientId, err.message);
+            return formatOptInThemeInjectError(err);
+        }
     },
 
     removeOptInScript: async (clientId) => {

@@ -73,6 +73,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       name: req.body.name,
       email: req.body.email,
       dateOfBirth: req.body.dateOfBirth || req.body.dob,
+      countryCode: req.body.countryCode,
       req,
     });
     return res.status(result.success ? 200 : result.status || 400).json(result);
@@ -91,6 +92,7 @@ router.post('/capture-phone', subscribeLimiter, async (req, res) => {
       toolId: req.body.toolId,
       pageUrl: req.body.pageUrl || req.body.page_url,
       visitorId: req.body.visitorId,
+      countryCode: req.body.countryCode,
       req,
     });
     return res.status(result.success ? 200 : result.status || 400).json(result);

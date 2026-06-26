@@ -14,7 +14,7 @@
   }
 
   var phoneApi = window.TopEdgeOptIn.phone || {};
-  var isValidIndianPhone = phoneApi.isValidIndianPhone || function () { return false; };
+  var isValidPhoneForCountry = phoneApi.isValidPhoneForCountry || phoneApi.isValidIndianPhone || function () { return false; };
   var postJson = phoneApi.postJson || function () { return Promise.resolve({}); };
 
   function isMobile() {
@@ -47,7 +47,7 @@
       var expanded = false;
       var sent = false;
       var consentDefault = d.consentPreChecked === true;
-      var state = { phone: '', name: '', email: '', dateOfBirth: '', consent: consentDefault };
+      var state = { phone: '', countryCode: '', name: '', email: '', dateOfBirth: '', consent: consentDefault };
       var autoSubmitOnPhone = d.autoSubmitOnPhone === true;
       var widgetColor = d.widgetColor || '#7C3AED';
       var iconColor = d.widgetIconColor || '#FFFFFF';
@@ -132,11 +132,13 @@
           '</p>' +
           (d.collectPhone !== false
             ? extraHtml +
-              '<div style="display:flex;gap:8px;margin-bottom:10px"><span style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;font-size:13px">' +
-              esc(d.fallbackCountryCode || '+91') +
-              '</span><input class="te-wa-phone" type="tel" placeholder="' +
-              esc(d.placeholderText || 'Enter your number') +
-              '" style="flex:1;padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;font-size:14px" /></div>' +
+              (phoneApi.buildPhoneFieldHtml
+                ? phoneApi.buildPhoneFieldHtml(d, { classPrefix: 'te-wa' })
+                : '<div style="display:flex;gap:8px;margin-bottom:10px"><span style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;font-size:13px">' +
+                  esc(d.fallbackCountryCode || '+91') +
+                  '</span><input class="te-wa-phone" type="tel" placeholder="' +
+                  esc(d.placeholderText || 'Enter your number') +
+                  '" style="flex:1;padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;font-size:14px" /></div>') +
               '<label style="display:flex;gap:8px;font-size:11px;color:#64748b;margin-bottom:12px"><input type="checkbox" class="te-wa-consent"' + (consentDefault ? ' checked' : '') + ' />' +
               esc(d.consentText || 'I agree to receive WhatsApp messages.') +
               '</label>'
@@ -204,12 +206,13 @@
             render();
           });
         }
-        var phoneEl = host.querySelector('.te-wa-phone');
+        var phoneEl = host.querySelector('.te-wa-phone-input') || host.querySelector('.te-wa-phone');
         var consentEl = host.querySelector('.te-wa-consent');
         if (consentEl) consentEl.addEventListener('change', function () { state.consent = consentEl.checked; });
         if (phoneApi.bindOptionalFields) phoneApi.bindOptionalFields(host, state);
         if (phoneEl) {
-          phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
+          if (phoneApi.bindPhoneField) phoneApi.bindPhoneField(host, state, d);
+          else phoneEl.addEventListener('input', function () { state.phone = phoneEl.value; });
           if (autoSubmitOnPhone) {
             ctx.autoSubmitOnPhone = true;
             ctx.autoSubmitHandler = function () {
@@ -243,7 +246,7 @@
               submit.textContent = 'Complete all fields';
               return;
             }
-            if (!isValidIndianPhone(state.phone)) {
+            if (!isValidPhoneForCountry(state.phone, state.countryCode || '+91')) {
               submit.textContent = 'Enter valid 10-digit mobile';
               return;
             }

@@ -1237,103 +1237,11 @@ function escapeHtml(text) {
 /**
  * Enterprise HTML for human-escalation / admin_alert emails (used by notificationService).
  */
-function formatTranscriptLine(msg) {
-    const dir = String(msg?.direction || '').toLowerCase();
-    const who = dir === 'incoming' ? 'Customer' : msg?.from === 'BOT' ? 'Bot' : 'Agent';
-    const text = String(msg?.content || msg?.body || '').trim().slice(0, 280);
-    if (!text) return '';
-    return `<li style="margin:0 0 8px;font-size:13px;line-height:1.45;color:#334155;"><strong style="color:#0f172a;">${escapeHtml(who)}:</strong> ${escapeHtml(text)}</li>`;
-}
-
-function formatOrderLine(order) {
-    if (!order) return '';
-    const num = String(order.orderNumber || order.orderId || '—').replace(/^#/, '');
-    const amt = order.totalPrice != null ? `₹${Math.round(Number(order.totalPrice) || 0).toLocaleString('en-IN')}` : '';
-    const fin = String(order.financialStatus || order.status || '').replace(/_/g, ' ') || '—';
-    const ful = String(order.fulfillmentStatus || '').replace(/_/g, ' ') || '';
-    const status = ful ? `${fin} · ${ful}` : fin;
-    const date = order.createdAt ? new Date(order.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-    return `<tr>
-      <td style="padding:8px 0;color:#0f172a;font-weight:600;">#${escapeHtml(num)}</td>
-      <td style="padding:8px 0;text-align:right;color:#64748b;">${escapeHtml(amt)}</td>
-      <td style="padding:8px 0;text-align:right;color:#64748b;font-size:12px;">${escapeHtml(status)}${date ? `<br><span style="color:#94a3b8;">${escapeHtml(date)}</span>` : ''}</td>
-    </tr>`;
-}
-
-function buildAdminEscalationEmailHtml({
-    brandName = 'Your store',
-    topic = 'Support request',
-    triggerSource = 'WhatsApp automation',
-    customerPhone = '',
-    customerName = '',
-    customerQuery = '',
-    takeoverLink = '#',
-    recentMessages = [],
-    recentOrders = [],
-}) {
-    const q = String(customerQuery || '').trim();
-    const queryBlock = q
-        ? `<div style="margin-top:20px;padding:16px;background:#0f172a08;border-radius:12px;border:1px solid #e2e8f0;">
-            <p style="margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Customer message</p>
-            <p style="margin:0;font-size:14px;line-height:1.55;color:#0f172a;white-space:pre-wrap;">${escapeHtml(q)}</p>
-           </div>`
-        : '';
-
-    const transcriptLines = (Array.isArray(recentMessages) ? recentMessages : [])
-        .map(formatTranscriptLine)
-        .filter(Boolean);
-    const transcriptBlock = transcriptLines.length
-        ? `<div style="margin-top:20px;padding:16px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;">
-            <p style="margin:0 0 10px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Recent chat (last ${transcriptLines.length})</p>
-            <ul style="margin:0;padding-left:18px;">${transcriptLines.join('')}</ul>
-           </div>`
-        : '';
-
-    const orderRows = (Array.isArray(recentOrders) ? recentOrders : [])
-        .map(formatOrderLine)
-        .filter(Boolean);
-    const ordersBlock = orderRows.length
-        ? `<div style="margin-top:20px;padding:16px;background:#faf5ff;border-radius:12px;border:1px solid #ede9fe;">
-            <p style="margin:0 0 10px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#7c3aed;">Recent orders (${orderRows.length})</p>
-            <table style="width:100%;border-collapse:collapse;font-size:13px;">
-              <thead><tr>
-                <th style="text-align:left;padding:4px 0;font-size:10px;color:#94a3b8;text-transform:uppercase;">Order</th>
-                <th style="text-align:right;padding:4px 0;font-size:10px;color:#94a3b8;text-transform:uppercase;">Amount</th>
-                <th style="text-align:right;padding:4px 0;font-size:10px;color:#94a3b8;text-transform:uppercase;">Status</th>
-              </tr></thead>
-              <tbody>${orderRows.join('')}</tbody>
-            </table>
-           </div>`
-        : '';
-
-    const nameRow = customerName
-        ? `<tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;">Customer</td><td style="padding:10px 0;text-align:right;color:#0f172a;font-weight:600;">${escapeHtml(customerName)}</td></tr>`
-        : '';
-
-    return `
-        <div style="font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:640px;margin:0 auto;padding:40px 32px;background:#f8fafc;">
-          <div style="background:#fff;border-radius:20px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 25px 50px -12px rgba(15,23,42,0.12);">
-            <div style="padding:28px 28px 12px;border-bottom:1px solid #f1f5f9;">
-              <span style="display:inline-block;padding:6px 12px;border-radius:999px;background:#fef2f2;color:#b91c1c;font-size:10px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">Escalation · TopEdge AI</span>
-              <h1 style="margin:16px 0 0;font-size:22px;font-weight:800;color:#0f172a;line-height:1.25;">${escapeHtml(topic)}</h1>
-              <p style="margin:10px 0 0;font-size:14px;color:#64748b;line-height:1.5;">A shopper on <strong style="color:#334155;">${escapeHtml(brandName)}</strong> needs a human. Details below — act fast; speed wins conversions.</p>
-            </div>
-            <div style="padding:24px 28px 32px;">
-              <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;width:38%;">Source</td><td style="padding:10px 0;text-align:right;color:#0f172a;font-weight:600;">${escapeHtml(triggerSource)}</td></tr>
-                ${nameRow}
-                <tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;">Customer WhatsApp</td><td style="padding:10px 0;text-align:right;color:#4f46e5;font-weight:800;font-family:ui-monospace,Menlo,monospace;">${escapeHtml(customerPhone)}</td></tr>
-              </table>
-              ${queryBlock}
-              ${ordersBlock}
-              ${transcriptBlock}
-              <a href="${escapeHtml(takeoverLink)}" style="display:block;margin-top:28px;text-align:center;padding:16px 20px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#fff!important;text-decoration:none;border-radius:14px;font-weight:800;font-size:14px;letter-spacing:0.02em;">Open conversation in dashboard →</a>
-              <p style="margin:24px 0 0;font-size:11px;color:#94a3b8;line-height:1.6;text-align:center;">If the button is blocked, copy this link: <span style="word-break:break-all;color:#64748b;">${escapeHtml(takeoverLink)}</span></p>
-            </div>
-          </div>
-          <p style="text-align:center;margin-top:24px;font-size:11px;color:#94a3b8;">TopEdge AI · Enterprise WhatsApp CX</p>
-        </div>`;
-}
+const {
+  buildAdminEscalationEmailHtml,
+  buildAdminEscalationEmailText,
+  buildAdminEscalationSubject,
+} = require('./adminEscalationEmailTemplate');
 
 /**
  * Send a plain-text admin alert email (triggered by Flow Builder ADMIN_ALERT node).
@@ -1478,6 +1386,8 @@ module.exports = {
     isSystemEmailReady,
     escapeHtml,
     buildAdminEscalationEmailHtml,
+    buildAdminEscalationEmailText,
+    buildAdminEscalationSubject,
     sendAbandonedCartEmail,
     sendOrderConfirmationEmail,
     sendCODToPrepaidEmail,

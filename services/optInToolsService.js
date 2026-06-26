@@ -315,6 +315,7 @@ async function publishTool(clientId, toolId, backendUrl) {
     return {
       success: false,
       status: 400,
+      code: injectResult?.code,
       message: injectResult?.message || 'Theme inject failed. Ensure write_themes scope is granted.',
     };
   }
@@ -351,6 +352,25 @@ async function publishTool(clientId, toolId, backendUrl) {
     themeInject: injectResult,
     embedKey,
   };
+}
+
+async function syncThemeEmbed(clientId, backendUrl) {
+  const client = await loadClientForPublish(clientId);
+  if (!client) return { success: false, status: 404, message: 'Client not found' };
+  if (!isShopifyReadyForPublish(client)) {
+    return { success: false, status: 400, message: 'Connect Shopify before syncing theme.' };
+  }
+  const embedKey = await ensureEmbedPublicKey(clientId);
+  const { injectOptInScript } = require('../utils/shopify/shopifyHelper');
+  const injectResult = await injectOptInScript(clientId, backendUrl, embedKey);
+  if (!injectResult?.success) {
+    return {
+      success: false,
+      status: 400,
+      message: injectResult?.message || 'Theme sync failed. Ensure write_themes scope is granted.',
+    };
+  }
+  return { success: true, themeInject: injectResult, embedKey };
 }
 
 async function unpublishTool(clientId, toolId) {
@@ -424,6 +444,7 @@ module.exports = {
   deleteTool,
   publishTool,
   unpublishTool,
+  syncThemeEmbed,
   getPublicConfig,
   getToolWorkspaceMeta,
   validateToolForPublish,

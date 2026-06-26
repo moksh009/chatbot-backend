@@ -247,8 +247,8 @@ async function upsertOptInLead({
   return { ok: true, lead, doubleOptIn: doubleOptIn && !partial };
 }
 
-async function capturePhone({ embedKey, phone, consent, toolId, pageUrl, visitorId, req }) {
-  const phoneCheck = validateOptInPhoneInput(phone);
+async function capturePhone({ embedKey, phone, consent, toolId, pageUrl, visitorId, countryCode, req }) {
+  const phoneCheck = validateOptInPhoneInput(phone, countryCode);
   if (!phoneCheck.ok) {
     return { success: false, status: 400, message: phoneCheck.message };
   }
@@ -278,8 +278,8 @@ async function capturePhone({ embedKey, phone, consent, toolId, pageUrl, visitor
   return { success: true, status: 'captured' };
 }
 
-async function subscribe({ embedKey, phone, consent, toolId, pageUrl, visitorId, name, email, dateOfBirth, req }) {
-  const phoneCheck = validateOptInPhoneInput(phone);
+async function subscribe({ embedKey, phone, consent, toolId, pageUrl, visitorId, name, email, dateOfBirth, countryCode, req }) {
+  const phoneCheck = validateOptInPhoneInput(phone, countryCode);
   if (!phoneCheck.ok) {
     return { success: false, status: 400, message: phoneCheck.message };
   }
