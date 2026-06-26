@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+require("../mongoose/phoneE164Plugin").registerPhoneE164GlobalPlugin();
 
 
 async function connectDB(){

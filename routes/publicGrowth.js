@@ -6,7 +6,10 @@ const rateLimit = require('express-rate-limit');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const GrowthQrScan = require('../models/GrowthQrScan');
-const { normalizeIndianPhone, indianPhoneLookupVariants } = require('../utils/core/normalizeIndianPhone');
+const {
+  sanitizePhoneForStorage,
+  phoneStorageLookupVariants,
+} = require('../utils/core/phoneE164Policy');
 
 const router = express.Router();
 
@@ -139,7 +142,7 @@ router.get('/config', async (req, res) => {
 router.post('/subscribe', subscribeLimiter, async (req, res) => {
   try {
     const embedKey = String(req.body.embedKey || req.body.embed_key || '').trim();
-    const phoneStored = normalizeIndianPhone(req.body.phone);
+    const phoneStored = sanitizePhoneForStorage(req.body.phone);
     const consent = req.body.consent === true || req.body.consent === 'true' || req.body.consent === '1';
     const widgetTypeRaw = String(req.body.widgetType || req.body.widget_type || 'embedded_form').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const widgetType = WIDGET_TYPES.has(widgetTypeRaw) ? widgetTypeRaw : 'embedded_form';
@@ -211,7 +214,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       email: null,
     }).catch(() => {});
 
-    const phoneLookup = indianPhoneLookupVariants(phoneStored);
+    const phoneLookup = phoneStorageLookupVariants(phoneStored);
     const lead = await AdLead.findOneAndUpdate(
       { clientId: client.clientId, phoneNumber: { $in: phoneLookup } },
       {
@@ -312,11 +315,11 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Unknown or disabled embed key' });
     }
 
-    const phoneStored = normalizeIndianPhone(req.body.phone);
+    const phoneStored = sanitizePhoneForStorage(req.body.phone);
     if (!phoneStored) {
       return res.status(400).json({ success: false, message: 'Valid phone required' });
     }
-    const phoneLookup = indianPhoneLookupVariants(phoneStored);
+    const phoneLookup = phoneStorageLookupVariants(phoneStored);
 
     const storeHost = String(client.shopDomain || '').replace(/^https?:\/\//, '').split('/')[0];
     const checkoutToken = String(req.body.checkoutToken || req.body.token || '').trim();
@@ -364,11 +367,13 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
     );
 
     const Conversation = require('../models/Conversation');
-    const convoPhone = phoneLookup[phoneLookup.length - 1] || phoneStored.replace(/^\+/, '');
-    let convo = await Conversation.findOne({ phone: convoPhone, clientId: client.clientId });
+    let convo = await Conversation.findOne({
+      clientId: client.clientId,
+      phone: { $in: phoneLookup.length ? phoneLookup : [phoneStored] },
+    });
     if (!convo) {
       convo = await Conversation.create({
-        phone: convoPhone,
+        phone: phoneStored,
         clientId: client.clientId,
         channel: 'whatsapp',
         status: 'active',

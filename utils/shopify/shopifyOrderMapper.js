@@ -1,5 +1,8 @@
 'use strict';
 
+const { sanitizePhoneForStorage, sanitizePhoneFieldsInObject } = require('../core/phoneE164Policy');
+const { pickCanonicalPhone } = require('../core/phoneSanitizer');
+
 function lineItemImage(item) {
   if (!item) return '';
   if (item.image_url) return String(item.image_url);
@@ -189,8 +192,14 @@ function deriveLogisticsAwareStatus(data) {
  * @param {object} [options] preferLogisticsStatus: use fulfillment-aware status (webhook / 3PL sync)
  */
 function buildShopifyOrderSet(clientId, data, options = {}) {
-  const phone = data.phone || data.customer?.phone || data.billing_address?.phone || data.shipping_address?.phone;
-  const cleanPhone = phone ? String(phone).replace(/\D/g, '').slice(-10) : '0000000000';
+  const phoneCandidates = [
+    data.phone,
+    data.customer?.phone,
+    data.billing_address?.phone,
+    data.shipping_address?.phone,
+  ];
+  const canonicalDigits = pickCanonicalPhone(phoneCandidates, { country: 'IN' });
+  const customerPhoneE164 = canonicalDigits ? sanitizePhoneForStorage(canonicalDigits) : '';
 
   const financialStatus = data.financial_status != null ? String(data.financial_status) : '';
   const fulfillmentStatus =
@@ -218,6 +227,13 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
   const useLogistics = !!options.preferLogisticsStatus;
   const platformStatus = useLogistics ? deriveLogisticsAwareStatus(data) : derivePlatformStatus(data);
 
+  const shippingAddress = data.shipping_address
+    ? sanitizePhoneFieldsInObject({ ...data.shipping_address })
+    : undefined;
+  const billingAddress = data.billing_address
+    ? sanitizePhoneFieldsInObject({ ...data.billing_address })
+    : undefined;
+
   return {
     clientId,
     shopifyOrderId: String(data.id),
@@ -225,7 +241,8 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
     orderId: data.name || `#${data.id}`,
     orderNumber: data.order_number != null ? String(data.order_number) : '',
     customerName: resolveCustomerDisplayName(data) || 'Shopify Customer',
-    customerPhone: cleanPhone,
+    customerPhone: customerPhoneE164,
+    phone: customerPhoneE164 || undefined,
     customerEmail: data.email || data.customer?.email || data.contact_email || null,
     checkoutToken: data.checkout_token || data.token ? String(data.checkout_token || data.token) : '',
     amount: parseFloat(data.total_price || 0),
@@ -240,8 +257,8 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
     city: data.shipping_address?.city || '',
     state: data.shipping_address?.province || '',
     zip: data.shipping_address?.zip || '',
-    shippingAddress: data.shipping_address || undefined,
-    billingAddress: data.billing_address || undefined,
+    shippingAddress,
+    billingAddress,
     createdAt: data.created_at ? new Date(data.created_at) : new Date(),
     storeString: 'Shopify',
     storeKey: options.storeKey || options.shopDomain || '',

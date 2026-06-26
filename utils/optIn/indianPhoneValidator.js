@@ -63,7 +63,8 @@ function normalizePhoneE164(raw, countryCode) {
     d = d.slice(dialDigits.length);
   }
   if (code === '+91') {
-    const stored = normalizeIndianPhone(raw);
+    const { sanitizePhoneForStorage } = require('../core/phoneE164Policy');
+    const stored = sanitizePhoneForStorage(raw, 'IN');
     return stored || null;
   }
   if (!isValidPhoneForCountry(raw, code)) return null;

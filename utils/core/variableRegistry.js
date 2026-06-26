@@ -6,7 +6,25 @@
  * `computed.*` is filled in buildVariableContext after path resolution.
  */
 
-const VARIABLE_REGISTRY = [
+const {
+  SHOPIFY_ACTION_CATEGORY,
+  SHOPIFY_ACTION_VARIABLES,
+} = require("../../constants/shopifyActionVariables");
+
+const REMOVED_LEGACY_NAMES = new Set([
+  "cart_total",
+  "cart_items",
+  "checkout_url",
+  "order_id",
+  "order_number",
+  "order_status",
+  "tracking_url",
+  "order_date",
+  "order_total",
+  "shipping_address",
+]);
+
+const CORE_VARIABLE_REGISTRY = [
   // ── BRAND ─────────────────────────────────────────────────────────────
   { name: "brand_name", label: "Brand name", category: "Brand",
     source: "client.platformVars.brandName", wizardField: "businessName",
@@ -58,37 +76,16 @@ const VARIABLE_REGISTRY = [
   { name: "customer_city", label: "Customer city", category: "Customer",
     source: "lead.city", wizardField: null,
     fallback: "", preview: "Mumbai" },
-  // ── ORDER / COMMERCE (metadata.lastOrder + legacy flat keys) ───────────
-  { name: "order_id", label: "Order ID", category: "Order",
-    source: "computed.orderIdDisplay", wizardField: null,
-    fallback: "", preview: "#1042" },
-  { name: "order_number", label: "Order number (alias)", category: "Order",
-    source: "convo.metadata.order_number", wizardField: null,
-    fallback: "", preview: "#1042" },
-  { name: "order_status", label: "Order status", category: "Order",
-    source: "computed.orderStatus", wizardField: null,
-    fallback: "Processing", preview: "Shipped" },
-  { name: "order_total", label: "Order total", category: "Order",
-    source: "computed.orderTotal", wizardField: null,
-    fallback: "", preview: "1,499" },
+  // ── ORDER / COMMERCE (non–Shopify-Action globals) ───────────────────────
   { name: "order_items", label: "Order items summary", category: "Order",
     source: "computed.orderItems", wizardField: null,
     fallback: "your items", preview: "Smart Doorbell × 1" },
-  { name: "tracking_url", label: "Tracking URL", category: "Order",
-    source: "computed.trackingUrl", wizardField: null,
-    fallback: "", preview: "https://track.example.com/..." },
-  { name: "cart_total", label: "Cart total", category: "Order",
-    source: "computed.cartTotal", wizardField: null,
-    fallback: "", preview: "2,499" },
   { name: "cart_items_count", label: "Cart item count", category: "Order",
     source: "convo.metadata.cart_items_count", wizardField: null,
     fallback: "", preview: "2" },
   { name: "payment_method", label: "Payment method", category: "Order",
     source: "convo.metadata.payment_method", wizardField: null,
     fallback: "", preview: "COD" },
-  { name: "shipping_address", label: "Delivery address", category: "Order",
-    source: "convo.metadata.shipping_address", wizardField: null,
-    fallback: "", preview: "123 MG Road, Mumbai" },
   { name: "product_name", label: "Product name", category: "Order",
     source: "convo.metadata.first_product_title", wizardField: null,
     fallback: "", preview: "Smart Doorbell" },
@@ -98,18 +95,12 @@ const VARIABLE_REGISTRY = [
   { name: "first_product_image", label: "Product image URL", category: "Order",
     source: "convo.metadata.first_product_image", wizardField: null,
     fallback: "", preview: "https://cdn.example.com/product.jpg" },
-  { name: "checkout_url", label: "Checkout URL", category: "Order",
-    source: "convo.metadata.checkout_url", wizardField: null,
-    fallback: "", preview: "https://store.com/cart" },
   { name: "line_items_list", label: "Line items summary", category: "Order",
     source: "convo.metadata.line_items_list", wizardField: null,
     fallback: "your items", preview: "Doorbell × 1" },
   { name: "estimated_delivery", label: "Estimated delivery", category: "Order",
     source: "computed.estimatedDelivery", wizardField: null,
     fallback: "3–5 business days", preview: "15 May 2026" },
-  { name: "order_date", label: "Order date", category: "Order",
-    source: "computed.orderDate", wizardField: null,
-    fallback: "", preview: "12 May 2026" },
   // ── CAPTURED ────────────────────────────────────────────────────────────
   { name: "captured_email", label: "Captured email", category: "Captured",
     source: "convo.metadata.captured_email", wizardField: null, fallback: "", preview: "u@x.com" },
@@ -135,6 +126,21 @@ const VARIABLE_REGISTRY = [
     source: "convo.metadata.payment_link", wizardField: null, fallback: "", preview: "https://rzp.io/..." },
 ];
 
+const SHOPIFY_ACTION_REGISTRY = SHOPIFY_ACTION_VARIABLES.map((v) => ({
+  name: v.name,
+  label: v.label,
+  category: SHOPIFY_ACTION_CATEGORY,
+  description: v.description,
+  preview: v.preview,
+  shopifyActionOnly: true,
+  locked: true,
+  source: null,
+  wizardField: null,
+  fallback: "NA",
+}));
+
+const VARIABLE_REGISTRY = [...CORE_VARIABLE_REGISTRY, ...SHOPIFY_ACTION_REGISTRY];
+
 function resolveSourcePath(path, sources) {
   if (!path || typeof path !== "string") return null;
   const parts = path.split(".").filter(Boolean);
@@ -144,4 +150,4 @@ function resolveSourcePath(path, sources) {
   return parts.reduce((o, k) => (o != null && o[k] !== undefined ? o[k] : null), obj);
 }
 
-module.exports = { VARIABLE_REGISTRY, resolveSourcePath };
+module.exports = { VARIABLE_REGISTRY, resolveSourcePath, REMOVED_LEGACY_NAMES };

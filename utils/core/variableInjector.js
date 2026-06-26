@@ -2,12 +2,21 @@
 
 const Order = require("../../models/Order");
 const { normalizePhone } = require('./helpers');
-const { VARIABLE_REGISTRY, resolveSourcePath } = require('./variableRegistry');
+const { VARIABLE_REGISTRY, resolveSourcePath, REMOVED_LEGACY_NAMES } = require('./variableRegistry');
+const {
+  SHOPIFY_ACTION_VARIABLE_NAMES,
+} = require('../../constants/shopifyActionVariables');
 const { applyTenantCustomVariableDefaults } = require('./variableUtils');
 
-/**
- * VARIABLE INJECTOR — registry-backed context + legacy flat aliases for dualBrainEngine.
- */
+function stripBlockedVariableKeys(obj = {}) {
+  const out = { ...obj };
+  for (const key of Object.keys(out)) {
+    if (REMOVED_LEGACY_NAMES.has(key) || SHOPIFY_ACTION_VARIABLE_NAMES.has(key)) {
+      delete out[key];
+    }
+  }
+  return out;
+}
 
 function _get(obj, path) {
   if (!obj || !path) return null;
@@ -75,46 +84,14 @@ async function buildVariableContext(client, phone, convo, lead) {
     ?? clientLean.automationFlows?.find((f) => f.id === "cod_to_prepaid")?.config?.discountAmount
     ?? 50;
 
-  const orderNumFlat = meta.order_number || lastOrder.orderNumber || "";
-  const orderIdDisplay = orderNumFlat
-    ? (String(orderNumFlat).startsWith("#") ? String(orderNumFlat) : `#${orderNumFlat}`)
-    : (latest?.orderNumber ? `#${latest.orderNumber}` : (latest?.orderId || ""));
-
-  const orderTotalStr =
-    lastOrder.totalPrice
-    || meta.order_total_raw
-    || latest?.totalPrice
-    || "";
   const orderItemsStr =
     lastOrder.itemsSummary
     || meta.line_items_list
     || "";
-  const orderStatusStr =
-    lastOrder.status
-    || latest?.status
-    || latest?.fulfillmentStatus
-    || meta.order_status_detail
-    || "";
-  const trackingUrlStr = lastOrder.trackingUrl || latest?.trackingUrl || "";
-
-  const cartSnap = leadLean?.cartSnapshot;
-  const cartItemsJoin = (cartSnap?.titles || cartSnap?.items?.map((i) => i.title) || []).join(", ");
-  const { getCartSnapshotTotal } = require('./leadFieldAccess');
-  const cartTotalRaw = getCartSnapshotTotal(leadLean?.cartSnapshot || {}, leadLean) || meta.cart_total || "";
-  const cartTotalFmt = cartTotalRaw !== "" && cartTotalRaw != null
-    ? `${clientLean.platformVars?.baseCurrency || "₹"}${Number(cartTotalRaw).toLocaleString("en-IN")}`
-    : (meta.cart_total || "");
 
   const storeUrl =
     clientLean.nicheData?.storeUrl
     || (clientLean.shopDomain ? `https://${String(clientLean.shopDomain).replace(/^https?:\/\//, "")}` : "");
-  const checkoutUrl =
-    convoLean?.lastCheckoutUrl
-    || meta.checkout_url
-    || leadLean?.checkoutUrl
-    || (leadLean?.cartSnapshot?.token
-      ? `${storeUrl}/cart/${leadLean.cartSnapshot.token}?utm_source=whatsapp`
-      : (clientLean.platformVars?.checkoutUrl || storeUrl));
 
   const firstNameComputed =
     meta.first_name
@@ -134,25 +111,16 @@ async function buildVariableContext(client, phone, convo, lead) {
         || clientLean.brand?.warrantyDefaultDuration
         || wf.warrantyDuration
         || "1 Year",
-      orderIdDisplay,
-      orderStatus: orderStatusStr,
-      orderTotal: orderTotalStr ? String(orderTotalStr) : "",
       orderItems: orderItemsStr,
-      trackingUrl: trackingUrlStr,
-      cartTotal: cartTotalFmt,
       referralPoints: wf.referralPointsBonus ?? 500,
       estimatedDelivery: "3–5 business days",
-      orderDate: orderNumFlat
-        ? ""
-        : (latest?.createdAt
-          ? new Date(latest.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })
-          : ""),
     }
   };
 
   const pv = clientLean.platformVars || {};
   const ctx = {};
   for (const def of VARIABLE_REGISTRY) {
+    if (def.shopifyActionOnly) continue;
     let v = null;
     if (def.source && def.source.startsWith("computed.")) {
       const key = def.source.slice("computed.".length);
@@ -177,19 +145,6 @@ async function buildVariableContext(client, phone, convo, lead) {
     ).trim();
   }
 
-  // Enrich from Order model when metadata empty
-  if (!ctx.order_id && latest) {
-    ctx.order_id = latest.orderNumber ? `#${latest.orderNumber}` : String(latest.orderId || "");
-  }
-  if (!ctx.order_total && latest?.totalPrice) {
-    ctx.order_total = String(latest.totalPrice);
-  }
-  if (!ctx.order_status && (latest?.status || latest?.fulfillmentStatus)) {
-    ctx.order_status = String(latest.status || latest.fulfillmentStatus);
-  }
-  if (!ctx.tracking_url && latest?.trackingUrl) {
-    ctx.tracking_url = String(latest.trackingUrl);
-  }
   if (!ctx.payment_method && latest?.paymentMethod) {
     ctx.payment_method = String(latest.paymentMethod);
   }
@@ -251,9 +206,7 @@ async function buildVariableContext(client, phone, convo, lead) {
     business_hours: ctx.open_hours,
     open_hours: ctx.open_hours,
     base_currency: ctx.currency,
-    checkout_url: checkoutUrl,
     store_url: ctx.store_url || storeUrl,
-    cart_items: cartItemsJoin || ctx.order_items,
     lead_score: String(leadLean?.leadScore || leadLean?.score || 0),
     total_spent: lifetimeValue ? `₹${Number(lifetimeValue).toLocaleString("en-IN")}` : "₹0",
     orders_count: String(leadLean?.ordersCount || 0),
@@ -271,17 +224,15 @@ async function buildVariableContext(client, phone, convo, lead) {
     ai_summary: dna?.aiSummary || "",
     engagement_score: String(dna?.engagementScore || 0),
     churn_risk: String(dna?.churnRiskScore || 0),
-    order_number: ctx.order_number || orderIdDisplay,
     line_items_list: orderItemsStr,
     first_product_title: meta.first_product_title || "",
     first_product_image: meta.first_product_image || "",
-    shipping_address: meta.shipping_address || "",
     product_list_text: product_list_text || "Catalog is syncing — our team can share product links on request.",
     selected_category_name,
   };
 
   const profileName = (leadLean?.name || convoLean?.customerName || "").trim();
-  const metaForMerge = { ...(meta || {}) };
+  const metaForMerge = stripBlockedVariableKeys({ ...(meta || {}) });
   if (profileName) {
     delete metaForMerge.customer_name;
   }
@@ -295,7 +246,9 @@ async function buildVariableContext(client, phone, convo, lead) {
     merged.customer_name = profileName;
     merged.first_name = profileName.split(/\s+/)[0] || merged.first_name;
   }
-  return applyTenantCustomVariableDefaults(merged, clientLean);
+  return stripBlockedVariableKeys(
+    applyTenantCustomVariableDefaults(merged, clientLean)
+  );
 }
 
 function injectVariables(text, context) {
@@ -355,6 +308,51 @@ function injectNodeVariables(target, context) {
   return injectDeep(target);
 }
 
+function injectShopifyActionMessage(text, shopifyVars = {}, contextOrLegacy = {}) {
+  if (!text || typeof text !== "string") return text;
+
+  let baseCtx = {};
+  if (contextOrLegacy && typeof contextOrLegacy === "object") {
+    if ("lead" in contextOrLegacy || "client" in contextOrLegacy || "convo" in contextOrLegacy) {
+      const { lead, client, convo } = contextOrLegacy;
+      baseCtx = {
+        name: lead?.name || "Customer",
+        customer_name: lead?.name || convo?.customerName || "Customer",
+        first_name: (lead?.name || convo?.customerName || "Customer").split(" ")[0],
+        phone: lead?.phoneNumber || convo?.phone || "",
+        customer_phone: lead?.phoneNumber || convo?.phone || "",
+        email: lead?.email || "",
+        business_name: client?.name || client?.businessName || "",
+        brand_name: client?.businessName || client?.platformVars?.brandName || "",
+        bot_name: client?.platformVars?.agentName || "",
+        store_url: client?.platformVars?.checkoutUrl || "",
+      };
+    } else {
+      baseCtx = { ...contextOrLegacy };
+    }
+  }
+
+  const merged = { ...baseCtx, ...shopifyVars };
+
+  const variableRegex = /{{\s*([\w.]+)\s*(?:\|\s*['"]?([^'"]*)['"]?\s*)?}}/g;
+  return text.replace(variableRegex, (match, key, fallback) => {
+    if (!/^[\w.]+$/.test(key)) return match;
+    const value = merged[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "" && String(value).trim() !== "NA") {
+      return String(value);
+    }
+    if (SHOPIFY_ACTION_VARIABLE_NAMES.has(key)) {
+      if (fallback !== undefined && fallback !== null) return fallback;
+      return "NA";
+    }
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value);
+    }
+    if (fallback !== undefined && fallback !== null) return fallback;
+    return "-";
+  });
+}
+
 function injectVariablesLegacy(text, contextOrLegacy) {
   if (!text || typeof text !== "string") return text;
 
@@ -363,8 +361,8 @@ function injectVariablesLegacy(text, contextOrLegacy) {
     typeof contextOrLegacy === "object" &&
     ("lead" in contextOrLegacy || "client" in contextOrLegacy || "convo" in contextOrLegacy)
   ) {
-    const { lead, client, convo, order } = contextOrLegacy;
-    const legacyCtx = {
+    const { lead, client, convo } = contextOrLegacy;
+    const legacyCtx = stripBlockedVariableKeys({
       name: lead?.name || "Customer",
       customer_name: lead?.name || "Customer",
       first_name: (lead?.name || "Customer").split(" ")[0],
@@ -373,21 +371,14 @@ function injectVariablesLegacy(text, contextOrLegacy) {
       email: lead?.email || "",
       business_name: client?.name || client?.businessName || "",
       brand_name: client?.businessName || "",
-      order_id: order?.orderNumber ? `#${order.orderNumber}` : (order?.orderId || ""),
-      order_status: order?.status || "",
-      order_total: order?.totalPrice ? `₹${order.totalPrice}` : "",
-      tracking_link: order?.trackingUrl || "",
-      tracking_url: order?.trackingUrl || "",
-      payment_link: order?.razorpayUrl || order?.cashfreeUrl || "",
-      cart_total: lead?.cartValue || "",
-      checkout_url: lead?.checkoutUrl || "",
+      payment_link: convo?.metadata?.payment_link || "",
       discount_code: lead?.activeDiscountCode || "",
-      ...(convo?.metadata || {})
-    };
+      ...(convo?.metadata || {}),
+    });
     return injectVariables(text, legacyCtx);
   }
 
-  return injectVariables(text, contextOrLegacy || {});
+  return injectVariables(text, stripBlockedVariableKeys(contextOrLegacy || {}));
 }
 
 async function resolveFlowVariables(input, clientId, phone) {
@@ -427,6 +418,8 @@ module.exports = {
   injectVariables,
   injectNodeVariables,
   injectVariablesLegacy,
+  injectShopifyActionMessage,
   resolveFlowVariables,
-  VARIABLE_REGISTRY
+  VARIABLE_REGISTRY,
+  stripBlockedVariableKeys,
 };

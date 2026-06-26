@@ -2,8 +2,11 @@
 
 const VisitorIdentity = require("../../models/VisitorIdentity");
 const AdLead = require("../../models/AdLead");
-const { normalizePhoneWithCountry } = require("../core/helpers");
-const { normalizeIndianPhone, indianPhoneLookupVariants } = require("../core/normalizeIndianPhone");
+const { resolveDefaultCountry } = require("../core/helpers");
+const {
+  sanitizePhoneForStorage,
+  phoneStorageLookupVariants,
+} = require("../core/phoneE164Policy");
 
 /**
  * Stitch anonymous visitor ↔ Shopify client_id ↔ checkout token ↔ AdLead.
@@ -18,8 +21,9 @@ async function stitchVisitorIdentity(clientId, client, payload = {}) {
     leadId,
   } = payload;
 
-  const phoneE164 = rawPhone ? normalizeIndianPhone(rawPhone) : "";
-  const phoneLookup = phoneE164 ? indianPhoneLookupVariants(phoneE164) : [];
+  const defaultCountry = resolveDefaultCountry(client);
+  const phoneE164 = rawPhone ? sanitizePhoneForStorage(rawPhone, defaultCountry) : "";
+  const phoneLookup = phoneE164 ? phoneStorageLookupVariants(phoneE164, defaultCountry) : [];
   const token = checkoutToken ? String(checkoutToken).trim() : "";
   const vid = visitorId ? String(visitorId).trim() : "";
   const scid = shopifyClientId ? String(shopifyClientId).trim() : "";
@@ -63,7 +67,7 @@ async function stitchVisitorIdentity(clientId, client, payload = {}) {
     visitor.checkoutTokens = [...(visitor.checkoutTokens || []), token].slice(-20);
   }
   if (em) visitor.email = em;
-  if (phoneE164) visitor.phone = phoneE164.replace(/^\+/, '');
+  if (phoneE164) visitor.phone = phoneE164;
   if (leadId) visitor.leadId = leadId;
   visitor.lastSeen = new Date();
   await visitor.save();
@@ -107,14 +111,14 @@ async function stitchCheckoutTokenToLead(clientId, checkoutToken, phone, email, 
   const token = String(checkoutToken || "").trim();
   if (!token) return null;
 
-  const phoneNorm = phone ? normalizeIndianPhone(phone) : "";
+  const phoneNorm = phone ? sanitizePhoneForStorage(phone, resolveDefaultCountry(client)) : "";
   const visitor = await VisitorIdentity.findOne({
     clientId,
     checkoutTokens: token,
   }).sort({ lastSeen: -1 });
 
   if (visitor && phoneNorm) {
-    visitor.phone = phoneNorm.replace(/^\+/, '');
+    visitor.phone = phoneNorm;
     if (email) visitor.email = String(email).toLowerCase();
     visitor.lastSeen = new Date();
     await visitor.save();

@@ -11,13 +11,18 @@ const TRIGGER_MAP = {
   'orders/updated': null,
 };
 
+const { pickCanonicalPhone } = require('../../utils/core/phoneSanitizer');
+const { sanitizePhoneForStorage } = require('../../utils/core/phoneE164Policy');
+
 function normalizePhone(data) {
-  const phone =
-    data.phone ||
-    data.customer?.phone ||
-    data.billing_address?.phone ||
-    data.shipping_address?.phone;
-  return phone ? String(phone).replace(/\D/g, '').slice(-10) : '';
+  const phoneCandidates = [
+    data.phone,
+    data.customer?.phone,
+    data.billing_address?.phone,
+    data.shipping_address?.phone,
+  ];
+  const canonical = pickCanonicalPhone(phoneCandidates, { country: 'IN' });
+  return canonical ? sanitizePhoneForStorage(canonical) : '';
 }
 
 function policyAllows(flow, lead, orderAmount) {

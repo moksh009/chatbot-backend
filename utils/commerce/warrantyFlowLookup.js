@@ -9,6 +9,7 @@ const Conversation = require("../../models/Conversation");
 const WhatsApp = require("../meta/whatsapp");
 const log = require("../core/logger")("WarrantyFlowLookup");
 const { normalizePhone } = require("../core/helpers");
+const { sanitizePhoneForStorage } = require("../core/phoneE164Policy");
 const {
   buildWarrantyCustomerProfile,
   classifyWarrantyScenario,
@@ -26,6 +27,14 @@ const LIST_PAGE_SIZE = 8;
 
 function resolveInboundPhone(convo, phone) {
   return convo?.phone || convo?.customerPhone || phone || "";
+}
+
+/** E.164 for CustomerProfile lookup; digits-only for Meta Graph `to`. */
+function resolveWarrantyPhones(convo, phone) {
+  const raw = resolveInboundPhone(convo, phone);
+  const e164 = sanitizePhoneForStorage(raw);
+  const waTo = e164 ? normalizePhone(e164) : "";
+  return { e164, waTo };
 }
 
 function encodeOrderRowId(orderKey) {
@@ -212,8 +221,8 @@ async function clearWarrantyConversationState(convoId) {
 }
 
 async function runWarrantyLookupEntry({ nodeId, client, phone, convo }) {
-  const convoPhone = normalizePhone(resolveInboundPhone(convo, phone));
-  if (!convoPhone) {
+  const { e164, waTo } = resolveWarrantyPhones(convo, phone);
+  if (!waTo || !e164) {
     log.warn("[WarrantyFlow] Missing phone on conversation");
     return { scenario: "error", phase: null, convoPatch: null };
   }
@@ -237,25 +246,25 @@ async function runWarrantyLookupEntry({ nodeId, client, phone, convo }) {
   };
 
   try {
-    const profile = await buildWarrantyCustomerProfile(client.clientId, convoPhone);
+    const profile = await buildWarrantyCustomerProfile(client.clientId, e164);
     const scenario = classifyWarrantyScenario(profile);
-    const display = profile.displayPhone;
+    const display = profile.displayPhone || e164;
     const orderMap = buildOrderMap(profile.ordersWithWarranty);
 
     if (scenario === "no_customer") {
-      await sendMenuButtonMessage(client, convoPhone, buildScenarioFiveBody(display));
+      await sendMenuButtonMessage(client, waTo, buildScenarioFiveBody(display));
       const convoPatch = await applyState("awaiting_menu", orderMap, 0);
       return { scenario, phase: "awaiting_menu", convoPatch };
     }
 
     if (scenario === "orders_no_warranty") {
-      await sendMenuButtonMessage(client, convoPhone, buildScenarioOneBody(display));
+      await sendMenuButtonMessage(client, waTo, buildScenarioOneBody(display));
       const convoPatch = await applyState("awaiting_menu", orderMap, 0);
       return { scenario, phase: "awaiting_menu", convoPatch };
     }
 
     if (scenario === "multi_order") {
-      await sendOrderPickerList(client, convoPhone, profile.ordersWithWarranty, 0);
+      await sendOrderPickerList(client, waTo, profile.ordersWithWarranty, 0);
       const convoPatch = await applyState("pick_order", orderMap, 0);
       return { scenario, phase: "pick_order", convoPatch };
     }
@@ -263,7 +272,7 @@ async function runWarrantyLookupEntry({ nodeId, client, phone, convo }) {
     const orderGroup = profile.ordersWithWarranty[0];
     await sendMenuButtonMessage(
       client,
-      convoPhone,
+      waTo,
       buildDetailsBody(display, orderGroup)
     );
     const convoPatch = await applyState("awaiting_menu", orderMap, 0);
@@ -273,7 +282,7 @@ async function runWarrantyLookupEntry({ nodeId, client, phone, convo }) {
     try {
       await sendMenuButtonMessage(
         client,
-        convoPhone,
+        waTo,
         "We could not load your warranty details right now. Please tap Menu to continue or contact support."
       );
       const convoPatch = await applyState("awaiting_menu", {}, 0);
@@ -299,8 +308,8 @@ async function handleWarrantyLookupReply({
   const phase = String(meta._warranty_phase || "");
   if (!phase) return { handled: false };
 
-  const convoPhone = normalizePhone(resolveInboundPhone(convo, phone));
-  const display = displayPhone(convoPhone);
+  const { e164, waTo } = resolveWarrantyPhones(convo, phone);
+  const display = e164 ? (displayPhone(e164) || e164) : "";
   const orderMap = normalizeOrderMap(meta._warranty_order_map);
   let listPage = Number(meta._warranty_list_page) || 0;
   const warrantyNodeId = nodeId || convo?.lastStepId;
@@ -313,9 +322,9 @@ async function handleWarrantyLookupReply({
   if (phase === "pick_order") {
     if (buttonId && isListMoreSelection({ buttonId, buttonTitle })) {
       try {
-        const profile = await buildWarrantyCustomerProfile(client.clientId, convoPhone);
+        const profile = await buildWarrantyCustomerProfile(client.clientId, e164);
         listPage += 1;
-        await sendOrderPickerList(client, convoPhone, profile.ordersWithWarranty, listPage);
+        await sendOrderPickerList(client, waTo, profile.ordersWithWarranty, listPage);
         await setWarrantyConversationState(convo._id, warrantyNodeId, {
           "metadata._warranty_phase": "pick_order",
           "metadata._warranty_order_map": buildOrderMap(profile.ordersWithWarranty),
@@ -332,8 +341,8 @@ async function handleWarrantyLookupReply({
       const orderKey = orderMap[buttonId] || decodeOrderRowId(buttonId);
       if (!orderKey) {
         try {
-          const profile = await buildWarrantyCustomerProfile(client.clientId, convoPhone);
-          await sendOrderPickerList(client, convoPhone, profile.ordersWithWarranty, listPage);
+          const profile = await buildWarrantyCustomerProfile(client.clientId, e164);
+          await sendOrderPickerList(client, waTo, profile.ordersWithWarranty, listPage);
         } catch (err) {
           log.error("[WarrantyFlow] Unknown order re-prompt failed:", { error: err.message });
         }
@@ -341,10 +350,10 @@ async function handleWarrantyLookupReply({
       }
 
       try {
-        const profile = await buildWarrantyCustomerProfile(client.clientId, convoPhone);
+        const profile = await buildWarrantyCustomerProfile(client.clientId, e164);
         const orderGroup = profile.ordersWithWarranty.find((o) => o.orderKey === orderKey);
         if (!orderGroup) {
-          await sendMenuButtonMessage(client, convoPhone, buildScenarioFiveBody(display));
+          await sendMenuButtonMessage(client, waTo, buildScenarioFiveBody(display));
           await setWarrantyConversationState(convo._id, warrantyNodeId, {
             "metadata._warranty_phase": "awaiting_menu",
             "metadata._warranty_list_page": 0,
@@ -354,7 +363,7 @@ async function handleWarrantyLookupReply({
 
         await sendMenuButtonMessage(
           client,
-          convoPhone,
+          waTo,
           buildDetailsBody(profile.displayPhone, orderGroup)
         );
         await setWarrantyConversationState(convo._id, warrantyNodeId, {
@@ -366,7 +375,7 @@ async function handleWarrantyLookupReply({
         log.error("[WarrantyFlow] Order pick failed:", { error: err.message, orderKey });
         await sendMenuButtonMessage(
           client,
-          convoPhone,
+          waTo,
           "We could not load warranty details for that order. Tap Menu to continue."
         );
         await setWarrantyConversationState(convo._id, warrantyNodeId, {
@@ -377,8 +386,8 @@ async function handleWarrantyLookupReply({
     }
 
     try {
-      const profile = await buildWarrantyCustomerProfile(client.clientId, convoPhone);
-      await sendOrderPickerList(client, convoPhone, profile.ordersWithWarranty, listPage);
+      const profile = await buildWarrantyCustomerProfile(client.clientId, e164);
+      await sendOrderPickerList(client, waTo, profile.ordersWithWarranty, listPage);
     } catch (err) {
       log.error("[WarrantyFlow] Pick-order re-prompt failed:", { error: err.message });
     }
@@ -389,7 +398,7 @@ async function handleWarrantyLookupReply({
     if (buttonId || userText) {
       await sendMenuButtonMessage(
         client,
-        convoPhone,
+        waTo,
         "Tap 'Menu' for support or further assistance."
       );
     }
@@ -410,6 +419,34 @@ async function fetchWarrantyProfileForFlow(clientId, phone) {
   return buildWarrantyCustomerProfile(clientId, phone);
 }
 
+/** Plain-text preview for Flow Builder simulator (matches runtime outbound copy). */
+function buildSimulatorWarrantyPreview(profile, scenario) {
+  const display = profile?.displayPhone || profile?.customerPhone || '';
+  if (scenario === 'no_customer') {
+    return buildScenarioFiveBody(display);
+  }
+  if (scenario === 'orders_no_warranty') {
+    return buildScenarioOneBody(display);
+  }
+  if (scenario === 'multi_order') {
+    const orders = profile?.ordersWithWarranty || [];
+    const lines = orders.map((o, i) => `${i + 1}. ${o.orderDisplay}`).join('\n');
+    return [
+      `👉 Registered Number for Warranty Check: ${display}`,
+      '',
+      '📋 Multiple orders with warranty coverage:',
+      lines,
+      '',
+      '_In live WhatsApp, customers pick an order from an interactive list._',
+      '',
+      "Tap 'Menu' for support or further assistance.",
+    ].join('\n');
+  }
+  const orderGroup = profile?.ordersWithWarranty?.[0];
+  if (orderGroup) return buildDetailsBody(display, orderGroup);
+  return buildScenarioFiveBody(display);
+}
+
 module.exports = {
   buildWarrantyCustomerProfile,
   fetchWarrantyProfileForFlow,
@@ -428,4 +465,5 @@ module.exports = {
   buildScenarioOneBody,
   buildScenarioFiveBody,
   buildListRows,
+  buildSimulatorWarrantyPreview,
 };

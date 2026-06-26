@@ -52,22 +52,6 @@ const uploadMiddleware = (req, res, next) => {
 };
 
 /**
- * Enterprise Cleaner: Phone Normalization
- * Handles: + prefix, stripping non-digits, auto-prefixing country code
- */
-const normalizePhone = (phone, defaultCountryCode = '91') => {
-    if (!phone) return null;
-    let cleaned = String(phone).replace(/\D/g, '');
-    
-    // Auto-fix 10-digit numbers for common regions (default India)
-    if (cleaned.length === 10) {
-        cleaned = defaultCountryCode + cleaned;
-    }
-    
-    return cleaned;
-};
-
-/**
  * Enterprise Cleaner: Fuzzy Mapping logic
  */
 const FUZZY_KEYS = {
@@ -1358,22 +1342,61 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone query param is required' });
     }
     const { normalizePhone } = require('../utils/core/helpers');
+    const {
+      buildWarrantyCustomerProfile,
+      classifyWarrantyScenario,
+      formatWarrantyStatusDisplay,
+      formatWarrantyDuration,
+    } = require('../utils/commerce/warrantyCustomerProfileService');
+    const { buildSimulatorWarrantyPreview } = require('../utils/commerce/warrantyFlowLookup');
+
     const normalized = normalizePhone(phone);
-    const lead = await AdLead.findOne({
-      clientId,
-      $or: [{ phoneNumber: normalized }, { phoneNumber: phone }]
-    }).lean();
-    if (!lead) {
-      return res.json({ success: true, found: false, warranty: null });
+    const profile = await buildWarrantyCustomerProfile(clientId, normalized || phone);
+    const scenario = classifyWarrantyScenario(profile);
+
+    if (scenario === 'no_customer' || !profile?.ordersWithWarranty?.length) {
+      return res.json({
+        success: true,
+        found: false,
+        scenario,
+        warranty: null,
+        previewMessage: buildSimulatorWarrantyPreview(profile, scenario),
+      });
     }
-    const warranty = {
-      customerName: lead.name || '',
-      phone: lead.phoneNumber || phone,
-      warrantyStatus: lead.warrantyStatus || 'Not registered',
-      warrantyExpiry: lead.warrantyExpiry || null,
-      productName: lead.warrantyProduct || lead.capturedData?.productName || '',
-    };
-    return res.json({ success: true, found: true, warranty });
+
+    const primaryOrder = profile.ordersWithWarranty[0];
+    const primaryItem = primaryOrder?.items?.[0] || {};
+
+    return res.json({
+      success: true,
+      found: true,
+      scenario,
+      previewMessage: buildSimulatorWarrantyPreview(profile, scenario),
+      warranty: {
+        customerName: profile.displayPhone || normalized || phone,
+        phone: profile.customerPhone || normalized || phone,
+        warrantyStatus: primaryItem.status || 'Active',
+        warrantyExpiry: primaryItem.record?.expiryDate || null,
+        productName: primaryItem.productName || '',
+        orderDisplay: primaryOrder.orderDisplay || '',
+        duration: formatWarrantyDuration(primaryItem.record),
+        statusDisplay: formatWarrantyStatusDisplay(primaryItem.record?.status),
+        orderCount: profile.orderCount || 0,
+        warrantyOrderCount: profile.ordersWithWarranty.length,
+      },
+      profile: {
+        orderCount: profile.orderCount,
+        warrantyOrderCount: profile.ordersWithWarranty.length,
+        ordersWithWarranty: profile.ordersWithWarranty.map((o) => ({
+          orderDisplay: o.orderDisplay,
+          items: o.items.map((i) => ({
+            productName: i.productName,
+            status: i.status,
+            duration: i.duration,
+          })),
+        })),
+      },
+    });
   } catch (err) {
     console.error('[warranty lookup]', err.message);
     res.status(500).json({ success: false, message: 'Failed to lookup warranty' });
@@ -1394,12 +1417,24 @@ router.get('/:clientId/orders/latest', protect, async (req, res) => {
     if (!phone) {
       return res.status(400).json({ success: false, message: 'phone query param is required' });
     }
-    const { fetchLatestOrderByPhoneGraphQL } = require('../utils/commerce/orderLookupService');
-    const result = await fetchLatestOrderByPhoneGraphQL({ clientId, phone });
-    if (result?.found) {
-      return res.json({ success: true, found: true, variables: result.variables });
+    const Client = require('../models/Client');
+    const { fetchLatestOrderForFlow } = require('../utils/commerce/orderLookupService');
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
     }
-    return res.json({ success: true, found: false, variables: null });
+    const { sanitizePhoneForStorage } = require('../utils/core/phoneE164Policy');
+    const result = await fetchLatestOrderForFlow({ client, phone: sanitizePhoneForStorage(phone) || phone });
+    return res.json({
+      success: true,
+      found: !!result.found,
+      lookupFailed: !!result.lookupFailed,
+      source: result.source || null,
+      error: result.apiError || null,
+      variables: result.variables || null,
+      mergedMeta: result.mergedMeta || null,
+      userMessage: result.userMessage || null,
+    });
   } catch (err) {
     console.error('[orders/latest]', err.message);
     res.status(500).json({ success: false, message: 'Lookup failed', error: err.message });

@@ -203,17 +203,31 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
     }
 
     if (type === 'shopify_call') {
-      const allowed = new Set(['search_products', 'CHECK_ORDER_STATUS', 'get_order', 'get_latest', 'GET_CUSTOMER_ORDERS', 'UPDATE_ORDER_ADDRESS']);
-      const action = String(node.data?.action || 'search_products').trim();
+      const ORDER_LOOKUP_ACTIONS = new Set(['CHECK_ORDER_STATUS', 'ORDER_STATUS', 'get_order']);
+      const allowed = new Set([...ORDER_LOOKUP_ACTIONS, 'search_products', 'get_latest', 'GET_CUSTOMER_ORDERS', 'UPDATE_ORDER_ADDRESS', 'PRODUCT_CARD']);
+      const action = String(node.data?.action || 'CHECK_ORDER_STATUS').trim();
       if (!allowed.has(action)) {
         errors.push({
           code: 'SHOPIFY_ACTION_INVALID',
           nodeId: node.id,
           message: `Shopify node "${node?.id || ''}" uses unsupported action "${action}".`,
-          fix: 'Pick Find products, Latest order, Order by ID, or Refresh catalog.',
+          fix: 'Use Fetch Latest Order (CHECK_ORDER_STATUS) or re-open the flow to auto-migrate legacy nodes.',
         });
       }
-      if (action === 'CHECK_ORDER_STATUS') {
+      const outs = outgoingBySource.get(node.id) || [];
+      const hasOrderLookupWiring = outs.some((e) =>
+        ['success', 'no_order', 'not_found', 'error'].includes(String(e.sourceHandle || '').toLowerCase())
+      );
+      const hasMessageBody = Boolean(String(node.data?.messageBody || '').trim());
+      if (action === 'search_products' && (hasOrderLookupWiring || hasMessageBody)) {
+        warnings.push({
+          code: 'SHOPIFY_ACTION_ORDER_LOOKUP_MISMATCH',
+          nodeId: node.id,
+          message: `Shopify node "${node?.id || ''}" is wired for order lookup but action is still "search_products".`,
+          fix: 'Re-open the flow in studio to auto-migrate, or set action to CHECK_ORDER_STATUS before publish.',
+        });
+      }
+      if (ORDER_LOOKUP_ACTIONS.has(action)) {
         const out = outgoingBySource.get(node.id) || [];
         const hasFail = out.some((e) =>
           ['no_order', 'not_found', 'error'].includes(String(e.sourceHandle || '').toLowerCase())
@@ -240,6 +254,41 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
 
   const copyLint = lintCopyInFlow({ nodes: safeNodes });
   if (copyLint?.warnings?.length) warnings.push(...copyLint.warnings);
+
+  const autoMessageTypes = new Set(['message', 'template', 'image']);
+  const warnedChains = new Set();
+  for (const node of safeNodes) {
+    if (!autoMessageTypes.has(normalizeNodeType(node?.type))) continue;
+    let chainLen = 1;
+    let curId = node.id;
+    const visited = new Set([curId]);
+    while (chainLen < 6) {
+      const outs = outgoingBySource.get(curId) || [];
+      const autoEdge = outs.find(
+        (e) =>
+          !e.sourceHandle ||
+          e.sourceHandle === 'a' ||
+          e.sourceHandle === 'bottom' ||
+          e.sourceHandle === 'output'
+      );
+      if (!autoEdge) break;
+      const next = safeNodes.find((n) => n.id === autoEdge.target);
+      if (!next || visited.has(next.id)) break;
+      if (!autoMessageTypes.has(normalizeNodeType(next.type))) break;
+      visited.add(next.id);
+      curId = next.id;
+      chainLen += 1;
+    }
+    if (chainLen >= 3 && !warnedChains.has(curId)) {
+      warnedChains.add(curId);
+      warnings.push({
+        code: 'FLOW_AUTO_MESSAGE_BURST',
+        nodeId: node.id,
+        message: `Flow has ${chainLen} message/template steps in a row without Delay or an interactive step.`,
+        fix: 'Add a Delay node between bursts, or use Interactive / Capture so customers can reply between messages.',
+      });
+    }
+  }
 
   return { valid: errors.length === 0, errors, warnings };
 }

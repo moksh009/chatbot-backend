@@ -363,6 +363,7 @@ async function loadPublishedFlowByRef(clientId, flowRef) {
 }
 
 const { normalizePhone } = require('../core/helpers');
+const { sanitizePhoneForStorage } = require('../core/phoneE164Policy');
 
 /**
  * Phase 21: Universal Flow Executor
@@ -434,7 +435,9 @@ async function walkFlow({ client, phone, flow, currentNodeId, convo, lead, userM
 
 async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
   const channel = extraContext.channel || 'whatsapp';
-  const phone = channel === 'whatsapp' ? normalizePhone(from) : from;
+  const phone = channel === 'whatsapp'
+    ? (sanitizePhoneForStorage(from) || String(from || '').trim())
+    : from;
   const io = global.io;
 
   try {
@@ -497,6 +500,10 @@ async function handleWhatsAppMessage(arg1, arg2, phoneNumberId, profileName = ''
   } else {
     from = arg1;
     message = arg2;
+  }
+
+  if (from) {
+    from = sanitizePhoneForStorage(from) || String(from).trim();
   }
 
   let client;
@@ -638,7 +645,9 @@ async function analyzeConversationIntelligence(client, phone, convo) {
 async function runDualBrainEngine(parsedMessage, client) {
   const rawPhone = parsedMessage.from;
   const channel  = parsedMessage.channel || 'whatsapp';
-  const phone    = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
+  const phone    = channel === 'whatsapp'
+    ? (sanitizePhoneForStorage(rawPhone) || String(rawPhone || '').trim())
+    : rawPhone;
   const io       = global.io;
   const messageId = parsedMessage.messageId;
   const engineTimer = createTimer('DualBrain.runEngine', `${client?.clientId}:${phone}`);
@@ -4215,106 +4224,78 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         }
       } 
       
-      // --- Fetch Latest Order (Shopify GraphQL) — the Shopify Action node's sole action ---
+      // --- Fetch Latest Order (Shopify GraphQL + REST fallback) ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
-        const { fetchLatestOrderByPhoneGraphQL, resolveLatestOrderContext } = require('./orderLookupService');
+        const { fetchLatestOrderForFlow } = require('./orderLookupService');
         const prevMeta = { ...(convo.metadata || {}) };
         const messageBody = node.data?.messageBody || '';
+        const qVar = String(node.data?.queryVariable || '').trim();
+        const identifier = qVar ? String(convo?.metadata?.[qVar] || '').trim() : '';
 
-        let gqlResult = null;
+        const lookup = await fetchLatestOrderForFlow({ client, phone, identifier });
 
-        // Primary path — Shopify GraphQL
-        try {
-          gqlResult = await fetchLatestOrderByPhoneGraphQL({
-            clientId: client.clientId,
-            phone,
-          });
-        } catch (gqlErr) {
-          log.warn(`[shopify_call] GraphQL lookup failed, falling back to REST: ${gqlErr.message}`);
-          // Route to Technical Error branch
+        if (lookup.lookupFailed) {
+          log.warn(`[shopify_call] Order lookup failed: ${lookup.apiError || 'unknown'}`);
           const errorEdge = flowEdges.find(
             (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'error'
           );
           if (errorEdge) {
             return await executeNode(errorEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
-          return;
-        }
+          resultData = { error: lookup.apiError || 'Order lookup failed' };
+        } else if (lookup.found) {
+          const { injectShopifyActionMessage } = require('../core/variableInjector');
+          const routingMeta = {
+            ...prevMeta,
+            last_order_lookup_found: 'true',
+            shopify_order_found: 'true',
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: routingMeta } });
+          convo.metadata = routingMeta;
 
-        if (gqlResult?.found) {
-          // Inject all 8 named variables into conversation metadata
-          const updatedMeta = { ...prevMeta, ...gqlResult.variables };
-          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
-          convo.metadata = updatedMeta;
-
-          // Send messageBody if configured, with variables resolved
           if (messageBody && messageBody.trim()) {
-            const ctx = convo._variableContext || await buildVariableContext(client, phone, convo, lead);
-            const resolved = injectVariablesLegacy(messageBody, { client, lead, convo });
+            const resolved = injectShopifyActionMessage(messageBody, lookup.variables || {}, {
+              client,
+              lead,
+              convo,
+            });
             const finalMsg = String(resolved || messageBody).substring(0, 4096);
             if (finalMsg.trim()) {
               await sendWhatsAppText(client, phone, finalMsg);
             }
+          } else if (lookup.userMessage) {
+            await sendWhatsAppText(client, phone, lookup.userMessage);
           }
 
-          // Route to Success — Found Record branch
           const successEdge = flowEdges.find(
             (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
           );
           if (successEdge) {
             return await executeNode(successEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
-          resultData = gqlResult.variables;
-        } else if (gqlResult && !gqlResult.found) {
-          // No order on file — successful API call, no order found
+          resultData = lookup.variables;
+        } else {
+          const routingMeta = {
+            ...prevMeta,
+            last_order_lookup_found: 'false',
+            shopify_order_found: 'false',
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: routingMeta } });
+          convo.metadata = routingMeta;
+
           const noOrderEdge = flowEdges.find(
-            (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_order'
+            (e) =>
+              e.source === nodeId &&
+              (normalizeHandleId(e.sourceHandle) === 'no_order' ||
+                normalizeHandleId(e.sourceHandle) === 'not_found')
           );
           if (noOrderEdge) {
             return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
+          if (lookup.userMessage) {
+            await sendWhatsAppText(client, phone, lookup.userMessage);
+          }
           resultData = { found: false };
-        } else {
-          // Fallback: try legacy REST resolver
-          let legacyResult = null;
-          try {
-            legacyResult = await resolveLatestOrderContext({ client, phone });
-          } catch (legacyErr) {
-            log.error(`[shopify_call] Legacy resolver also threw: ${legacyErr.message}`);
-          }
-
-          if (legacyResult?.found) {
-            const updatedMeta = { ...prevMeta, ...(legacyResult?.mergedMeta || {}) };
-            await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
-            convo.metadata = updatedMeta;
-
-            if (messageBody && messageBody.trim()) {
-              const resolved = injectVariablesLegacy(messageBody, { client, lead, convo });
-              const finalMsg = String(resolved || messageBody).substring(0, 4096);
-              if (finalMsg.trim()) {
-                await sendWhatsAppText(client, phone, finalMsg);
-              }
-            } else if (legacyResult.userMessage) {
-              await sendWhatsAppText(client, phone, legacyResult.userMessage);
-            }
-
-            const successEdge = flowEdges.find(
-              (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
-            );
-            if (successEdge) {
-              return await executeNode(successEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
-            }
-            resultData = legacyResult.orderData;
-          } else {
-            // No order found via legacy
-            const noOrderEdge = flowEdges.find(
-              (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_order'
-            );
-            if (noOrderEdge) {
-              return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
-            }
-            resultData = { error: 'No order found for this number' };
-          }
         }
       }
 
@@ -5029,7 +5010,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
             channel,
             parsedMessage
           );
-        }, 400);
+        }, 900);
       }
     }
   }
@@ -5657,7 +5638,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let tpl =
         data.checkoutMessage ||
         client.commerceBotSettings?.checkoutMessage ||
-        "Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}";
+        "Complete your checkout 👉 {{store_url}}\n\nItems in your cart are waiting — reply if you need help.";
       let total = convo?.lastCheckoutValue ?? 0;
       let link = convo?.lastCheckoutUrl || convo?.metadata?.checkout_url || "";
       const currency = convo?.pendingCart?.items?.[0]?.currency || "INR";
@@ -5682,8 +5663,12 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         }
       }
       tpl = injectVariables(String(tpl), {
-        checkout_url: link,
-        cart_total: Number(total).toLocaleString("en-IN"),
+        store_url:
+          link
+          || client.platformVars?.checkoutUrl
+          || (client.shopDomain ? `https://${String(client.shopDomain).replace(/^https?:\/\//, '')}` : ''),
+        cart_recovery_link: link,
+        recovery_total: Number(total).toLocaleString("en-IN"),
         currency,
         item_count: String(convo?.pendingCart?.items?.length || 0),
         first_name: (lead?.name || "there").split(/\s+/)[0]
@@ -6269,6 +6254,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return false;
+  const waTo = normalizePhone(phone) || String(phone || '').replace(/\D/g, '');
   try {
     let detectedLang = opts.detectedLanguage || 'en';
     if (!opts.skipConvoLookup) {
@@ -6291,7 +6277,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts 
     const { dispatchBotEnvelope } = require('../messaging/botEnvelopeDispatch');
     const env = await dispatchBotEnvelope({
       client,
-      phone,
+      phone: waTo,
       payload: { text: bodyContent },
       opts: { ...opts, messageId: opts.inboundMessageId, source: 'dualBrainEngine:sendText', complianceExempt: opts.complianceExempt === true },
     });
@@ -6948,8 +6934,9 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
     if (target && target.type === "cart_handler") {
       const ctx = await buildVariableContext(client, normalizedPhone, convo, lead);
       Object.assign(ctx, {
-        checkout_url: shortUrl,
-        cart_total: String(total),
+        store_url: shortUrl || ctx.store_url,
+        cart_recovery_link: shortUrl,
+        recovery_total: String(total),
         currency,
         item_count: String(items.length)
       });
@@ -6964,10 +6951,10 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
     if (target) {
       const tpl =
         client.commerceBotSettings?.checkoutMessage ||
-        `Here's your checkout link:\n{{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nReply *menu* anytime for more help.`;
+        `Here's your checkout link:\n{{cart_recovery_link}}\n\nTotal: {{currency}} {{recovery_total}}\n\nReply *menu* anytime for more help.`;
       const out = injectVariables(String(tpl), {
-        checkout_url: shortUrl,
-        cart_total: String(total),
+        cart_recovery_link: shortUrl,
+        recovery_total: String(total),
         currency,
         item_count: String(items.length),
         first_name: (lead?.name || "there").split(/\s+/)[0]
@@ -6991,10 +6978,10 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
 
   const tpl =
     client.commerceBotSettings?.checkoutMessage ||
-    `Here's your checkout link:\n{{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nReply *menu* anytime for more help.`;
+    `Here's your checkout link:\n{{cart_recovery_link}}\n\nTotal: {{currency}} {{recovery_total}}\n\nReply *menu* anytime for more help.`;
   const out = injectVariables(String(tpl), {
-    checkout_url: shortUrl,
-    cart_total: String(total),
+    cart_recovery_link: shortUrl,
+    recovery_total: String(total),
     currency,
     item_count: String(items.length),
     first_name: (lead?.name || "there").split(/\s+/)[0]

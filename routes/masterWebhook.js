@@ -287,9 +287,10 @@ async function processStatuses(statuses) {
 
 async function processMessages(messages, metadata, contacts) {
   const { isDuplicateInbound } = require('../utils/meta/webhookDedup');
+  const { sanitizePhoneForStorage } = require('../utils/core/phoneE164Policy');
 
   for (const message of messages) {
-    const from = message.from; 
+    const from = sanitizePhoneForStorage(message.from) || String(message.from || '').trim();
     const messageId = message.id;
     const phone_number_id = metadata?.phone_number_id;
 

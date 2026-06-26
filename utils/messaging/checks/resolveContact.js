@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const AdLead = require('../../../models/AdLead');
+const { phoneStorageLookupVariants } = require('../../core/phoneE164Policy');
 
 const CONTACT_PROJECTION = {
   _id: 1,
@@ -23,7 +24,11 @@ async function resolveContact({ clientId, contactId, channel, contact = {} }) {
   } else if (contact.igsid) {
     query = { clientId, phoneNumber: `ig:${String(contact.igsid).trim()}` };
   } else if (contact.phone) {
-    query = { clientId, phoneNumber: String(contact.phone).replace(/\D/g, '') };
+    const variants = phoneStorageLookupVariants(contact.phone);
+    if (!variants.length) {
+      return { pass: false, blockedBy: 'invalid_contact', reason: 'contact_lookup_key_missing' };
+    }
+    query = { clientId, phoneNumber: { $in: variants } };
   }
   if (!query) return { pass: false, blockedBy: 'invalid_contact', reason: 'contact_lookup_key_missing' };
   const lead = await AdLead.findOne(query).select(CONTACT_PROJECTION).lean();

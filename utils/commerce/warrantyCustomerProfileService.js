@@ -9,7 +9,10 @@
 const Contact = require("../../models/Contact");
 const Order = require("../../models/Order");
 const WarrantyRecord = require("../../models/WarrantyRecord");
-const { normalizePhone } = require("../core/helpers");
+const {
+  sanitizePhoneForStorage,
+  phoneStorageLookupVariants,
+} = require("../core/phoneE164Policy");
 
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -50,10 +53,7 @@ function formatOrderDisplay(order, orderKey) {
 }
 
 function displayPhone(phone) {
-  const p = String(phone || "").trim();
-  if (p.startsWith("91") && p.length === 12) return `+${p.slice(0, 2)} ${p.slice(2)}`;
-  if (p.length === 10) return `+91 ${p}`;
-  return p.startsWith("+") ? p : `+${p}`;
+  return sanitizePhoneForStorage(phone) || "";
 }
 
 function monthsBetween(start, end) {
@@ -101,26 +101,15 @@ function formatWarrantyStatusDisplay(status) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-async function findContactByPhone(clientId, cleanPhone) {
-  let contact = await Contact.findOne({ clientId, phoneNumber: cleanPhone }).lean();
-  if (!contact && cleanPhone.length >= 10) {
-    const suffix = cleanPhone.slice(-10);
-    contact = await Contact.findOne({
-      clientId,
-      phoneNumber: new RegExp(`${escapeRegex(suffix)}$`),
-    }).lean();
-  }
-  return contact;
+async function findContactByPhone(clientId, rawPhone) {
+  const variants = phoneStorageLookupVariants(rawPhone);
+  if (!variants.length) return null;
+  return Contact.findOne({ clientId, phoneNumber: { $in: variants } }).lean();
 }
 
-async function findOrdersByPhone(clientId, cleanPhone) {
-  const phoneVariants = [cleanPhone];
-  if (cleanPhone.startsWith("91") && cleanPhone.length === 12) {
-    phoneVariants.push(cleanPhone.slice(2));
-  }
-  if (cleanPhone.length >= 10) {
-    phoneVariants.push(cleanPhone.slice(-10));
-  }
+async function findOrdersByPhone(clientId, rawPhone) {
+  const phoneVariants = phoneStorageLookupVariants(rawPhone);
+  if (!phoneVariants.length) return [];
 
   return Order.find({
     clientId,
@@ -150,7 +139,7 @@ function buildWarrantyByOrderProduct(warrantyRecords) {
  * Build CustomerProfile-shaped data for a normalized phone (Audience > Warranty source).
  */
 async function buildWarrantyCustomerProfile(clientId, phone) {
-  const cleanPhone = normalizePhone(phone);
+  const cleanPhone = sanitizePhoneForStorage(phone);
   if (!cleanPhone) {
     return {
       customerPhone: "",
@@ -298,7 +287,7 @@ async function buildWarrantyCustomerProfile(clientId, phone) {
     });
 
   return {
-    customerPhone: contact?.phoneNumber || cleanPhone,
+    customerPhone: contact?.phoneNumber ? sanitizePhoneForStorage(contact.phoneNumber) : cleanPhone,
     displayPhone: displayPhone(contact?.phoneNumber || cleanPhone),
     hasContact: !!contact,
     orderCount: orders.length,

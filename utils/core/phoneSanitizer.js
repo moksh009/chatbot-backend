@@ -75,18 +75,10 @@ function repairPhoneDigits(raw, defaultCountry = 'IN') {
   return '';
 }
 
-/** AdLead storage — prefer E.164 +91 for Indian mobiles. */
+/** AdLead storage — E.164 with leading + (e.g. +919876543210). */
 function phoneForAdLeadStorage(raw, defaultCountry = 'IN') {
-  const digits = repairPhoneDigits(raw, defaultCountry);
-  if (!digits) return null;
-  if (digits.length === 11 && digits.startsWith('1')) {
-    return `+${digits}`;
-  }
-  if (digits.startsWith('91') && digits.length === 12) {
-    return `+${digits}`;
-  }
-  const e164 = normalizeIndianPhone(digits);
-  return e164 || null;
+  const { sanitizePhoneForStorage } = require('./phoneE164Policy');
+  return sanitizePhoneForStorage(raw, defaultCountry) || null;
 }
 
 /**

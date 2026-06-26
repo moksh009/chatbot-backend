@@ -123,9 +123,10 @@ const BATCH_SIZE = 10;
 const BATCH_DELAY_MS = 1000;
 
 const { normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
+const { sanitizePhoneForStorage } = require('../utils/core/phoneE164Policy');
 
 function normalizePhone(p) {
-  return normalizePhoneDigits(p);
+  return sanitizePhoneForStorage(p) || normalizePhoneDigits(p);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

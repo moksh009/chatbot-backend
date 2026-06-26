@@ -14,6 +14,7 @@ if (process.env.SENTRY_DSN) {
   }
 }
 const log = require('./utils/core/logger')('Server');
+require('./mongoose/phoneE164Plugin').registerPhoneE164GlobalPlugin();
 const connectDB = require('./db');
 const Client = require('./models/Client');
 const { apiGeneralLimiter, IS_DEV_API_LIMITS_OFF } = require('./middleware/enterpriseLimits');
@@ -235,6 +236,9 @@ app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ✅ Phase R3: NoSQL injection sanitization — strips $ and . from request body/query
 app.use(mongoSanitize({ replaceWith: '_' }));
+
+const { phoneSanitizeIngress } = require('./middleware/phoneSanitizeIngress');
+app.use(phoneSanitizeIngress);
 
 // Phase 24: White-label domain detection (runs on every request, before routes)
 const whitelabelMiddleware = require('./middleware/whitelabel');

@@ -10,7 +10,10 @@ const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
-const { normalizePhone } = require('../utils/core/helpers');
+const {
+  sanitizePhoneForStorage,
+  phoneStorageLookupVariants,
+} = require('../utils/core/phoneE164Policy');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { sendNotifications } = require('../utils/commerce/warrantyService');
 const { buildWarrantyCustomerProfile } = require('../utils/commerce/warrantyCustomerProfileService');
@@ -132,12 +135,13 @@ const parseDurationMonths = (raw) => {
 };
 
 function buildPhoneVariants(phone = '') {
-    const normalized = normalizePhone(phone || '');
-    if (!normalized) return [];
-    const variants = new Set([normalized]);
-    if (normalized.startsWith('91') && normalized.length === 12) variants.add(normalized.slice(2));
-    if (!normalized.startsWith('91') && normalized.length === 10) variants.add(`91${normalized}`);
-    return [...variants];
+    return phoneStorageLookupVariants(phone);
+}
+
+async function findContactByPhoneVariants(clientId, rawPhone) {
+    const variants = buildPhoneVariants(rawPhone);
+    if (!variants.length) return null;
+    return Contact.findOne({ clientId, phoneNumber: { $in: variants } });
 }
 
 async function fetchWarrantyStatsBundle(clientId) {
@@ -186,7 +190,7 @@ async function fetchUnassignedOrdersBundle(clientId) {
         if (!lineItemsRaw.length) continue;
 
         const orderDate = order.createdAt || new Date();
-        const phone = normalizePhone(order.customerPhone || order.phone || '');
+        const phone = sanitizePhoneForStorage(order.customerPhone || order.phone || '');
         const customerName = String(order.customerName || order.name || 'Customer').trim();
 
         const lineItems = lineItemsRaw.map((item) => {
@@ -242,7 +246,9 @@ async function fetchWarrantyRecordsBundle(clientId) {
     ];
     const phones = [
         ...new Set(
-            records.map((r) => normalizePhone(r.customerId?.phoneNumber || '')).filter(Boolean)
+            records.flatMap((r) =>
+                phoneStorageLookupVariants(r.customerId?.phoneNumber || '')
+            ).filter(Boolean)
         ),
     ];
 
@@ -274,10 +280,15 @@ async function fetchWarrantyRecordsBundle(clientId) {
             orderByKey.set(String(k).trim(), o);
         }
     }
-    const leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
+    const leadByPhone = new Map();
+    for (const l of leads) {
+        for (const v of phoneStorageLookupVariants(l.phoneNumber)) {
+            leadByPhone.set(v, l);
+        }
+    }
 
     return records.map((r) => {
-        const phone = normalizePhone(r.customerId?.phoneNumber || '');
+        const phone = sanitizePhoneForStorage(r.customerId?.phoneNumber || '');
         const order = orderByKey.get(String(r.shopifyOrderId || '').trim()) || null;
         const lead = phone ? leadByPhone.get(phone) : null;
         const lineItems = resolveOrderLineItems(order).map((li) => ({
@@ -290,7 +301,7 @@ async function fetchWarrantyRecordsBundle(clientId) {
         return {
             ...r,
             customerName: r.customerId?.name || order?.customerName || 'Customer',
-            customerPhone: r.customerId?.phoneNumber || order?.customerPhone || '',
+            customerPhone: phone || sanitizePhoneForStorage(order?.customerPhone || ''),
             customerEmail: r.customerId?.email || order?.customerEmail || '',
             leadId: lead?._id || null,
             orderDetails: order
@@ -523,14 +534,15 @@ router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const phone = normalizePhone(req.query.phone || '');
+        const phone = sanitizePhoneForStorage(req.query.phone || '');
         if (!phone) {
             return res.status(400).json({ success: false, message: 'Phone is required' });
         }
+        const phoneVariants = buildPhoneVariants(phone);
 
         const [contact, lead, profile] = await Promise.all([
-            Contact.findOne({ clientId, phoneNumber: phone }).lean(),
-            AdLead.findOne({ clientId, phoneNumber: phone })
+            Contact.findOne({ clientId, phoneNumber: { $in: phoneVariants } }).lean(),
+            AdLead.findOne({ clientId, phoneNumber: { $in: phoneVariants } })
                 .select('_id name email phoneNumber')
                 .lean(),
             buildWarrantyCustomerProfile(clientId, phone),
@@ -642,9 +654,12 @@ router.get('/resolve-lead', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const phone = normalizePhone(req.query.phone || '');
+        const phone = sanitizePhoneForStorage(req.query.phone || '');
         if (!phone) return res.json({ success: true, leadId: null });
-        const lead = await AdLead.findOne({ clientId, phoneNumber: phone }).select('_id').lean();
+        const lead = await AdLead.findOne({
+            clientId,
+            phoneNumber: { $in: buildPhoneVariants(phone) },
+        }).select('_id').lean();
         res.json({ success: true, leadId: lead?._id || null });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -694,7 +709,7 @@ router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
             status = 'active',
         } = req.body || {};
 
-        const normalizedPhone = normalizePhone(phoneNumber || '');
+        const normalizedPhone = sanitizePhoneForStorage(phoneNumber || '');
         if (!normalizedPhone || !shopifyOrderId || !productName) {
             return res.status(400).json({
                 success: false,
@@ -702,7 +717,7 @@ router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
             });
         }
 
-        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        let contact = await findContactByPhoneVariants(clientId, normalizedPhone);
         if (!contact) {
             contact = await Contact.create({
                 clientId,
@@ -837,7 +852,7 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Customer Phone and Product Name are required' });
         }
 
-        const normalizedPhone = normalizePhone(phoneNumber);
+        const normalizedPhone = sanitizePhoneForStorage(phoneNumber);
         const months = Math.max(1, Math.min(120, Number(durationMonths) || parseDurationMonths(duration)));
         const purchase = purchaseDate ? new Date(purchaseDate) : new Date();
         const expiry = new Date(purchase);
@@ -846,7 +861,7 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
         const resolvedName = String(customerName || '').trim() || 'Manual Customer';
         const resolvedEmail = String(customerEmail || '').trim().toLowerCase() || '';
 
-        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        let contact = await findContactByPhoneVariants(clientId, normalizedPhone);
         if (!contact) {
             contact = await Contact.create({
                 clientId,
@@ -945,7 +960,7 @@ router.post('/assign-order', protect, featureWarranty, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Customer phone is required.' });
         }
 
-        const normalizedPhone = normalizePhone(phoneRaw);
+        const normalizedPhone = sanitizePhoneForStorage(phoneRaw);
         const purchase = purchaseDate
             ? new Date(purchaseDate)
             : order?.createdAt
@@ -953,7 +968,7 @@ router.post('/assign-order', protect, featureWarranty, async (req, res) => {
               : new Date();
         const customerName = String(order?.customerName || order?.name || 'Customer').trim();
 
-        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        let contact = await findContactByPhoneVariants(clientId, normalizedPhone);
         if (!contact) {
             contact = await Contact.create({
                 clientId,
@@ -1063,8 +1078,11 @@ router.get('/check', async (req, res) => {
         if (!scopedClientId) {
             return res.status(400).json({ success: false, message: 'clientId is required' });
         }
-        const cleanPhone = normalizePhone(phone);
-        const scopedContact = await Contact.findOne({ clientId: scopedClientId, phoneNumber: cleanPhone }).lean();
+        const cleanPhone = sanitizePhoneForStorage(phone);
+        const scopedContact = await Contact.findOne({
+            clientId: scopedClientId,
+            phoneNumber: { $in: buildPhoneVariants(cleanPhone) },
+        }).lean();
         if (!scopedContact) return res.json({ success: true, hasWarranty: false });
 
         const record = await WarrantyRecord.findOne({ clientId: scopedClientId, customerId: scopedContact._id, status: 'active' })

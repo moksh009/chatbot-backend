@@ -163,6 +163,15 @@ function normalizePhoneWithCountry(phoneRaw, client) {
   return normalizePhone(phoneRaw, resolveDefaultCountry(client));
 }
 
+/**
+ * E.164 storage format with leading + (e.g. +919876543210).
+ * Use for database persistence and external API payloads.
+ */
+function normalizePhoneE164(phoneRaw, defaultCountry = "IN") {
+  const { sanitizePhoneForStorage } = require("./phoneE164Policy");
+  return sanitizePhoneForStorage(phoneRaw, defaultCountry);
+}
+
 function parseDateFromId(id, prefix) {
   const datePart = id.replace(prefix, "");
   const day = datePart.slice(0, 2);
@@ -173,6 +182,7 @@ function parseDateFromId(id, prefix) {
 
 module.exports = {
   normalizePhone,
+  normalizePhoneE164,
   normalizePhoneWithCountry,
   formatPhoneForDisplay,
   resolveDefaultCountry,

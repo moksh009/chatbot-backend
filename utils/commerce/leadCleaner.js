@@ -3,13 +3,12 @@
  * Handles normalization, fuzzy mapping, and data cleaning for lead imports.
  */
 
-const { repairPhoneDigits } = require('../core/phoneSanitizer');
+const { phoneForAdLeadStorage } = require('../core/phoneSanitizer');
 
 const normalizePhone = (phone, defaultCountryCode = '91') => {
   if (!phone) return null;
   const country = String(defaultCountryCode) === '91' ? 'IN' : 'IN';
-  const repaired = repairPhoneDigits(phone, country);
-  return repaired || null;
+  return phoneForAdLeadStorage(phone, country);
 };
 
 const FUZZY_KEYS = {

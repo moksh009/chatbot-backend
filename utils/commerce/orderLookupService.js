@@ -8,25 +8,20 @@
 
 const Order = require("../../models/Order");
 const { normalizePhone } = require('../core/helpers');
+const { sanitizePhoneForStorage, phoneStorageLookupVariants } = require('../core/phoneE164Policy');
 const { withShopifyRetry, withShopifyGraphQL } = require('../shopify/shopifyHelper');
 const { withTimeout } = require('../core/asyncTimeout');
 const log = require('../core/logger')("OrderLookup");
 
 function phoneSearchVariants(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  const last10 = digits.slice(-10);
-  const clean = normalizePhone(raw);
-  return [
+  const e164 = sanitizePhoneForStorage(raw);
+  const legacy = [
     String(raw || "").trim(),
-    digits,
-    last10,
-    clean,
-    clean ? `+${clean}` : "",
-    digits ? `+${digits}` : "",
-    last10 && digits.length > 10 ? `91${last10}` : "",
-  ]
-    .map((s) => String(s || "").trim())
-    .filter(Boolean);
+    String(raw || "").replace(/\D/g, ""),
+    normalizePhone(raw),
+    normalizePhone(raw) ? `+${normalizePhone(raw)}` : "",
+  ];
+  return uniqueStrings([...phoneStorageLookupVariants(raw), ...legacy].filter(Boolean));
 }
 
 function uniqueStrings(arr) {
@@ -433,11 +428,13 @@ query getLatestOrderByPhone($phoneString: String!) {
             quantity
           }
         }
-        fulfillments(first: 1) {
-          nodes {
-            trackingInfo(first: 1) {
-              status
-            }
+        fulfillments {
+          displayStatus
+          status
+          trackingInfo(first: 3) {
+            company
+            number
+            url
           }
         }
       }
@@ -494,6 +491,7 @@ function mapOrderToVariables(lastOrder) {
       payment_status: NA,
       fulfillment_status: NA,
       delivery_status: NA,
+      tracking_link: NA,
     };
   }
 
@@ -538,11 +536,18 @@ function mapOrderToVariables(lastOrder) {
   const paymentStatus = safeStr(lastOrder.displayFinancialStatus);
   const fulfillmentStatus = safeStr(lastOrder.displayFulfillmentStatus);
 
-  const trackingNodes = lastOrder.fulfillments?.nodes?.[0]?.trackingInfo;
-  const trackingStatus =
-    Array.isArray(trackingNodes) && trackingNodes[0]?.status
-      ? safeStr(trackingNodes[0].status)
-      : NA;
+  const fulfillments = Array.isArray(lastOrder.fulfillments) ? lastOrder.fulfillments : [];
+  const firstFulfillment = fulfillments[0];
+  const trackingInfo = Array.isArray(firstFulfillment?.trackingInfo)
+    ? firstFulfillment.trackingInfo
+    : [];
+  const tracking = trackingInfo[0];
+  const deliveryStatus = safeStr(
+    tracking?.number ||
+      tracking?.company ||
+      firstFulfillment?.displayStatus ||
+      firstFulfillment?.status
+  );
 
   return {
     order_id: orderId,
@@ -552,7 +557,37 @@ function mapOrderToVariables(lastOrder) {
     shipping_address: shippingAddress,
     payment_status: paymentStatus,
     fulfillment_status: fulfillmentStatus,
-    delivery_status: trackingStatus,
+    delivery_status: deliveryStatus,
+    tracking_link: safeStr(tracking?.url),
+  };
+}
+
+/**
+ * Map REST / local orderData from resolveLatestOrderContext → same 8 flow variables.
+ */
+function mapRestOrderDataToVariables(orderData = {}, mergedMeta = {}) {
+  if (!orderData || (!orderData.orderId && !orderData.orderNumber)) {
+    return mapOrderToVariables(null);
+  }
+
+  const orderId = safeStr(
+    mergedMeta.order_number || orderData.orderNumber || orderData.orderId
+  );
+  const orderTotal =
+    orderData.currency && orderData.totalPrice != null
+      ? `${parseFloat(orderData.totalPrice).toFixed(2)} ${orderData.currency}`
+      : NA;
+
+  return {
+    order_id: orderId,
+    order_date: NA,
+    ordered_items: safeStr(orderData.itemsSummary),
+    order_total: orderTotal,
+    shipping_address: NA,
+    payment_status: safeStr(orderData.status),
+    fulfillment_status: safeStr(orderData.status),
+    delivery_status: NA,
+    tracking_link: orderData.trackingUrl ? safeStr(orderData.trackingUrl) : NA,
   };
 }
 
@@ -571,7 +606,7 @@ async function fetchLatestOrderByPhoneGraphQL({ clientId, phone }) {
   const queries = buildShopifyPhoneQueries(phone);
   if (!queries.length) {
     log.warn('[fetchLatestOrderByPhoneGraphQL] No phone variants to try', { phone });
-    return { found: false, variables: emptyVars };
+    return { found: false, variables: emptyVars, apiError: null };
   }
 
   let lastError = null;
@@ -594,6 +629,7 @@ async function fetchLatestOrderByPhoneGraphQL({ clientId, phone }) {
       return {
         found: true,
         variables: mapOrderToVariables(lastOrder),
+        apiError: null,
       };
     } catch (err) {
       lastError = err;
@@ -611,7 +647,113 @@ async function fetchLatestOrderByPhoneGraphQL({ clientId, phone }) {
     });
   }
 
-  return { found: false, variables: emptyVars };
+  return {
+    found: false,
+    variables: emptyVars,
+    apiError: lastError ? String(lastError.message || lastError) : null,
+  };
+}
+
+/**
+ * Flow Builder + simulator: GraphQL first, REST/local fallback when GraphQL errors or misses.
+ * Optional `identifier` — order ID or alternate phone from convo.metadata (queryVariable).
+ */
+async function fetchLatestOrderForFlow({ client, phone, identifier }) {
+  const clientId = client?.clientId;
+  if (!clientId) {
+    return {
+      found: false,
+      lookupFailed: true,
+      apiError: 'missing_client',
+      variables: mapOrderToVariables(null),
+      source: null,
+    };
+  }
+
+  const storagePhone = sanitizePhoneForStorage(phone) || phone;
+  const rawIdentifier = String(identifier || '').trim();
+
+  if (rawIdentifier) {
+    const byId = await resolveOrderContextByIdentifier({
+      client,
+      phone: storagePhone,
+      identifier: rawIdentifier,
+    });
+    if (byId?.found) {
+      const variables = mapRestOrderDataToVariables(byId.orderData, byId.mergedMeta || {});
+      return {
+        found: true,
+        lookupFailed: false,
+        source: byId.source || 'identifier',
+        variables,
+        mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
+        userMessage: byId.userMessage || null,
+        orderData: byId.orderData || null,
+      };
+    }
+    if (byId && byId.found === false) {
+      return {
+        found: false,
+        lookupFailed: false,
+        apiError: null,
+        source: 'identifier_miss',
+        variables: mapOrderToVariables(null),
+        mergedMeta: { last_order_lookup_found: 'false' },
+        userMessage: byId.userMessage || null,
+      };
+    }
+  }
+
+  const gql = await fetchLatestOrderByPhoneGraphQL({ clientId, phone: storagePhone });
+  if (gql.found) {
+    return {
+      found: true,
+      lookupFailed: false,
+      source: 'graphql',
+      variables: gql.variables,
+      mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
+      userMessage: null,
+    };
+  }
+
+  try {
+    const legacy = await resolveLatestOrderContext({ client, phone: storagePhone });
+    if (legacy?.found) {
+      const variables = mapRestOrderDataToVariables(legacy.orderData, legacy.mergedMeta || {});
+      return {
+        found: true,
+        lookupFailed: false,
+        source: legacy.source || 'rest',
+        variables,
+        mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
+        userMessage: legacy.userMessage || null,
+        orderData: legacy.orderData || null,
+      };
+    }
+
+    return {
+      found: false,
+      lookupFailed: Boolean(gql.apiError),
+      apiError: gql.apiError,
+      source: gql.apiError ? 'graphql_error' : 'none',
+      variables: gql.variables,
+      mergedMeta: { last_order_lookup_found: 'false' },
+      userMessage: legacy?.userMessage || null,
+    };
+  } catch (err) {
+    log.error('[fetchLatestOrderForFlow] REST fallback failed', {
+      clientId,
+      message: err.message,
+    });
+    return {
+      found: false,
+      lookupFailed: true,
+      apiError: err.message,
+      source: 'failed',
+      variables: gql.variables,
+      mergedMeta: { last_order_lookup_found: 'false' },
+    };
+  }
 }
 
 module.exports = {
@@ -620,4 +762,7 @@ module.exports = {
   findLocalOrder,
   phoneSearchVariants,
   fetchLatestOrderByPhoneGraphQL,
+  fetchLatestOrderForFlow,
+  mapOrderToVariables,
+  mapRestOrderDataToVariables,
 };
