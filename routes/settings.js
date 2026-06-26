@@ -91,10 +91,19 @@ router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (re
         }
       }
     }
-    
+
+    // Check for duplicate variable names
+    const incoming = Array.isArray(customVariables) ? customVariables : [];
+    const deduped = [];
+    for (const v of incoming) {
+      if (!v.name) continue;
+      if (deduped.some(d => d.name === v.name)) continue; // skip duplicates within the incoming list
+      deduped.push(v);
+    }
+
     const client = await Client.findOneAndUpdate(
       { clientId },
-      { $set: { customVariables } },
+      { $set: { customVariables: deduped } },
       { new: true }
     );
     res.json({ success: true, customVariables: client.customVariables });

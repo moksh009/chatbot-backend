@@ -104,6 +104,7 @@ function makeMpmNode(slot, y) {
       metaTemplateName: APEX_MPM_TEMPLATE.metaTemplateName,
       languageCode: APEX_MPM_TEMPLATE.languageCode,
       apexDualMethod: true,
+      apexPreferProductList: slot.menuRowId !== "cat_bestseller",
       header: title,
       sectionTitle: title,
       text: `*${title}* — tap *View items* on each message to browse.`,

@@ -90,12 +90,13 @@ async function refreshLiveAudiences() {
     const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
     if (!segment) continue;
 
-    const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId }).lean();
+    const { resolveSegmentAudienceRows } = require('../services/segmentAudienceEvaluation');
+    const audienceRows = await resolveSegmentAudienceRows(campaign.clientId, segment);
     const existing = await CampaignMessage.find({ campaignId: campaign._id }).select('phone').lean();
     const have = new Set(existing.map((e) => e.phone));
-    const newcomers = leads
-      .filter((l) => l.phoneNumber && !have.has(l.phoneNumber))
-      .map((l) => ({ phone: l.phoneNumber, name: l.name, _id: l._id }));
+    const newcomers = audienceRows
+      .filter((l) => (l.phone || l.phoneNumber) && !have.has(l.phone || l.phoneNumber))
+      .map((l) => ({ phone: l.phone || l.phoneNumber, name: l.name, _id: l._id }));
     if (!newcomers.length) continue;
     const r = await launchCampaignDispatch(campaign, newcomers);
     added += r.inserted || 0;

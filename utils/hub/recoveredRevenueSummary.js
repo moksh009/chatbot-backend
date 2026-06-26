@@ -1,8 +1,11 @@
 'use strict';
 
 const Client = require('../../models/Client');
+const CampaignRevenueAttribution = require('../../models/CampaignRevenueAttribution');
+const DailyStat = require('../../models/DailyStat');
 const { getCartRecoveryDelays } = require('../commerce/cartRecoveryConfigService');
 const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
+const { buildCartRecoveryBreakdownRows } = require('../../constants/recoveryAttributionCopy');
 
 function resolveCartNudgeFromClient(client) {
   const { delay1Min, delay2Min, delay3Min } = getCartRecoveryDelays(client || {});
@@ -52,21 +55,80 @@ async function buildRecoveredRevenueSummary(clientId, opts = {}) {
     includeRows: false,
   });
 
-  const cartRevenueInr = Number(metrics.revenueRecovered) || 0;
-  const totalRecoveredInr = cartRevenueInr;
+  const abandonedCartWhatsappInr = Math.round(Number(metrics.revenueRecoveredFromWhatsapp) || 0);
+  const abandonedCartCheckoutInr = Math.round(Number(metrics.organicRevenue) || 0);
+  const cartRevenueInr = Math.round(Number(metrics.revenueRecovered) || 0);
+
+  const { end: endDateStr } = istDateRangeStrings(days);
+
+  const [marketingAgg, codAgg] = await Promise.all([
+    CampaignRevenueAttribution.aggregate([
+      {
+        $match: {
+          clientId,
+          attributedAt: { $gte: from, $lte: to },
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' }, orders: { $sum: 1 } } },
+    ]),
+    DailyStat.aggregate([
+      {
+        $match: {
+          clientId,
+          date: { $gte: startDateStr, $lte: endDateStr },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          codConvertedRevenue: { $sum: '$codConvertedRevenue' },
+          codConvertedCount: { $sum: '$codConvertedCount' },
+        },
+      },
+    ]),
+  ]);
+
+  const marketingInr = Math.round(Number(marketingAgg[0]?.total) || 0);
+  const marketingOrders = Number(marketingAgg[0]?.orders) || 0;
+  const codPrepaidInr = Math.round(Number(codAgg[0]?.codConvertedRevenue) || 0);
+  const codPrepaidCount = Number(codAgg[0]?.codConvertedCount) || 0;
+
+  const totalRecoveredInr =
+    abandonedCartWhatsappInr + abandonedCartCheckoutInr + marketingInr + codPrepaidInr;
+
   const funnel = metrics.funnel || {};
   const messagesSent =
     (Number(funnel.msg1Sent) || 0) +
     (Number(funnel.msg2Sent) || 0) +
     (Number(funnel.msg3Sent) || 0);
 
+  const breakdown = buildCartRecoveryBreakdownRows({
+    whatsappRevenueInr: abandonedCartWhatsappInr,
+    whatsappRecovered: metrics.whatsappRecovered,
+    checkoutRevenueInr: abandonedCartCheckoutInr,
+    checkoutRecovered: metrics.organicRecovered,
+    marketingRevenueInr: marketingInr,
+    marketingOrders,
+    codRevenueInr: codPrepaidInr,
+    codCount: codPrepaidCount,
+  });
+
   return {
     days,
     totalRecoveredInr,
     cartRecoveryRevenueInr: cartRevenueInr,
-    revenueRecovered: cartRevenueInr,
-    codConvertedRevenueInr: 0,
+    revenueRecovered: totalRecoveredInr,
+    codConvertedRevenueInr: codPrepaidInr,
     recoveryRate: metrics.recoveryRate,
+    breakdown,
+    breakdownTotals: {
+      abandonedCartWhatsappInr,
+      abandonedCartCheckoutInr,
+      /** @deprecated use abandonedCartCheckoutInr */
+      abandonedCartEmailInr: abandonedCartCheckoutInr,
+      marketingInr,
+      codPrepaidInr,
+    },
     messageEfficiencyRate: funnel.messageEfficiencyRate ?? 0,
     cartRecovery: {
       enabled: cartEnabled,

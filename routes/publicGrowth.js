@@ -10,6 +10,18 @@ const { normalizeIndianPhone, indianPhoneLookupVariants } = require('../utils/co
 
 const router = express.Router();
 
+const GROWTH_API_SUNSET = 'Sat, 25 Sep 2026 00:00:00 GMT';
+const GROWTH_DEPRECATION_NOTICE =
+  'Deprecated - migrate to /api/public/opt-in/* (removal after Sep 2026).';
+
+router.use((req, res, next) => {
+  res.set('Deprecation', 'true');
+  res.set('Sunset', GROWTH_API_SUNSET);
+  res.set('Link', '</api/public/opt-in/config>; rel="successor-version"');
+  res.set('X-TopEdge-Deprecation-Notice', GROWTH_DEPRECATION_NOTICE);
+  next();
+});
+
 const subscribeLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,

@@ -28,7 +28,7 @@ const APEX_MPM_TEMPLATE = Object.freeze({
 });
 
 const COPY = {
-  "mainMenuText": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\n\nHi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
+  "mainMenuText": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n*What would you like to do today?*",
   "serviceMenuText": "*More services*\n\nTrack an order, check warranty, troubleshoot, browse the shop, or pick your model. You can also return to the three main choices.",
   "tvIntro": "📺 *TV Backlights — Our Range*\n\nHDMI sync for many TV sizes. If you didn’t get the WhatsApp product carousel above, scroll up — or we’ll show direct links here.",
   "tvProducts": "🔆 *Apex HDMI 2.1 TV Backlight* (32-90 inch)\nPrice: Rs. 9,999\n🛒 https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n🔆 *Apex HDMI 2.0 TV Backlight* (up to 90 inch)\nPrice: Rs. 7,599\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-for-all-tv-sizes-upto-90-inches\n\n🔆 *Apex HDMI 2.0 + Bar Light* (up to 90 inch)\nPrice: Rs. 10,499\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-hdmi-sync-bar-light\n\n🔆 *Govee TV Backlight 3 Lite*\nPrice: Rs. 8,499\n🛒 https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything",
@@ -67,8 +67,77 @@ const COPY = {
   "tr_colors": "*Colours wrong / opposite direction*\n\n*2.1:* Swap the two strip USB plugs on the sync box; then toggle *direction* in Smart Life strip setup.\n\n*2.0:* Direction is fixed by the *bottom-left clockwise* install path — if strips were started wrong, redo placement per the video.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_ps5": "*Screen flicker with PlayStation*\n\nDisable *VRR* and *HDR* in PS video settings; set HDMI to *4:2:0* if flashing continues. Confirm HDMI cables are rated for your setup.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_cables": "*\"No signal\" / handshake issues*\n\nReconnect in FAQ order; try another TV HDMI port for *OUT*; swap HDMI cables one at a time. Message us with photos of cable routing if unresolved.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
-  "catAfterBrowse": "Tap *View items* on the message above — WhatsApp opens the swipeable product carousel (images, prices, add to cart). Or use *Main menu* below."
+  "catAfterBrowse": "Tap *View items* on the message above to browse products with images and prices. Or use *Main menu* below.",
+  "bestsellerIntro": "⭐ *Best Sellers*\n\nOur most-loved smart lighting picks — scroll up for the carousel or browse direct links below.",
+  "bestsellerProducts": "• *Apex HDMI 2.1 TV Backlight* (32-90\") — Rs. 9,999\n  https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n• *Smart RGBIC Gaming Light Bars* — Rs. 5,299\n  https://apexlight.in/products/apex-smart-rgbic-gaming-light-bars\n\n• *Govee TV Backlight 3 Lite* — Rs. 8,499\n  https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything\n\n• *Monitor Sync Bar Light* — Rs. 2,999\n  https://apexlight.in/products/apex-monitor-sync-bar-light\n\n• *RGBIC COB Strip Light (5M)* — Rs. 3,999\n  https://apexlight.in/products/apex-rgbic-cob-led-strip-light",
+  "wallIntro": "🧩 *Wall & Panel Lighting*\n\nHexagon panels, triangle lights, and wall lines for gaming and living spaces.",
+  "wallProducts": "• *Triangle Light (RGBIC)* — Rs. 7,999\n  https://apexlight.in/products/apex-triangle-light\n\n• *Hexagon Light (RGBIC Big)* — Rs. 7,999\n  https://apexlight.in/products/apex-hexagon-light-6-pack-6\n\n• *Hexagon Panels (Small, 10 Pcs)* — Rs. 5,499\n  https://apexlight.in/products/apex-hexagon-light-panels-small-10-piece\n\n• *Smart Wall Light Line (6 line)* — Rs. 4,999\n  https://apexlight.in/products/apex-smart-wall-light-line6-line\n\n• *Smart Wall Light Line (9 line)* — Rs. 6,999\n  https://apexlight.in/products/apex-smart-wall-light-line9-line",
+  "hdmiIntro": "🔌 *HDMI & Sync Kits*\n\nTV backlights and sync accessories — HDMI 2.0 and 2.1 options for every setup.",
+  "hdmiProducts": "• *Apex HDMI 2.1 TV Backlight* (32-90\") — Rs. 9,999\n  https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n• *Apex HDMI 2.0 TV Backlight* — Rs. 7,599\n  https://apexlight.in/products/apex-hdmi-sync-tv-backlight-for-all-tv-sizes-upto-90-inches\n\n• *Apex HDMI 2.0 + Bar Light* — Rs. 10,499\n  https://apexlight.in/products/apex-hdmi-sync-tv-backlight-hdmi-sync-bar-light\n\n• *Govee TV Backlight 3 Lite* — Rs. 8,499\n  https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything",
+  "smartIntro": "🏠 *Smart Home & Accessories*\n\nStream docks, smart controllers, and connected gear for your setup.",
+  "smartProducts": "For *Apex Stream Dock* and other smart accessories, message us on *9328613239* with your model name — we'll share the right guide and purchase link.\n\nBrowse our full range at https://apexlight.in/collections/all",
+  "postCartText": "*Your cart is ready*\n\nTap the checkout link we sent above to complete your order on apexlight.in.\n\nNeed help choosing or installing? Use the buttons below."
 };
+
+function normalizeHandleId(h) {
+  return h == null || h === "" ? "" : String(h).trim();
+}
+
+/** Cart edges, no_catalog overrides, apexPreferProductList on injected MPM nodes. */
+function patchApexFlowGraph(nodes, edges) {
+  const edgeIds = new Set(edges.map((e) => e.id));
+  const catalogNodes = nodes.filter((n) => n.type === "catalog" && String(n.id || "").startsWith("n_cat_"));
+
+  for (const cn of catalogNodes) {
+    if (cn.data && cn.id !== "n_cat_bestseller_pl") {
+      cn.data.apexPreferProductList = true;
+    }
+    const shortId = cn.id.replace("n_cat_", "").replace("_pl", "");
+    const cartId = `e_${shortId}_cart`;
+    if (!edgeIds.has(cartId)) {
+      edges.push({ id: cartId, source: cn.id, sourceHandle: "cart", target: "n_post_cart" });
+      edgeIds.add(cartId);
+    }
+  }
+
+  // Strip legacy WhatsApp admin-alert channels; email uses workspace alert contacts only
+  for (const n of nodes) {
+    if ((n.type === "admin_alert" || n.type === "livechat") && n.data?.notifyChannels) {
+      n.data.notifyChannels = n.data.notifyChannels.filter(
+        (ch) => String(ch || "").toLowerCase() !== "whatsapp"
+      );
+      if (!n.data.notifyChannels.length) n.data.notifyChannels = ["Dashboard"];
+    }
+    if (n.id === "n_human_handoff" && n.type === "livechat") {
+      n.data.notifyChannels = ["Dashboard"];
+    }
+    if (n.id === "n_admin_alert" && n.type === "admin_alert") {
+      n.data.notifyChannels = ["Email", "Dashboard"];
+      n.data.useClientAdminSettings = true;
+    }
+  }
+
+  const ncOverrides = {
+    n_cat_bestseller_pl: "n_bestseller_intro",
+    n_cat_wall_pl: "n_wall_intro",
+    n_cat_hdmi_pl: "n_hdmi_intro",
+    n_cat_smart_pl: "n_smart_intro",
+  };
+  for (const [src, tgt] of Object.entries(ncOverrides)) {
+    const existing = edges.find(
+      (e) => e.source === src && normalizeHandleId(e.sourceHandle) === "no_catalog"
+    );
+    if (existing) existing.target = tgt;
+    else {
+      const ncId = `e_${src.replace("n_cat_", "").replace("_pl", "")}_nc`;
+      if (!edgeIds.has(ncId)) {
+        edges.push({ id: ncId, source: src, sourceHandle: "no_catalog", target: tgt });
+        edgeIds.add(ncId);
+      }
+    }
+  }
+  return { nodes, edges };
+}
 
 function sticky(id, x, y, text, label = 'Implementation note') {
   return { id, type: 'sticky', position: { x, y }, data: { label, text } };
@@ -229,7 +298,7 @@ function buildFlow() {
       "interactiveType": "button",
       "header": "Apex Light",
       "imageUrl": "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021",
-      "text": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\n\nHi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
+      "text": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n*What would you like to do today?*",
       "buttonsList": [
         {
           "id": "btn_explore",
@@ -309,7 +378,7 @@ function buildFlow() {
       "label": "Explore — categories",
       "interactiveType": "list",
       "buttonText": "Explore products",
-      "text": "*Explore Apex Light*\n\nBest sellers and collections below. Tap a range, then *View items* on each product message.",
+      "text": "*Explore Apex Light*\n\nPick a collection below. Each opens products with prices — tap *View items* to add to cart.",
       "sections": [
         {
           "title": "Top picks",
@@ -347,6 +416,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "TV Backlights",
       "sectionTitle": "TV Backlights",
       "text": "Here are our HDMI sync TV picks — tap *View items* to browse in WhatsApp.",
@@ -368,6 +438,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "Monitor Sync",
       "sectionTitle": "Monitor Sync",
       "text": "Monitor-sync lighting for PC and desk — tap *View items* to browse.",
@@ -389,6 +460,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "Govee Collection",
       "sectionTitle": "Govee picks",
       "text": "Apex-authorized Govee highlights — tap *View items*.",
@@ -410,6 +482,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "Floor Lamps",
       "sectionTitle": "Floor & table",
       "text": "Floor and table lamps — tap *View items* to browse.",
@@ -431,6 +504,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "Gaming Lights",
       "sectionTitle": "Gaming & setup",
       "text": "Gaming bars, wall lines, HDMI kits — tap *View items*.",
@@ -452,6 +526,7 @@ function buildFlow() {
       "metaTemplateName": "carosuel",
       "languageCode": "en",
       "apexDualMethod": true,
+      "apexPreferProductList": true,
       "header": "LED Strip Lights",
       "sectionTitle": "LED strips",
       "text": "COB, neon, RGB-IC strips — tap *View items*.",
@@ -763,6 +838,129 @@ function buildFlow() {
           "id": "st_pm",
           "title": "Back to menu"
         }
+      ]
+    }
+  },
+  {
+    "id": "n_bestseller_intro",
+    "type": "message",
+    "position": { "x": 1720, "y": -360 },
+    "data": { "label": "Bestseller intro", "text": "⭐ *Best Sellers*\n\nOur most-loved smart lighting picks — scroll up for the carousel or browse direct links below." }
+  },
+  {
+    "id": "n_bestseller_products",
+    "type": "message",
+    "position": { "x": 1980, "y": -360 },
+    "data": { "label": "Bestseller products", "text": "• *Apex HDMI 2.1 TV Backlight* (32-90\") — Rs. 9,999\n  https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n• *Smart RGBIC Gaming Light Bars* — Rs. 5,299\n  https://apexlight.in/products/apex-smart-rgbic-gaming-light-bars\n\n• *Govee TV Backlight 3 Lite* — Rs. 8,499\n  https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything\n\n• *Monitor Sync Bar Light* — Rs. 2,999\n  https://apexlight.in/products/apex-monitor-sync-bar-light" }
+  },
+  {
+    "id": "n_bestseller_cta",
+    "type": "interactive",
+    "position": { "x": 2240, "y": -360 },
+    "data": {
+      "label": "Bestseller CTA",
+      "interactiveType": "button",
+      "text": "Need help choosing? Our team can suggest the right pick for your setup.",
+      "buttonsList": [
+        { "id": "bs_pi", "title": "Setup help" },
+        { "id": "bs_ps", "title": "Talk to team" },
+        { "id": "bs_pm", "title": "Back to menu" }
+      ]
+    }
+  },
+  {
+    "id": "n_wall_intro",
+    "type": "message",
+    "position": { "x": 1720, "y": 620 },
+    "data": { "label": "Wall intro", "text": "🧩 *Wall & Panel Lighting*\n\nHexagon panels, triangle lights, and wall lines for gaming and living spaces." }
+  },
+  {
+    "id": "n_wall_products",
+    "type": "message",
+    "position": { "x": 1980, "y": 620 },
+    "data": { "label": "Wall products", "text": "• *Triangle Light (RGBIC)* — Rs. 7,999\n  https://apexlight.in/products/apex-triangle-light\n\n• *Hexagon Light (RGBIC Big)* — Rs. 7,999\n  https://apexlight.in/products/apex-hexagon-light-6-pack-6\n\n• *Hexagon Panels (Small, 10 Pcs)* — Rs. 5,499\n  https://apexlight.in/products/apex-hexagon-light-panels-small-10-piece\n\n• *Smart Wall Light Line (6 line)* — Rs. 4,999\n  https://apexlight.in/products/apex-smart-wall-light-line6-line" }
+  },
+  {
+    "id": "n_wall_cta",
+    "type": "interactive",
+    "position": { "x": 2240, "y": 620 },
+    "data": {
+      "label": "Wall CTA",
+      "interactiveType": "button",
+      "text": "Need help with wall panels or installation? We're here to help.",
+      "buttonsList": [
+        { "id": "wl_pi", "title": "Setup help" },
+        { "id": "wl_ps", "title": "Talk to team" },
+        { "id": "wl_pm", "title": "Back to menu" }
+      ]
+    }
+  },
+  {
+    "id": "n_hdmi_intro",
+    "type": "message",
+    "position": { "x": 1720, "y": 760 },
+    "data": { "label": "HDMI intro", "text": "🔌 *HDMI & Sync Kits*\n\nTV backlights and sync accessories — HDMI 2.0 and 2.1 options for every setup." }
+  },
+  {
+    "id": "n_hdmi_products",
+    "type": "message",
+    "position": { "x": 1980, "y": 760 },
+    "data": { "label": "HDMI products", "text": "• *Apex HDMI 2.1 TV Backlight* (32-90\") — Rs. 9,999\n  https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n• *Apex HDMI 2.0 TV Backlight* — Rs. 7,599\n  https://apexlight.in/products/apex-hdmi-sync-tv-backlight-for-all-tv-sizes-upto-90-inches\n\n• *Apex HDMI 2.0 + Bar Light* — Rs. 10,499\n  https://apexlight.in/products/apex-hdmi-sync-tv-backlight-hdmi-sync-bar-light" }
+  },
+  {
+    "id": "n_hdmi_cta",
+    "type": "interactive",
+    "position": { "x": 2240, "y": 760 },
+    "data": {
+      "label": "HDMI CTA",
+      "interactiveType": "button",
+      "text": "Not sure which HDMI kit fits your TV? Our team can help you choose.",
+      "buttonsList": [
+        { "id": "hd_pi", "title": "Setup help" },
+        { "id": "hd_ps", "title": "Talk to team" },
+        { "id": "hd_pm", "title": "Back to menu" }
+      ]
+    }
+  },
+  {
+    "id": "n_smart_intro",
+    "type": "message",
+    "position": { "x": 1720, "y": 900 },
+    "data": { "label": "Smart intro", "text": "🏠 *Smart Home & Accessories*\n\nStream docks, smart controllers, and connected gear for your setup." }
+  },
+  {
+    "id": "n_smart_products",
+    "type": "message",
+    "position": { "x": 1980, "y": 900 },
+    "data": { "label": "Smart products", "text": "For *Apex Stream Dock* and other smart accessories, message us on *9328613239* with your model name.\n\nBrowse our full range at https://apexlight.in/collections/all" }
+  },
+  {
+    "id": "n_smart_cta",
+    "type": "interactive",
+    "position": { "x": 2240, "y": 900 },
+    "data": {
+      "label": "Smart CTA",
+      "interactiveType": "button",
+      "text": "Need help with a smart accessory? Talk to our team.",
+      "buttonsList": [
+        { "id": "sm_pi", "title": "Setup help" },
+        { "id": "sm_ps", "title": "Talk to team" },
+        { "id": "sm_pm", "title": "Back to menu" }
+      ]
+    }
+  },
+  {
+    "id": "n_post_cart",
+    "type": "interactive",
+    "position": { "x": 1980, "y": 360 },
+    "data": {
+      "label": "Post-cart — continue",
+      "interactiveType": "button",
+      "text": "*Your cart is ready*\n\nTap the checkout link we sent above to complete your order on apexlight.in.\n\nNeed help choosing or installing? Use the buttons below.",
+      "buttonsList": [
+        { "id": "pc_explore", "title": "Explore more" },
+        { "id": "pc_support", "title": "Talk to team" },
+        { "id": "pc_menu", "title": "Main menu" }
       ]
     }
   },
@@ -1439,11 +1637,8 @@ function buildFlow() {
     },
     "data": {
       "label": "Live handoff",
-      "notifyChannels": [
-        "Dashboard",
-        "WhatsApp"
-      ],
-      "handoffMessage": "🙌 *You’re connected to our team*\n\nWe’ve flagged this chat for a human — someone will read your messages shortly.\n\n⚡ *Quick help:* call or WhatsApp *9328613239* anytime.\n\n📸 Sending a *short photo or video* of your setup speeds things up massively."
+      "notifyChannels": ["Dashboard"],
+      "handoffMessage": "You're connected to our team.\n\nWe've flagged this chat for a human — someone will read your messages shortly.\n\nQuick help: call or WhatsApp *9328613239* anytime.\n\nSending a short photo or video of your setup helps us solve things faster."
     }
   },
   {
@@ -1456,7 +1651,7 @@ function buildFlow() {
     "data": {
       "label": "Footer — loopback",
       "interactiveType": "button",
-      "text": "*Anything else we can help with?*\n\nChoose an option below.",
+      "text": "*Anything else we can help with?*\n\nChoose an option below — main menu, human support, or browse products again.",
       "buttonsList": [
         {
           "id": "f_menu",
@@ -1713,6 +1908,136 @@ function buildFlow() {
     "id": "e_st_pl_def",
     "source": "n_cat_strip_pl",
     "target": "n_footer"
+  },
+  {
+    "id": "e_bs_intro_p",
+    "source": "n_bestseller_intro",
+    "target": "n_bestseller_products"
+  },
+  {
+    "id": "e_bs_p_cta",
+    "source": "n_bestseller_products",
+    "target": "n_bestseller_cta"
+  },
+  {
+    "id": "e_bs_pi",
+    "source": "n_bestseller_cta",
+    "sourceHandle": "bs_pi",
+    "target": "n_install_menu"
+  },
+  {
+    "id": "e_bs_ps",
+    "source": "n_bestseller_cta",
+    "sourceHandle": "bs_ps",
+    "target": "n_admin_alert"
+  },
+  {
+    "id": "e_bs_pm",
+    "source": "n_bestseller_cta",
+    "sourceHandle": "bs_pm",
+    "target": "n_main_menu"
+  },
+  {
+    "id": "e_wl_intro_p",
+    "source": "n_wall_intro",
+    "target": "n_wall_products"
+  },
+  {
+    "id": "e_wl_p_cta",
+    "source": "n_wall_products",
+    "target": "n_wall_cta"
+  },
+  {
+    "id": "e_wl_pi",
+    "source": "n_wall_cta",
+    "sourceHandle": "wl_pi",
+    "target": "n_install_menu"
+  },
+  {
+    "id": "e_wl_ps",
+    "source": "n_wall_cta",
+    "sourceHandle": "wl_ps",
+    "target": "n_admin_alert"
+  },
+  {
+    "id": "e_wl_pm",
+    "source": "n_wall_cta",
+    "sourceHandle": "wl_pm",
+    "target": "n_main_menu"
+  },
+  {
+    "id": "e_hd_intro_p",
+    "source": "n_hdmi_intro",
+    "target": "n_hdmi_products"
+  },
+  {
+    "id": "e_hd_p_cta",
+    "source": "n_hdmi_products",
+    "target": "n_hdmi_cta"
+  },
+  {
+    "id": "e_hd_pi",
+    "source": "n_hdmi_cta",
+    "sourceHandle": "hd_pi",
+    "target": "n_install_menu"
+  },
+  {
+    "id": "e_hd_ps",
+    "source": "n_hdmi_cta",
+    "sourceHandle": "hd_ps",
+    "target": "n_admin_alert"
+  },
+  {
+    "id": "e_hd_pm",
+    "source": "n_hdmi_cta",
+    "sourceHandle": "hd_pm",
+    "target": "n_main_menu"
+  },
+  {
+    "id": "e_sm_intro_p",
+    "source": "n_smart_intro",
+    "target": "n_smart_products"
+  },
+  {
+    "id": "e_sm_p_cta",
+    "source": "n_smart_products",
+    "target": "n_smart_cta"
+  },
+  {
+    "id": "e_sm_pi",
+    "source": "n_smart_cta",
+    "sourceHandle": "sm_pi",
+    "target": "n_install_menu"
+  },
+  {
+    "id": "e_sm_ps",
+    "source": "n_smart_cta",
+    "sourceHandle": "sm_ps",
+    "target": "n_admin_alert"
+  },
+  {
+    "id": "e_sm_pm",
+    "source": "n_smart_cta",
+    "sourceHandle": "sm_pm",
+    "target": "n_main_menu"
+  },
+  {
+    "id": "e_pc_menu",
+    "source": "n_post_cart",
+    "sourceHandle": "pc_menu",
+    "target": "n_main_menu"
+  },
+  {
+    "id": "e_pc_explore",
+    "source": "n_post_cart",
+    "sourceHandle": "pc_explore",
+    "target": "n_product_menu"
+  },
+  {
+    "id": "e_pc_support",
+    "source": "n_post_cart",
+    "sourceHandle": "pc_support",
+    "target": "n_admin_alert"
   },
   {
     "id": "e_tv_inst",
@@ -2365,8 +2690,9 @@ function buildFlow() {
     ...apexLightOwnerFlowInstallPack.edges,
   ];
   const injected = injectApexCatalogGraph(nodes, mergedEdges);
-  const strippedNodes = injected.nodes.filter((n) => n.id !== "n_cat_browse_done");
-  const strippedEdges = injected.edges
+  const patched = patchApexFlowGraph(injected.nodes, injected.edges);
+  const strippedNodes = patched.nodes.filter((n) => n.id !== "n_cat_browse_done");
+  const strippedEdges = patched.edges
     .filter((e) => e.source !== "n_cat_browse_done")
     .map((e) => (e.target === "n_cat_browse_done" ? { ...e, target: "n_footer" } : e))
     .map((e) => {

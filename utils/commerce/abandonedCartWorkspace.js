@@ -585,7 +585,7 @@ function recoveryStatusLabel(lead) {
     return { key: 'in_checkout', label: 'In checkout' };
   }
   if (isWaRecoveredLead(lead)) return { key: 'whatsapp', label: 'Recovered via WhatsApp' };
-  if (isRecoveredLead(lead)) return { key: 'organic', label: 'Recovered' };
+  if (isRecoveredLead(lead)) return { key: 'organic', label: 'Recovered at checkout' };
   return { key: 'active', label: 'Active abandoned' };
 }
 
@@ -919,7 +919,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     );
     let recovery = recoveryStatusFromAttempt(attempt, lead);
     if (orderRecovered && recovery.key === 'active') {
-      recovery = { key: 'organic', label: 'Recovered' };
+      recovery = { key: 'organic', label: 'Recovered at checkout' };
     }
 
     const engagement = summarizeMessageEngagement(attempt);

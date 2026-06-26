@@ -48,6 +48,7 @@ const {
   canSendToContact,
   evaluateAudiencePolicySummary,
 } = require('../utils/commerce/marketingConsent');
+const { countUnifiedSegment, resolveSegmentAudienceRows } = require('../services/segmentAudienceEvaluation');
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 const { isWorkspaceEmailReady } = require('../utils/core/emailService');
 const {
@@ -224,7 +225,7 @@ router.post('/from-segment', protect, async (req, res) => {
         const segment = await Segment.findOne({ _id: segmentId, clientId: tenantId });
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
-        const count = await AdLead.countDocuments({ ...segment.query, clientId: tenantId });
+        const { count } = await countUnifiedSegment(tenantId, segment);
         const client = await Client.findOne({ clientId: tenantId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
 
         const limits = await checkLimit(client._id, 'campaigns');
@@ -727,7 +728,8 @@ router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
         } else if (source === 'segment' && segmentId) {
             const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
             if (segment) {
-                count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
+                const result = await countUnifiedSegment(cid, segment);
+                count = result.count;
             }
         } else if (source === 'imported' && importBatchId) {
             const resolvedId = await resolveImportBatchObjectId(importBatchId, cid);
@@ -765,7 +767,49 @@ router.get('/audience-preview', protect, async (req, res) => {
       importBatchId,
       campaignId,
       templateCategory = 'MARKETING',
+      mode,
+      optInSource: optInSourceFilter,
+      optInDateFrom,
+      optInDateTo,
     } = req.query;
+
+    if (mode === 'optin_source') {
+      const matchQuery = { clientId: cid, optStatus: 'opted_in' };
+      if (optInSourceFilter) matchQuery.optInSource = optInSourceFilter;
+      if (optInDateFrom || optInDateTo) {
+        matchQuery.optInDate = {};
+        if (optInDateFrom) matchQuery.optInDate.$gte = new Date(optInDateFrom);
+        if (optInDateTo) matchQuery.optInDate.$lte = new Date(optInDateTo);
+      }
+
+      const [totalCount, sourceAgg] = await Promise.all([
+        AdLead.countDocuments(matchQuery),
+        AdLead.aggregate([
+          { $match: { clientId: cid, optStatus: 'opted_in', ...(optInDateFrom || optInDateTo ? { optInDate: matchQuery.optInDate } : {}) } },
+          {
+            $group: {
+              _id: {
+                $cond: [
+                  { $or: [{ $eq: ['$optInSource', null] }, { $eq: ['$optInSource', ''] }] },
+                  'unknown',
+                  '$optInSource',
+                ],
+              },
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { count: -1 } },
+        ]),
+      ]);
+
+      return res.json({
+        success: true,
+        mode: 'optin_source',
+        totalCount,
+        byOptInSource: sourceAgg.map((r) => ({ source: r._id, count: r.count })),
+      });
+    }
+
     let leads = [];
 
     let source = String(sourceRaw || '').toLowerCase();
@@ -778,9 +822,11 @@ router.get('/audience-preview', protect, async (req, res) => {
     if (source === 'segment' && segmentId) {
       const segment = await Segment.findOne({ _id: segmentId, clientId: cid }).lean();
       if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
-      leads = await AdLead.find({ clientId: cid, ...segment.query })
-        .select('optStatus optInSource')
-        .lean();
+      const audienceRows = await resolveSegmentAudienceRows(cid, segment);
+      leads = audienceRows.map((l) => ({
+        optStatus: l.optStatus,
+        optInSource: l.optInSource,
+      }));
     } else if (source === 'imported' && importBatchId) {
       const resolved = await resolveImportBatchObjectId(importBatchId, cid);
       if (!resolved) return res.status(404).json({ success: false, message: 'Import batch not found' });
@@ -1499,13 +1545,14 @@ router.post('/start', protect, tenantRateLimit(), requirePaidOrTrial(), async (r
         } else if (campaign.segmentId) {
             const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
             if (segment) {
-                const leads = await AdLead.find({
-                  ...segment.query,
-                  clientId: tenantClientId(req),
-                  ...marketingOptQ,
-                }).lean();
-                campaign.audience = leads.map((l) => ({
-                  phone: l.phoneNumber,
+                const audienceRows = await resolveSegmentAudienceRows(tenantClientId(req), segment);
+                const filtered = await filterAudienceForMarketingOptIn(
+                  tenantClientId(req),
+                  audienceRows,
+                  campaign
+                );
+                campaign.audience = (filtered.rows || []).map((l) => ({
+                  phone: l.phone || l.phoneNumber,
                   email: l.email,
                   name: l.name || '',
                   _id: l._id,

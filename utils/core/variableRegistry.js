@@ -123,6 +123,8 @@ const VARIABLE_REGISTRY = [
     source: "convo.metadata.support_query", wizardField: null, fallback: "", preview: "Help" },
 
   // ── SYSTEM ───────────────────────────────────────────────────────────────
+  { name: "user_last_response", label: "User's last response", category: "System",
+    source: "convo.metadata.user_last_response", wizardField: null, fallback: "", preview: "I want to check my order status" },
   { name: "current_date", label: "Today's date", category: "System",
     source: "computed.currentDate", wizardField: null, fallback: "", preview: "3 May 2026" },
   { name: "current_time", label: "Current time", category: "System",

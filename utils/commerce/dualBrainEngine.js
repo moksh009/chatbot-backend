@@ -907,6 +907,15 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.error("[InboundSave] Early persist failed:", { error: earlySaveErr.message });
     }
 
+    // Set user_last_response from current inbound message text
+    if (inboundText && convo) {
+      try {
+        const updatedMeta = { ...(convo.metadata || {}), user_last_response: inboundText };
+        await Conversation.findByIdAndUpdate(convo._id, { $set: { 'metadata.user_last_response': inboundText } });
+        convo.metadata = updatedMeta;
+      } catch (_) {}
+    }
+
     // ── QR scan (wa.me Ref: QR_* or bare QR_XXXXXXXX) — before greeting fast path ──
     // Prefilled QR messages often start with "Hi" and must still count as scans.
     const { processQrInboundIfPresent, extractQrShortCodeFromText } = require('./qrInboundHandler');
@@ -1575,8 +1584,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (ndrHandled) return true;
   }
 
-  // ── COD confirmation template quick reply ("Confirm order") ──
-  if (inboundText && /^(confirm order|✅ confirm order)$/i.test(String(inboundText).trim())) {
+  // ── COD / order confirmation quick reply ("Confirm", "Confirm order") ──
+  if (inboundText && /^(confirm( order)?|✅\s*confirm( order)?)$/i.test(String(inboundText).trim())) {
     const Order = require('../../models/Order');
     const { normalizePhone } = require('../core/helpers');
     const clean = normalizePhone(phone);
@@ -1601,6 +1610,18 @@ async function runDualBrainEngine(parsedMessage, client) {
       );
       return true;
     }
+    // Generic Confirm tap (no pending COD) — ack and nudge menu
+    await sendWhatsAppText(
+      client,
+      phone,
+      "✅ Got it! Reply *menu* anytime to see options, or tell us what you need."
+    );
+    return true;
+  }
+
+  // View items is handled inside WhatsApp MPM UI — ignore as text/button echo
+  if (inboundText && /^view items$/i.test(String(inboundText).trim())) {
+    return true;
   }
 
   // ── Template support buttons (Contact support / Need help) — no flow required ──
@@ -3414,23 +3435,6 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check' && node.type !== 'warranty_lookup') {
-    await logFlowEvent({
-      clientId: client.clientId,
-      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
-      nodeId,
-      nodeType: node.type,
-      phone,
-      action: 'failure',
-      metadata: {
-        reason: 'send_failed',
-        latencyMs: Date.now() - execStartedAt,
-        channel
-      }
-    });
-    return false;
-  }
-
   if (!sent && node.type === 'catalog' && (node.data || {}).apexDualMethod) {
     const noCat = flowEdges.find(
       (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_catalog'
@@ -3449,6 +3453,27 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         parsedMessage
       );
     }
+  }
+
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check' && node.type !== 'warranty_lookup' && node.type !== 'catalog') {
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId,
+      nodeType: node.type,
+      phone,
+      action: 'failure',
+      metadata: {
+        reason: 'send_failed',
+        latencyMs: Date.now() - execStartedAt,
+        channel
+      }
+    });
+    return false;
+  }
+
+  if (!sent && node.type === 'catalog') {
+    return false;
   }
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
@@ -3708,6 +3733,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     return;
   }
 
+  // GRACEFUL CONTINUATION: CANCEL_ORDER checks for prior order context (order_id in metadata).
+  // If the order is already cancelled or context is missing, the flow halts with a user message
+  // rather than proceeding — prevents double-cancel attempts.
   // 7. Order Action Node — with context validation for returns
   if (node.type === 'order_action') {
     const { handleNodeAction } = require('../flow/nodeActions');
@@ -3944,6 +3972,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
+  // GRACEFUL CONTINUATION: Tag operations are idempotent via $setUnion/$setDifference.
+  // Removing a tag the customer never had, or adding one they already have, is a no-op.
+  // The flow always continues to the next node regardless.
   // Phase 17: Tag Lead Node
   if (node.type === 'tag_lead' || node.type === 'TagNode') {
     const { action, tag } = node.data || {}; // action: 'add' or 'remove'
@@ -3951,20 +3982,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
        const { normalizeLeadTagForAdd, applyNeedHelpTag, NEED_HELP_TAG } = require('./needHelpTag');
        const { transitionLeadTags } = require('./leadTagOps');
        const normalized = normalizeLeadTagForAdd(tag) || tag;
+       // Enforce 50-character tag name limit
+       const normalizedTruncated = normalized ? normalized.substring(0, 50) : normalized;
        if (action === 'remove') {
-         const removeTags = normalized === NEED_HELP_TAG
+         const removeTags = normalizedTruncated === NEED_HELP_TAG
            ? [NEED_HELP_TAG, 'Human', 'human', 'pending-human']
-           : [tag, normalized];
+           : [tag, normalizedTruncated];
          await transitionLeadTags({
            filter: { _id: lead._id, clientId: client.clientId },
            remove: removeTags,
          });
-       } else if (normalized === NEED_HELP_TAG) {
+       } else if (normalizedTruncated === NEED_HELP_TAG) {
          await applyNeedHelpTag(client.clientId, phone);
        } else {
          await transitionLeadTags({
            filter: { _id: lead._id, clientId: client.clientId },
-           add: [normalized],
+           add: [normalizedTruncated],
          });
        }
        log.info(`TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
@@ -3975,12 +4008,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 21: Admin Alert Node — Email + Dashboard notification (WhatsApp removed)
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
+    const { sanitizeNotifyChannels } = require('../core/notificationService');
     const { topic, priority } = node.data || {};
-    const channels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
+    const channels = sanitizeNotifyChannels(node.data?.notifyChannels);
     const rawTopic = topic || "Human support request";
     const alertMsg = replaceVariables(String(rawTopic), client, lead, convo);
     const rawBody = node.data?.messageBody || alertMsg;
     const messageBody = injectVariablesLegacy(rawBody, { client, lead, convo }) || rawBody;
+    const customerQuery =
+      convo?.metadata?.user_last_response ||
+      convo?.metadata?.last_input ||
+      parsedMessage?.text?.body ||
+      '';
 
     // 1. Mark conversation as needing attention
     await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
@@ -4009,17 +4048,20 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
 
-    // 3. Email notification via platform sender + workspace alert contacts
+    // 3. Email — platform sender to all workspace + team alert contacts
     if (channels.includes('Email')) {
       try {
         const NotificationService = require('../core/notificationService');
+        const extra = node.data?.alertEmailTo || node.data?.handoffEmailTo || '';
         await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
           conversationId: convo._id,
           topic: alertMsg,
           triggerSource: messageBody,
           channel: 'email',
+          customerQuery,
           lead,
+          extraEmails: extra,
         });
       } catch (err) {
         log.error(`AdminAlert email dispatch failed: ${err.message}`);
@@ -4062,6 +4104,11 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           lead.capturedData[varName] = processedValue;
         }
       } catch (_) {}
+      // Register variable definition idempotently (find-or-create, never duplicate)
+      Client.updateOne(
+        { clientId: client.clientId, 'customVariables.name': { $ne: varName } },
+        { $push: { customVariables: { name: varName, type: 'string', label: varName, description: 'Auto-registered by flow' } } }
+      ).catch((_) => {});
     }
   }
 
@@ -4171,13 +4218,12 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       // --- Fetch Latest Order (Shopify GraphQL) — the Shopify Action node's sole action ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
         const { fetchLatestOrderByPhoneGraphQL, resolveLatestOrderContext } = require('./orderLookupService');
-        const silentLookup = !!node.data?.silent;
         const prevMeta = { ...(convo.metadata || {}) };
+        const messageBody = node.data?.messageBody || '';
 
         let gqlResult = null;
-        let legacyResult = null;
 
-        // 1. Primary path — Shopify GraphQL (exposes 8 named variables)
+        // Primary path — Shopify GraphQL
         try {
           gqlResult = await fetchLatestOrderByPhoneGraphQL({
             clientId: client.clientId,
@@ -4185,6 +4231,14 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           });
         } catch (gqlErr) {
           log.warn(`[shopify_call] GraphQL lookup failed, falling back to REST: ${gqlErr.message}`);
+          // Route to Technical Error branch
+          const errorEdge = flowEdges.find(
+            (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'error'
+          );
+          if (errorEdge) {
+            return await executeNode(errorEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+          }
+          return;
         }
 
         if (gqlResult?.found) {
@@ -4193,87 +4247,73 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
           convo.metadata = updatedMeta;
 
-          if (!silentLookup) {
-            // Build default status message from the resolved variables
-            const v = gqlResult.variables;
-            const lines = [
-              `📦 *Order ${v.order_id}*`,
-              ``,
-              `🗓 Date: ${v.order_date}`,
-              `🛍 Items:\n${v.ordered_items}`,
-              `💰 Total: ${v.order_total}`,
-              `📍 Address: ${v.shipping_address}`,
-              `💳 Payment: ${v.payment_status}`,
-              `🚚 Fulfillment: ${v.fulfillment_status}`,
-              v.delivery_status !== 'NA' ? `📡 Tracking: ${v.delivery_status}` : null,
-            ].filter(Boolean);
-            await sendWhatsAppText(client, phone, lines.join('\n').substring(0, 4096));
+          // Send messageBody if configured, with variables resolved
+          if (messageBody && messageBody.trim()) {
+            const ctx = convo._variableContext || await buildVariableContext(client, phone, convo, lead);
+            const resolved = injectVariablesLegacy(messageBody, { client, lead, convo });
+            const finalMsg = String(resolved || messageBody).substring(0, 4096);
+            if (finalMsg.trim()) {
+              await sendWhatsAppText(client, phone, finalMsg);
+            }
           }
 
+          // Route to Success — Found Record branch
           const successEdge = flowEdges.find(
-            (e) =>
-              e.source === nodeId &&
-              (normalizeHandleId(e.sourceHandle) === 'success' ||
-                normalizeHandleId(e.sourceHandle) === 'a')
+            (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
           );
           if (successEdge) {
-            return await executeNode(
-              successEdge.target,
-              flowNodes,
-              flowEdges,
-              client,
-              convo,
-              lead,
-              phone,
-              io,
-              channel,
-              parsedMessage
-            );
+            return await executeNode(successEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
           resultData = gqlResult.variables;
+        } else if (gqlResult && !gqlResult.found) {
+          // No order on file — successful API call, no order found
+          const noOrderEdge = flowEdges.find(
+            (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_order'
+          );
+          if (noOrderEdge) {
+            return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+          }
+          resultData = { found: false };
         } else {
-          // 2. Fallback — legacy REST-based resolver (for stores where GraphQL customer query returns empty)
+          // Fallback: try legacy REST resolver
+          let legacyResult = null;
           try {
             legacyResult = await resolveLatestOrderContext({ client, phone });
           } catch (legacyErr) {
             log.error(`[shopify_call] Legacy resolver also threw: ${legacyErr.message}`);
           }
 
-          const updatedMeta = { ...prevMeta, ...(legacyResult?.mergedMeta || {}) };
-          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
-          convo.metadata = updatedMeta;
+          if (legacyResult?.found) {
+            const updatedMeta = { ...prevMeta, ...(legacyResult?.mergedMeta || {}) };
+            await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: updatedMeta } });
+            convo.metadata = updatedMeta;
 
-          if (!legacyResult?.found) {
-            if (!silentLookup && legacyResult?.userMessage) {
+            if (messageBody && messageBody.trim()) {
+              const resolved = injectVariablesLegacy(messageBody, { client, lead, convo });
+              const finalMsg = String(resolved || messageBody).substring(0, 4096);
+              if (finalMsg.trim()) {
+                await sendWhatsAppText(client, phone, finalMsg);
+              }
+            } else if (legacyResult.userMessage) {
               await sendWhatsAppText(client, phone, legacyResult.userMessage);
             }
-            const noOrderEdge = flowEdges.find(
-              (e) =>
-                e.source === nodeId &&
-                (normalizeHandleId(e.sourceHandle) === 'not_found' ||
-                  normalizeHandleId(e.sourceHandle) === 'no_order' ||
-                  normalizeHandleId(e.sourceHandle) === 'error')
+
+            const successEdge = flowEdges.find(
+              (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
             );
-            if (noOrderEdge) {
-              return await executeNode(
-                noOrderEdge.target,
-                flowNodes,
-                flowEdges,
-                client,
-                convo,
-                lead,
-                phone,
-                io,
-                channel,
-                parsedMessage
-              );
-            }
-            resultData = { error: 'No order found for this number' };
-          } else {
-            if (!silentLookup && legacyResult.userMessage) {
-              await sendWhatsAppText(client, phone, legacyResult.userMessage);
+            if (successEdge) {
+              return await executeNode(successEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
             }
             resultData = legacyResult.orderData;
+          } else {
+            // No order found via legacy
+            const noOrderEdge = flowEdges.find(
+              (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_order'
+            );
+            if (noOrderEdge) {
+              return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+            }
+            resultData = { error: 'No order found for this number' };
           }
         }
       }
@@ -4605,10 +4645,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     } catch (err) {
       log.error(`Shopify Action ${action} Failed:`, { error: err.message });
-      const silentLookup = !!(node?.data && node.data.silent);
       const isOrderLookup =
         action === "ORDER_STATUS" || action === "get_order" || action === "CHECK_ORDER_STATUS";
-      if (!(silentLookup && isOrderLookup)) {
+      if (!isOrderLookup) {
         await sendWhatsAppText(
           client,
           phone,
@@ -4839,20 +4878,30 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
     log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);
 
-    // Send handoff alert email if Email channel selected
-    const handoffChannels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
-    if (handoffChannels.includes('Email') && node.data?.handoffEmailTo) {
+    // Email alert — all workspace + team contacts (legacy handoffEmailTo merged as extra)
+    const { sanitizeNotifyChannels } = require('../core/notificationService');
+    const handoffChannels = sanitizeNotifyChannels(node.data?.notifyChannels);
+    if (handoffChannels.includes('Email')) {
       try {
+        const NotificationService = require('../core/notificationService');
         const { injectVariablesLegacy: replaceVars } = require('../core/variableInjector');
-        const rawBody = node.data?.handoffAlertBody || `Human support requested for ${phone}`;
+        const rawBody =
+          node.data?.handoffAlertBody ||
+          `Human support requested via WhatsApp flow for ${phone}`;
         const emailBody = replaceVars(rawBody, client, lead, convo) || rawBody;
-        const { sendAlertEmail } = require('../core/emailService');
-        await sendAlertEmail({
-          to: node.data.handoffEmailTo,
-          subject: `[TopEdge] Agent Handoff Alert`,
-          body: emailBody,
-          clientId: client.clientId,
+        const customerQuery =
+          convo?.metadata?.user_last_response ||
+          parsedMessage?.text?.body ||
+          emailBody;
+        await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
+          conversationId: convo._id,
+          topic: '🙋 Human support requested',
+          triggerSource: emailBody,
+          channel: 'email',
+          customerQuery,
+          lead,
+          extraEmails: node.data?.handoffEmailTo || '',
         });
       } catch (emailErr) {
         log.warn(`[FlowEngine] LiveChat handoff email failed: ${emailErr.message}`);
@@ -5372,6 +5421,51 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
             }
           } catch (enrichErr) {
             log.warn(`[catalog] MPM enrich failed: ${enrichErr.message}`);
+          }
+        }
+
+        // Validate product IDs against synced catalog — if mostly stale, fail → no_catalog edge
+        if (ids.length && catalogId) {
+          try {
+            const ShopifyProduct = require("../../models/ShopifyProduct");
+            const found = await ShopifyProduct.countDocuments({
+              clientId: client.clientId,
+              shopifyVariantId: { $in: ids },
+            });
+            const ratio = found / ids.length;
+            if (ratio < 0.5) {
+              log.warn(
+                `[catalog] MPM node ${node?.id}: only ${found}/${ids.length} productIds valid — no_catalog fallback`
+              );
+              if (data.apexDualMethod) return false;
+            }
+          } catch (valErr) {
+            log.warn(`[catalog] productId validation skipped: ${valErr.message}`);
+          }
+        }
+
+        const sendProductListForMpm = async () => {
+          await WhatsApp.sendProductList(client, phone, {
+            header: (mpmData.header || "Catalog").substring(0, 60),
+            body: bodyText,
+            footer: (mpmData.footer || "Tap to view items").substring(0, 60),
+            catalogId,
+            sections: [
+              {
+                title: String(mpmData.sectionTitle || mpmData.header || "Our Picks").substring(0, 24),
+                product_items: ids.map((id) => ({ product_retailer_id: id })),
+              },
+            ],
+          });
+        };
+
+        // Apex: prefer native product_list (correct category header) over MPM carosuel template
+        if (data.apexPreferProductList && catalogId && ids.length && thumb) {
+          try {
+            await sendProductListForMpm();
+            return true;
+          } catch (plPrefErr) {
+            log.warn(`[catalog] apexPreferProductList failed for ${node?.id}: ${plPrefErr.message}`);
           }
         }
 
@@ -6861,13 +6955,43 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
       });
       const hydrated = injectNodeVariables(target, ctx);
       await sendNodeContent(hydrated, client, normalizedPhone, lead, convo, "whatsapp", {});
+      await Conversation.findByIdAndUpdate(convo._id, {
+        lastStepId: cartEdge.target,
+        lastInteraction: new Date(),
+      });
+      return true;
+    }
+    if (target) {
+      const tpl =
+        client.commerceBotSettings?.checkoutMessage ||
+        `Here's your checkout link:\n{{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nReply *menu* anytime for more help.`;
+      const out = injectVariables(String(tpl), {
+        checkout_url: shortUrl,
+        cart_total: String(total),
+        currency,
+        item_count: String(items.length),
+        first_name: (lead?.name || "there").split(/\s+/)[0]
+      });
+      await sendWhatsAppText(client, normalizedPhone, out);
+      await executeNode(
+        cartEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        normalizedPhone,
+        null,
+        "whatsapp",
+        {}
+      );
       return true;
     }
   }
 
   const tpl =
     client.commerceBotSettings?.checkoutMessage ||
-    `Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}`;
+    `Here's your checkout link:\n{{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nReply *menu* anytime for more help.`;
   const out = injectVariables(String(tpl), {
     checkout_url: shortUrl,
     cart_total: String(total),
@@ -6876,6 +7000,10 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
     first_name: (lead?.name || "there").split(/\s+/)[0]
   });
   await sendWhatsAppText(client, normalizedPhone, out);
+  await Conversation.findByIdAndUpdate(convo._id, {
+    lastStepId: "n_footer",
+    lastInteraction: new Date(),
+  });
   return true;
 }
 

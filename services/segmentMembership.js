@@ -1,25 +1,26 @@
 'use strict';
 
-const Segment = require('../../models/Segment');
-const AdLead = require('../../models/AdLead');
+const Segment = require('../models/Segment');
+const { translateConditionsToQuery: translateTreeQuery } = require('./SegmentQueryBuilderV2');
+const { ensureConditionTree } = require('../utils/segmentConditionUtils');
+const { leadMatchesUnifiedSegment } = require('./segmentAudienceEvaluation');
+
+function compileSegmentQuery(segment) {
+  if (segment?.query && typeof segment.query === 'object' && Object.keys(segment.query).length) {
+    return segment.query;
+  }
+  const tree = ensureConditionTree(segment || {});
+  return translateTreeQuery(tree);
+}
 
 /**
- * Check whether a lead matches an Audience Hub saved segment.
+ * Check whether a lead matches an Audience Hub saved segment (unified evaluator).
  */
 async function leadMatchesAudienceSegment(clientId, lead, segmentId) {
-  if (!clientId || !segmentId || !lead?._id) return false;
-
-  const segment = await Segment.findOne({ _id: segmentId, clientId }).select('query').lean();
-  if (!segment?.query || typeof segment.query !== 'object') return false;
-
-  const count = await AdLead.countDocuments({
-    _id: lead._id,
-    clientId,
-    ...segment.query,
-  });
-  return count > 0;
+  return leadMatchesUnifiedSegment(clientId, lead, segmentId);
 }
 
 module.exports = {
   leadMatchesAudienceSegment,
+  compileSegmentQuery,
 };

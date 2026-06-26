@@ -485,6 +485,11 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
           engagement,
           convStatus,
           periodDays,
+          optInToolId,
+          optInSource,
+          hasPrize,
+          optInDateFrom,
+          optInDateTo,
         } = req.query;
         const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
         let resolvedImportBatch = null;
@@ -510,6 +515,11 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
             engagement,
             convStatus,
             periodDays: periodDays ? parseInt(periodDays, 10) : undefined,
+            optInToolId,
+            optInSource,
+            hasPrize,
+            optInDateFrom,
+            optInDateTo,
         });
 
     timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
@@ -1908,24 +1918,34 @@ router.get('/optin-overview', protect, async (req, res) => {
             : 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const [statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
-      AdLead.aggregate([
-        { $match: { clientId } },
-        {
-          $addFields: {
-            normalizedOptStatus: {
-              $switch: {
-                branches: [
-                  { case: { $eq: ['$optStatus', 'opted_out'] }, then: 'opted_out' },
-                  { case: { $eq: ['$optStatus', 'pending'] }, then: 'pending' },
-                ],
-                default: 'opted_in',
+    const client = await Client.findOne({ clientId })
+      .select('shopifyAccessToken shopDomain')
+      .lean();
+    const shopifyConnected = !!(client?.shopifyAccessToken && client?.shopDomain);
+
+    const { computeUnifiedAudienceOptInStats } = require('../utils/commerce/leadsAnalyticsFacet');
+
+    const [unifiedStats, statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
+      shopifyConnected ? computeUnifiedAudienceOptInStats(clientId) : Promise.resolve(null),
+      shopifyConnected
+        ? Promise.resolve(null)
+        : AdLead.aggregate([
+            { $match: { clientId } },
+            {
+              $addFields: {
+                normalizedOptStatus: {
+                  $switch: {
+                    branches: [
+                      { case: { $eq: ['$optStatus', 'opted_out'] }, then: 'opted_out' },
+                      { case: { $eq: ['$optStatus', 'pending'] }, then: 'pending' },
+                    ],
+                    default: 'opted_in',
+                  },
+                },
               },
             },
-          },
-        },
-        { $group: { _id: '$normalizedOptStatus', count: { $sum: 1 } } },
-      ]),
+            { $group: { _id: '$normalizedOptStatus', count: { $sum: 1 } } },
+          ]),
       AdLead.aggregate([
         { $match: { clientId, optStatus: 'opted_in' } },
         {
@@ -1966,15 +1986,34 @@ router.get('/optin-overview', protect, async (req, res) => {
         .lean(),
     ]);
 
-    const map = {};
-    statusAgg.forEach((x) => { map[x._id || 'opted_in'] = x.count; });
-    const totalLeads = Object.values(map).reduce((a, b) => a + b, 0);
-    const optedIn = (map.opted_in || 0) + (map.unknown || 0);
-    const unknown = map.unknown || 0;
-    const optedOut = map.opted_out || 0;
-    const pending = map.pending || 0;
-    const effectiveTotal = totalLeads || optedIn + optedOut + pending;
-    const optInRate = effectiveTotal > 0 ? Number(((optedIn / effectiveTotal) * 100).toFixed(1)) : 0;
+    let totalLeads;
+    let optedIn;
+    let unknown;
+    let optedOut;
+    let pending;
+    let optInRate;
+    let audienceScope;
+
+    if (unifiedStats) {
+      totalLeads = unifiedStats.totalLeads;
+      optedIn = unifiedStats.optedIn;
+      optedOut = unifiedStats.optedOut;
+      pending = unifiedStats.pending;
+      optInRate = unifiedStats.optInRate;
+      unknown = 0;
+      audienceScope = unifiedStats.audienceScope;
+    } else {
+      const map = {};
+      (statusAgg || []).forEach((x) => { map[x._id || 'opted_in'] = x.count; });
+      totalLeads = Object.values(map).reduce((a, b) => a + b, 0);
+      optedIn = (map.opted_in || 0) + (map.unknown || 0);
+      unknown = map.unknown || 0;
+      optedOut = map.opted_out || 0;
+      pending = map.pending || 0;
+      const effectiveTotal = totalLeads || optedIn + optedOut + pending;
+      optInRate = effectiveTotal > 0 ? Number(((optedIn / effectiveTotal) * 100).toFixed(1)) : 0;
+      audienceScope = 'adlead';
+    }
 
     const trendMap = {};
     trendAgg.forEach((x) => { trendMap[x._id] = x.newOptIns; });
@@ -1988,6 +2027,7 @@ router.get('/optin-overview', protect, async (req, res) => {
     res.json({
       success: true,
       periodDays: days,
+      audienceScope,
       totalLeads,
       optedIn,
       unknown,

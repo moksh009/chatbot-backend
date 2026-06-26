@@ -490,6 +490,96 @@ module.exports = {
      * Phase 3: Dynamic Discount Generator
      * Creates a unique Shopify discount code for a specific customer.
      */
+    injectOptInScript: async (clientId, backendUrl, embedKey) => {
+        const {
+            injectOptInScriptIntoLiquid,
+            themeHasOptInScript,
+        } = require('../optIn/optInThemeInject');
+
+        return await withShopifyRetry(clientId, async (shop) => {
+            const client = await Client.findOne({ clientId }).select('growthEmbedPublicKey');
+            const key = embedKey || client?.growthEmbedPublicKey;
+            if (!key) throw new Error('growthEmbedPublicKey missing — create an opt-in tool first');
+
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
+            if (!mainTheme) throw new Error('Main theme not found');
+
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' },
+            });
+            const liquid = assetRes.data.asset?.value;
+            if (!liquid) throw new Error('Could not read theme.liquid');
+
+            const finalBackendUrl =
+                backendUrl || process.env.BACKEND_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
+
+            if (themeHasOptInScript(liquid, clientId)) {
+                return { success: true, message: 'Opt-in script already injected', alreadyPresent: true };
+            }
+
+            const { liquid: nextLiquid } = injectOptInScriptIntoLiquid(liquid, finalBackendUrl, key, clientId);
+
+            await shop.put(`/themes/${mainTheme.id}/assets.json`, {
+                asset: { key: 'layout/theme.liquid', value: nextLiquid },
+            });
+
+            return { success: true, message: 'Opt-in script injected', alreadyPresent: false };
+        });
+    },
+
+    removeOptInScript: async (clientId) => {
+        const { removeOptInScriptFromLiquid, themeHasOptInScript } = require('../optIn/optInThemeInject');
+
+        return await withShopifyRetry(clientId, async (shop) => {
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
+            if (!mainTheme) throw new Error('Main theme not found');
+
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' },
+            });
+            let liquid = assetRes.data.asset?.value;
+            if (!liquid) throw new Error('Could not read theme.liquid');
+
+            if (!themeHasOptInScript(liquid, clientId)) {
+                return { success: true, removed: false, message: 'Opt-in script not found in theme.liquid' };
+            }
+
+            const { liquid: nextLiquid, removed } = removeOptInScriptFromLiquid(liquid, clientId);
+            liquid = nextLiquid;
+
+            await shop.put(`/themes/${mainTheme.id}/assets.json`, {
+                asset: { key: 'layout/theme.liquid', value: liquid },
+            });
+
+            return { success: true, removed, message: 'Opt-in script removed from theme.liquid' };
+        });
+    },
+
+    verifyThemeHasOptInScript: async (clientId) => {
+        const { themeHasOptInScript } = require('../optIn/optInThemeInject');
+
+        return await withShopifyRetry(clientId, async (shop) => {
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
+            if (!mainTheme) {
+                return { found: false, error: 'Main theme not found' };
+            }
+
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' },
+            });
+            const liquid = assetRes.data.asset?.value || '';
+
+            return {
+                found: themeHasOptInScript(liquid, clientId),
+                themeId: mainTheme.id,
+                themeName: mainTheme.name,
+            };
+        });
+    },
+
     generatePriceRuleAndDiscount: async (clientId, discountPercent = 10, suffix = 'SAVE') => {
         return await withShopifyRetry(clientId, async (shop) => {
             const code = `${suffix}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;

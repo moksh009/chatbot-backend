@@ -268,8 +268,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
     case "ADMIN_ALERT": {
       const { buildReopenAttentionUpdate } = require('../core/supportConversationMetrics');
+      const NotificationService = require('../core/notificationService');
+      const { sanitizeNotifyChannels } = require('../core/notificationService');
       const topic = node.data?.topic || "New Priority Request";
-      const channels = Array.isArray(node.data?.notifyChannels) ? node.data.notifyChannels : ['Dashboard'];
+      const channels = sanitizeNotifyChannels(node.data?.notifyChannels);
       const rawBody = node.data?.messageBody || topic;
       const messageBody = replaceVariables(rawBody, { client, lead, convo }) || rawBody;
 
@@ -290,20 +292,18 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       }
 
       if (channels.includes('Email')) {
-        const emailTo = node.data?.alertEmailTo;
-        if (emailTo) {
-          try {
-            const { sendAlertEmail } = require('../core/emailService');
-            await sendAlertEmail({
-              to: emailTo,
-              subject: `[TopEdge Alert] ${topic}`,
-              body: messageBody,
-              clientId: client.clientId,
-              customerPhone: phone,
-            });
-          } catch (emailErr) {
-            console.error(`[NodeActions] ADMIN_ALERT email send failed: ${emailErr.message}`);
-          }
+        try {
+          await NotificationService.sendAdminAlert(client, {
+            customerPhone: phone,
+            conversationId: convo?._id,
+            topic,
+            triggerSource: messageBody,
+            channel: 'email',
+            lead,
+            extraEmails: node.data?.alertEmailTo || node.data?.handoffEmailTo || '',
+          });
+        } catch (emailErr) {
+          console.error(`[NodeActions] ADMIN_ALERT email send failed: ${emailErr.message}`);
         }
       }
       break;

@@ -24,6 +24,18 @@ const segmentSchema = new mongoose.Schema({
   conditions: {
     type: mongoose.Schema.Types.Mixed
   },
+  conditionTree: {
+    type: mongoose.Schema.Types.Mixed
+  },
+  isSystem: {
+    type: Boolean,
+    default: false
+  },
+  presetKey: {
+    type: String,
+    trim: true,
+    sparse: true
+  },
   // The natural language prompt used to generate this segment (Legacy)
   prompt: {
     type: String
@@ -43,7 +55,13 @@ const segmentSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
 });
+
+segmentSchema.index({ clientId: 1, presetKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Segment', segmentSchema);

@@ -1343,4 +1343,67 @@ router.post('/export-request', protect, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/leads/:clientId/warranty
+ * Simulator-only: fetch warranty info for a phone number
+ */
+router.get('/:clientId/warranty', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { phone } = req.query;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'phone query param is required' });
+    }
+    const { normalizePhone } = require('../utils/core/helpers');
+    const normalized = normalizePhone(phone);
+    const lead = await AdLead.findOne({
+      clientId,
+      $or: [{ phoneNumber: normalized }, { phoneNumber: phone }]
+    }).lean();
+    if (!lead) {
+      return res.json({ success: true, found: false, warranty: null });
+    }
+    const warranty = {
+      customerName: lead.name || '',
+      phone: lead.phoneNumber || phone,
+      warrantyStatus: lead.warrantyStatus || 'Not registered',
+      warrantyExpiry: lead.warrantyExpiry || null,
+      productName: lead.warrantyProduct || lead.capturedData?.productName || '',
+    };
+    return res.json({ success: true, found: true, warranty });
+  } catch (err) {
+    console.error('[warranty lookup]', err.message);
+    res.status(500).json({ success: false, message: 'Failed to lookup warranty' });
+  }
+});
+
+/**
+ * GET /api/leads/:clientId/orders/latest
+ * Simulator-only: fetch the latest Shopify order for a phone number
+ */
+router.get('/:clientId/orders/latest', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { phone } = req.query;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'phone query param is required' });
+    }
+    const { fetchLatestOrderByPhoneGraphQL } = require('../utils/commerce/orderLookupService');
+    const result = await fetchLatestOrderByPhoneGraphQL({ clientId, phone });
+    if (result?.found) {
+      return res.json({ success: true, found: true, variables: result.variables });
+    }
+    return res.json({ success: true, found: false, variables: null });
+  } catch (err) {
+    console.error('[orders/latest]', err.message);
+    res.status(500).json({ success: false, message: 'Lookup failed', error: err.message });
+  }
+});
+
 module.exports = router;

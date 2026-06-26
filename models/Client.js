@@ -768,6 +768,8 @@ const ClientSchema = new mongoose.Schema({
   shopifyWebPixelSettings: { type: mongoose.Schema.Types.Mixed, default: null },
   /** Theme.liquid Deep Pixel script tag injected via Admin API */
   shopifyThemePixelInstalledAt: { type: Date },
+  /** Last successful opt-in tools theme.liquid inject (Website Opt-In Tools hub) */
+  shopifyOptInToolsInstalledAt: { type: Date },
   /** Merchant clicked Disconnect — suppress "connected" until reinstall */
   shopifyTrackingDisabled: { type: Boolean, default: false },
   lastShopifyError: { type: String, default: "" },

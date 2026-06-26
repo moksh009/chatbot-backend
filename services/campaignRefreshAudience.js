@@ -1,8 +1,8 @@
 'use strict';
 
+const { resolveSegmentAudienceRows } = require('./segmentAudienceEvaluation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
-const AdLead = require('../models/AdLead');
 const Segment = require('../models/Segment');
 const { launchCampaignDispatch } = require('./campaignLaunchService');
 
@@ -36,12 +36,12 @@ async function refreshCampaignAudience(campaignId, clientId) {
   const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
   if (!segment) return { ok: false, status: 404, message: 'Segment not found' };
 
-  const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId }).lean();
+  const audienceRows = await resolveSegmentAudienceRows(campaign.clientId, segment);
   const existing = await CampaignMessage.find({ campaignId: campaign._id }).select('phone').lean();
   const have = new Set(existing.map((e) => e.phone));
-  const newcomers = leads
-    .filter((l) => l.phoneNumber && !have.has(l.phoneNumber))
-    .map((l) => ({ phone: l.phoneNumber, name: l.name, _id: l._id }));
+  const newcomers = audienceRows
+    .filter((l) => (l.phone || l.phoneNumber) && !have.has(l.phone || l.phoneNumber))
+    .map((l) => ({ phone: l.phone || l.phoneNumber, name: l.name, _id: l._id }));
 
   let inserted = 0;
   if (newcomers.length) {

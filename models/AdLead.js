@@ -12,6 +12,10 @@ const CONSENT_SOURCE = [
   'stop_keyword',
   'unsubscribe_link',
   'admin_override',
+  'spin_wheel',
+  'website_popup',
+  'mystery_discount',
+  'whatsapp_widget',
 ];
 
 const consentChannelSchema = new mongoose.Schema(
@@ -270,6 +274,8 @@ const adLeadSchema = new mongoose.Schema({
   },
   optInDate:        { type: Date, default: null },
   optInSource:      { type: String, default: "" },  // website_widget | spin_wheel | keyword | csv_import | checkout | thank_you_page | qr_code | admin_manual | api
+  optInToolId:      { type: mongoose.Schema.Types.ObjectId, ref: 'OptInTool', default: null },
+  optInToolName:    { type: String, trim: true, default: "" },
   optInMethod:      { type: String, enum: ['single', 'double'], default: 'single' },
   pendingOptInCode: { type: String, default: "" },
   pendingOptInExpiry: { type: Date, default: null },
@@ -421,6 +427,10 @@ adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, ev
     console.error(`[AdLead] pushJourneyEvent failed for ${phoneNumber}:`, err.message);
   }
 };
+
+// Opt-in tool attribution index (sparse — only populated for opt-in leads)
+adLeadSchema.index({ clientId: 1, optInToolId: 1 }, { sparse: true });
+adLeadSchema.index({ clientId: 1, optInSource: 1 }, { sparse: true });
 
 // Performance indexes for dashboard queries
 adLeadSchema.index({ clientId: 1, createdAt: -1 });

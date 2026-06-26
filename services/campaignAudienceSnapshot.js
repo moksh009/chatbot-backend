@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Campaign = require('../models/Campaign');
 const AdLead = require('../models/AdLead');
 const Segment = require('../models/Segment');
+const { resolveSegmentAudienceRows } = require('./segmentAudienceEvaluation');
 const SuppressionList = require('../models/SuppressionList');
 const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
 const {
@@ -77,12 +78,14 @@ async function resolveCampaignAudienceRows(campaign) {
       clientId: campaign.clientId,
     }).lean();
     if (segment) {
-      const optQ = audienceOptQueryForCampaign(campaign);
-      const leads = await AdLead.find({ clientId: campaign.clientId, ...segment.query, ...optQ })
-        .select('phoneNumber email name optStatus optInSource')
-        .lean();
-      rows = leads.map((l) => ({
-        phone: l.phoneNumber,
+      const audienceRows = await resolveSegmentAudienceRows(campaign.clientId, segment);
+      const filtered = await filterAudienceForMarketingOptIn(
+        campaign.clientId,
+        audienceRows,
+        campaign
+      );
+      rows = (filtered.rows || []).map((l) => ({
+        phone: l.phone || l.phoneNumber,
         email: l.email || '',
         name: l.name || 'Customer',
         _id: l._id,

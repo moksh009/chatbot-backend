@@ -278,7 +278,7 @@ async function buildRuleStatsDetail(clientConfig, ruleId, options = {}) {
     recentFailures,
     dailyBreakdown,
     trackingNote: isCartRule
-      ? `Recovered via TopEdge WhatsApp when the same phone places an order within ${attributionDays} day${attributionDays === 1 ? '' : 's'} after any cart recovery message (1, 2, or 3). Orders after that window show as Purchased (organic).`
+      ? `Recovered via WhatsApp when the same phone places an order within ${attributionDays} day${attributionDays === 1 ? '' : 's'} after any cart recovery message (1, 2, or 3). Shoppers who return and complete checkout without a recovery message count as recovered at checkout.`
       : 'Opened tracking improves when Meta delivery receipts are linked to each send.',
   };
 }

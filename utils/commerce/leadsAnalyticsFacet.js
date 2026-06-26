@@ -40,12 +40,18 @@ const LEAD_LIST_PROJECTION = {
   lifetimeValue: 1,
   checkoutInitiatedCount: 1,
   optInSource: 1,
+  optInToolId: 1,
+  optInToolName: 1,
+  optInDate: 1,
   optStatus: 1,
   inboundMessageCount: 1,
   importBatchId: 1,
   isOrderPlaced: 1,
   channelConsent: 1,
   lastOrderAt: 1,
+  'capturedData.prizeLabel': 1,
+  'capturedData.optInCouponCode': 1,
+  'capturedData.optInToolType': 1,
 };
 
 function escapeRegex(str) {
@@ -71,7 +77,7 @@ function applyLeadScoreStage(query, stage) {
 
 function buildLeadsListQuery(
   clientId,
-  { search, tag, segmentScore, lastSeen, importBatchId, optStatus, hasPhone, source, stage, engagement, convStatus }
+  { search, tag, segmentScore, lastSeen, importBatchId, optStatus, hasPhone, source, stage, engagement, convStatus, optInToolId, optInSource, hasPrize, optInDateFrom, optInDateTo }
 ) {
   const query = { clientId };
   if (importBatchId) {
@@ -151,6 +157,21 @@ function buildLeadsListQuery(
       date.setDate(date.getDate() - days);
       query.lastInteraction = { $gte: date };
     }
+  }
+  if (optInToolId) {
+    query.optInToolId = optInToolId;
+  }
+  if (optInSource) {
+    query.optInSource = optInSource;
+  }
+  if (hasPrize === true || hasPrize === 'true') {
+    query['capturedData.prizeLabel'] = { $exists: true, $nin: ['', null] };
+  }
+  if (optInDateFrom || optInDateTo) {
+    const dateFilter = {};
+    if (optInDateFrom) dateFilter.$gte = new Date(optInDateFrom);
+    if (optInDateTo) dateFilter.$lte = new Date(optInDateTo);
+    query.optInDate = dateFilter;
   }
   return query;
 }
@@ -351,6 +372,7 @@ async function loadWhatsAppOnlyLeadRows(clientId, orderSuffixSet) {
       { lastInboundAt: { $exists: true, $ne: null } },
       { chatSummary: { $exists: true, $nin: ['', null] } },
       { lastMessageContent: { $exists: true, $nin: ['', null] } },
+      { optInSource: { $exists: true, $nin: ['', null] } },
     ],
   })
     .select(LEAD_LIST_PROJECTION)
@@ -362,7 +384,7 @@ async function loadWhatsAppOnlyLeadRows(clientId, orderSuffixSet) {
     if (!lead?.phoneNumber || isShopifyTestPhone(lead.phoneNumber)) continue;
     const suffix = phoneSuffixKey(lead.phoneNumber);
     if (!suffix || orderSuffixSet.has(suffix)) continue;
-    if (!hasWhatsAppInbound(lead)) continue;
+    if (!hasWhatsAppInbound(lead) && !lead.optInSource) continue;
     out.push(normalizeLeadForDisplay(lead));
   }
   return out;
@@ -696,6 +718,11 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     engagement,
     convStatus,
     periodDays: periodDaysInput,
+    optInToolId,
+    optInSource,
+    hasPrize,
+    optInDateFrom,
+    optInDateTo,
   } = opts;
 
   const pageNum = parseInt(page, 10) || 1;
@@ -713,6 +740,11 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     stage,
     engagement,
     convStatus,
+    optInToolId,
+    optInSource,
+    hasPrize,
+    optInDateFrom,
+    optInDateTo,
   });
 
   const periodDays = Math.min(Math.max(parseInt(periodDaysInput, 10) || 0, 0), 90);
@@ -895,6 +927,96 @@ async function syncOrderBackedCustomersToAdLeads(clientId) {
   return { created, updated, skipped };
 }
 
+/**
+ * Deduped unified CRM audience — same merge as All Contacts (order-backed + WhatsApp-only).
+ * Used by segment evaluation so counts match Orders / Leads, not raw AdLead duplicates.
+ */
+async function loadUnifiedAudienceForSegments(clientId) {
+  const orderRows = await loadOrderBackedCustomerRows(clientId);
+  const suffixSet = new Set(orderRows.map((r) => r.phoneSuffix).filter(Boolean));
+
+  const adLeadRows = await AdLead.find({
+    clientId,
+    phoneNumber: { $exists: true, $ne: '' },
+  })
+    .select(LEAD_LIST_PROJECTION)
+    .lean();
+
+  const leadBySuffix = new Map();
+  for (const lead of adLeadRows) {
+    const suffix = phoneSuffixKey(lead.phoneNumber);
+    if (!suffix) continue;
+    if (!leadBySuffix.has(suffix)) leadBySuffix.set(suffix, lead);
+  }
+
+  const shopifyMerged = orderRows.map((orderCustomer) =>
+    mergeOrderRowWithLead(orderCustomer, leadBySuffix.get(orderCustomer.phoneSuffix), clientId)
+  );
+
+  const whatsappOnly = await loadWhatsAppOnlyLeadRows(clientId, suffixSet);
+  return [...shopifyMerged, ...whatsappOnly];
+}
+
+function normalizeOptStatusBucket(optStatus) {
+  const s = String(optStatus || '').toLowerCase();
+  if (s === 'opted_out') return 'opted_out';
+  if (s === 'pending') return 'pending';
+  return 'opted_in';
+}
+
+/**
+ * Opt-in KPI totals aligned with order-backed CRM audience (same merge as All Contacts).
+ */
+async function computeUnifiedAudienceOptInStats(clientId) {
+  const orderRows = await loadOrderBackedCustomerRows(clientId);
+  const suffixSet = new Set(orderRows.map((r) => r.phoneSuffix).filter(Boolean));
+
+  const adLeadRows = await AdLead.find({
+    clientId,
+    phoneNumber: { $exists: true, $ne: '' },
+  })
+    .select('phoneNumber optStatus')
+    .lean();
+
+  const leadBySuffix = new Map();
+  for (const lead of adLeadRows) {
+    const suffix = phoneSuffixKey(lead.phoneNumber);
+    if (!suffix) continue;
+    if (!leadBySuffix.has(suffix)) leadBySuffix.set(suffix, lead);
+  }
+
+  const shopifyMerged = orderRows.map((orderCustomer) =>
+    mergeOrderRowWithLead(orderCustomer, leadBySuffix.get(orderCustomer.phoneSuffix), clientId)
+  );
+
+  const whatsappOnly = await loadWhatsAppOnlyLeadRows(clientId, suffixSet);
+  const merged = [...shopifyMerged, ...whatsappOnly];
+
+  let optedIn = 0;
+  let optedOut = 0;
+  let pending = 0;
+  for (const row of merged) {
+    const bucket = normalizeOptStatusBucket(row.optStatus);
+    if (bucket === 'opted_out') optedOut += 1;
+    else if (bucket === 'pending') pending += 1;
+    else optedIn += 1;
+  }
+
+  const totalLeads = merged.length;
+  const effectiveTotal = totalLeads || optedIn + optedOut + pending;
+  const optInRate =
+    effectiveTotal > 0 ? Number(((optedIn / effectiveTotal) * 100).toFixed(1)) : 0;
+
+  return {
+    totalLeads,
+    optedIn,
+    optedOut,
+    pending,
+    optInRate,
+    audienceScope: 'unified',
+  };
+}
+
 module.exports = {
   buildLeadsListQuery,
   fetchLeadsAnalyticsBundle,
@@ -902,4 +1024,6 @@ module.exports = {
   shouldUseOrderBackedAudience,
   resolveAudienceLeadById,
   syncOrderBackedCustomersToAdLeads,
+  computeUnifiedAudienceOptInStats,
+  loadUnifiedAudienceForSegments,
 };

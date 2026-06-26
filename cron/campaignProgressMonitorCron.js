@@ -44,11 +44,16 @@ async function resolveAudience(campaign) {
     const AdLead = require('../models/AdLead');
     const segment = await Segment.findOne({ _id: campaign.segmentId, clientId: campaign.clientId });
     if (segment) {
-      const optQ = audienceOptQueryForCampaign(campaign);
-      const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId, ...optQ })
-        .lean();
-      phones = leads.map((l) => ({
-        phone: l.phoneNumber,
+      const { resolveSegmentAudienceRows } = require('../services/segmentAudienceEvaluation');
+      const { filterAudienceForMarketingOptIn } = require('../utils/commerce/marketingConsent');
+      const audienceRows = await resolveSegmentAudienceRows(campaign.clientId, segment);
+      const filtered = await filterAudienceForMarketingOptIn(
+        campaign.clientId,
+        audienceRows,
+        campaign
+      );
+      phones = (filtered.rows || []).map((l) => ({
+        phone: l.phone || l.phoneNumber,
         email: l.email,
         name: l.name || 'Customer',
         _id: l._id,

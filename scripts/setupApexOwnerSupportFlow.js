@@ -150,6 +150,8 @@ async function run() {
         'billing.isPaidAccount': true,
         'config.serviceMode': 'done_for_you',
         'config.dfyEnabled': true,
+        'commerceBotSettings.checkoutMessage':
+          "Here's your checkout link:\n{{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nReply *menu* anytime for more help.",
       },
       $pull: { visualFlows: { id: FLOW_ID } },
     }
@@ -170,10 +172,17 @@ async function run() {
   const hasWelcomeLogo = nodes.some((n) => n.id === 'n_welcome_logo');
   const eT0 = edges.find((e) => e.id === 'e_t0');
   const mainMenu = nodes.find((n) => n.id === 'n_main_menu');
+  const postCart = nodes.find((n) => n.id === 'n_post_cart');
+  const cartEdges = edges.filter((e) => e.sourceHandle === 'cart');
+  const mainMenuText = String(mainMenu?.data?.text || '');
   const verification = {
     hasWelcomeLogoNode: hasWelcomeLogo,
     entryEdge_e_t0_target: eT0?.target || null,
     mainMenuHasImageUrl: !!(mainMenu?.data && mainMenu.data.imageUrl),
+    hasPostCartNode: !!postCart,
+    cartEdgeCount: cartEdges.length,
+    welcomeHasDuplicateHelpBlock: /Hi! How can we help you today\?/i.test(mainMenuText),
+    mainMenuTextPreview: mainMenuText.slice(0, 120),
   };
 
   console.warn(

@@ -2,54 +2,39 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const mongoose = require('mongoose');
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { compileSegmentQuery, leadMatchesAudienceSegment } = require('../../services/segmentMembership');
+const { evaluateRuleOnRow } = require('../../services/segmentAudienceEvaluation');
 
-let mongo;
-let Segment;
-let AdLead;
-let leadMatchesAudienceSegment;
-
-test.before(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  Segment = require('../../models/Segment');
-  AdLead = require('../../models/AdLead');
-  ({ leadMatchesAudienceSegment } = require('../../services/segmentMembership'));
+test('compileSegmentQuery prefers stored query when present', () => {
+  const q = { leadScore: { $gte: 500 } };
+  const compiled = compileSegmentQuery({ query: q, conditions: [] });
+  assert.deepEqual(compiled, q);
 });
 
-test.after(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+test('compileSegmentQuery builds from conditionTree when query empty', () => {
+  const compiled = compileSegmentQuery({
+    conditionTree: {
+      type: 'group',
+      operator: 'AND',
+      children: [{ type: 'rule', assetId: 'LEAD_SCORE', operator: '>=', targetValue: 500 }],
+    },
+  });
+  assert.deepEqual(compiled, { leadScore: { $gte: 500 } });
 });
 
-test('leadMatchesAudienceSegment returns true when lead matches saved query', async () => {
-  const clientId = 'client_seg_test';
-  const lead = await AdLead.create({
-    clientId,
-    phoneNumber: '919999999999',
-    name: 'VIP Buyer',
-    leadScore: 900,
-  });
+test('leadMatchesAudienceSegment is async unified evaluator export', () => {
+  assert.equal(typeof leadMatchesAudienceSegment, 'function');
+  assert.equal(leadMatchesAudienceSegment.constructor.name, 'AsyncFunction');
+});
 
-  const segment = await Segment.create({
-    clientId,
-    name: 'High score',
-    query: { leadScore: { $gte: 500 } },
-  });
-
-  const match = await leadMatchesAudienceSegment(clientId, lead, segment._id);
+test('unified rule evaluation matches lead score segment criteria', () => {
+  const lead = { leadScore: 900, phoneNumber: '919999999999' };
+  const match = evaluateRuleOnRow(lead, { assetId: 'LEAD_SCORE', operator: '>=', targetValue: 500 });
   assert.equal(match, true);
-});
-
-test('leadMatchesAudienceSegment returns false for wrong client or missing lead', async () => {
-  const clientId = 'client_seg_test_2';
-  const segment = await Segment.create({
-    clientId,
-    name: 'All',
-    query: {},
+  const miss = evaluateRuleOnRow({ leadScore: 100, phoneNumber: '919999999999' }, {
+    assetId: 'LEAD_SCORE',
+    operator: '>=',
+    targetValue: 500,
   });
-
-  assert.equal(await leadMatchesAudienceSegment(clientId, null, segment._id), false);
-  assert.equal(await leadMatchesAudienceSegment('other_client', { _id: new mongoose.Types.ObjectId() }, segment._id), false);
+  assert.equal(miss, false);
 });

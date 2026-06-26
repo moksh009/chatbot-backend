@@ -14,6 +14,7 @@ const LOOKUP = {
   knowledgeDocument: { model: () => require('../../models/KnowledgeDocument'), field: 'clientId' },
   notification: { model: () => require('../../models/Notification'), field: 'clientId' },
   exportJob: { model: () => require('../../models/ExportJob'), field: 'clientId' },
+  optInTool: { model: () => require('../../models/OptInTool'), field: 'clientId' },
 };
 
 async function resolveTargetClientId(req, opts = {}) {

@@ -136,6 +136,42 @@ function resolveAdminEmailRecipients(client = {}) {
   return parseRecipientList(client.adminAlertEmail, client.adminEmail).slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
 }
 
+/** Workspace alert contacts + team inboxes (CLIENT_ADMIN, AGENT, RECEPTIONIST). */
+async function resolveAllAdminEmailRecipients(client = {}, extraCsv = '') {
+  const clientId = client?.clientId;
+  const merged = [...resolveAdminEmailRecipients(client), ...parseRecipientList(extraCsv)];
+  if (clientId) {
+    try {
+      const User = require('../../models/User');
+      const users = await User.find({
+        clientId,
+        email: { $exists: true, $nin: ['', null] },
+        role: { $in: ['CLIENT_ADMIN', 'AGENT', 'RECEPTIONIST'] },
+      })
+        .select('email')
+        .lean();
+      for (const u of users) {
+        const em = String(u.email || '').trim();
+        if (em) merged.push(em);
+      }
+    } catch (err) {
+      log.warn(`[resolveAllAdminEmailRecipients] team lookup failed: ${err.message}`);
+    }
+  }
+  return [...new Set(merged.map((e) => e.toLowerCase()))]
+    .map((lower) => merged.find((e) => e.toLowerCase() === lower))
+    .filter(Boolean)
+    .slice(0, ADMIN_ALERT_MAX_RECIPIENTS);
+}
+
+function sanitizeNotifyChannels(channels) {
+  const list = Array.isArray(channels) ? channels : ['Dashboard'];
+  return list.filter((ch) => {
+    const n = String(ch || '').toLowerCase();
+    return n && n !== 'whatsapp' && n !== 'sms' && n !== 'both';
+  });
+}
+
 async function hydrateClientForAdminAlert(client) {
   if (!client) return null;
   if (typeof client === 'string') {
@@ -168,7 +204,7 @@ const NotificationService = {
    * Dispatches an alert to the configured admin channels.
    *
    * @param {Object} client - The Client document
-   * @param {Object} params - { customerPhone, conversationId, topic, triggerSource, channel?, adminPhoneOverride?, customerQuery?, lead?, skipDedup? }
+   * @param {Object} params - { customerPhone, conversationId, topic, triggerSource, channel?, adminPhoneOverride?, customerQuery?, lead?, skipDedup?, extraEmails? }
    * @returns {Promise<Object>} - Per-channel dispatch results
    */
   async sendAdminAlert(client, {
@@ -181,6 +217,7 @@ const NotificationService = {
     customerQuery = '',
     lead = null,
     skipDedup = false,
+    extraEmails = '',
   }) {
     client = (await hydrateClientForAdminAlert(client)) || client;
     const channel = resolveAdminAlertChannel();
@@ -191,7 +228,8 @@ const NotificationService = {
       return { deduped: true, email: [] };
     }
 
-    const adminEmails = resolveAdminEmailRecipients(client);
+    const extraCsv = Array.isArray(extraEmails) ? extraEmails.join(',') : String(extraEmails || '');
+    const adminEmails = await resolveAllAdminEmailRecipients(client, extraCsv);
 
     const baseUrl = process.env.DASHBOARD_URL || 'https://dash.topedgeai.com';
     const transcriptBundle = await loadRecentChatTranscript(
@@ -355,3 +393,5 @@ const NotificationService = {
 module.exports = NotificationService;
 module.exports.buildTakeoverLink = buildTakeoverLink;
 module.exports.resolveAdminEmailRecipients = resolveAdminEmailRecipients;
+module.exports.resolveAllAdminEmailRecipients = resolveAllAdminEmailRecipients;
+module.exports.sanitizeNotifyChannels = sanitizeNotifyChannels;

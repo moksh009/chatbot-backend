@@ -46,7 +46,6 @@ async function handleTemplateSupportButtonTap({
   if (!client?.clientId || !phone || !convo?._id) return false;
 
   const userText = String(inboundText || "").trim();
-  const DashboardLink = `https://dash.topedgeai.com/conversations?phone=${encodeURIComponent(phone)}`;
   const cartInfo =
     parseInt(lead?.addToCartCount, 10) > 0
       ? `Carts: ${lead.addToCartCount}`
@@ -59,10 +58,11 @@ async function handleTemplateSupportButtonTap({
     await NotificationService.sendAdminAlert(client, {
       customerPhone: phone,
       conversationId: convo._id,
-      topic: "🙋 Customer requested support",
-      triggerSource: `Template button: "${userText}"\n👤 ${lead?.name || "Customer"}\n🛒 ${cartInfo}\n📦 ${orderInfo}\n🔗 ${DashboardLink}`,
+      topic: "Customer requested support",
+      triggerSource: `WhatsApp: "${userText}" · ${cartInfo} · ${orderInfo}`,
       channel: "email",
       customerQuery: userText,
+      lead,
     });
   } catch (err) {
     log.warn(`Admin alert failed for support button: ${err.message}`);

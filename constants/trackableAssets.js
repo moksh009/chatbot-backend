@@ -7,6 +7,41 @@ const TRACKABLE_ASSETS = {
     COMPLIANCE: 'WhatsApp consent'
   },
   ASSETS: {
+    NAME: {
+      id: 'NAME',
+      label: 'Name',
+      category: 'ENGAGEMENT',
+      type: 'TEXT',
+      dbField: 'name',
+    },
+    EMAIL: {
+      id: 'EMAIL',
+      label: 'Email',
+      category: 'ENGAGEMENT',
+      type: 'TEXT',
+      dbField: 'email',
+    },
+    PHONE: {
+      id: 'PHONE',
+      label: 'Phone number',
+      category: 'ENGAGEMENT',
+      type: 'TEXT',
+      dbField: 'phoneNumber',
+    },
+    AOV: {
+      id: 'AOV',
+      label: 'Average order value',
+      category: 'COMMERCE',
+      type: 'COMPUTED_NUMBER',
+      dbField: 'averageOrderValue',
+    },
+    EMAIL_CONSENT: {
+      id: 'EMAIL_CONSENT',
+      label: 'Email marketing consent',
+      category: 'COMPLIANCE',
+      type: 'STRING',
+      dbField: 'channelConsent.email.status',
+    },
     // COMMERCE
     CART_VALUE: {
       id: 'CART_VALUE',
@@ -117,7 +152,70 @@ const TRACKABLE_ASSETS = {
       dbField: 'optStatus',
       /** allowed: opted_in, opted_out, unknown */
     },
+    LEAD_SCORE: {
+      id: 'LEAD_SCORE',
+      label: 'Lead score',
+      category: 'ENGAGEMENT',
+      type: 'NUMBER',
+      dbField: 'leadScore'
+    },
+    HAS_TAG: {
+      id: 'HAS_TAG',
+      label: 'Has tag',
+      category: 'ENGAGEMENT',
+      type: 'STRING',
+      dbField: 'tags'
+    },
+    OPT_IN_SOURCE: {
+      id: 'OPT_IN_SOURCE',
+      label: 'Opt-in source',
+      category: 'COMPLIANCE',
+      type: 'STRING',
+      dbField: 'optInSource',
+    },
+    OPT_IN_TOOL: {
+      id: 'OPT_IN_TOOL',
+      label: 'Opt-in tool',
+      category: 'COMPLIANCE',
+      type: 'STRING',
+      dbField: 'optInToolId',
+    },
+    PRIZE_WON: {
+      id: 'PRIZE_WON',
+      label: 'Prize won',
+      category: 'COMPLIANCE',
+      type: 'TEXT',
+      dbField: 'capturedData.prizeLabel',
+    },
+    HAS_OPT_IN_COUPON: {
+      id: 'HAS_OPT_IN_COUPON',
+      label: 'Has opt-in coupon',
+      category: 'COMPLIANCE',
+      type: 'TEXT',
+      dbField: 'capturedData.optInCouponCode',
+    },
+    OPT_IN_DATE: {
+      id: 'OPT_IN_DATE',
+      label: 'Opt-in date',
+      category: 'COMPLIANCE',
+      type: 'CALCULATED_DAYS',
+      dbField: 'optInDate',
+    },
+    VISITOR_COUNT: {
+      id: 'VISITOR_COUNT',
+      label: 'Store visit count',
+      category: 'COMPLIANCE',
+      type: 'NUMBER',
+      dbField: 'visitorVisitCount',
+    },
   },
+  FREQUENCY_OPERATORS: [
+    { value: 'atleast_once', label: 'At least once' },
+    { value: 'zero_times', label: 'Zero times' },
+    { value: 'atleast_x', label: 'At least X times' },
+    { value: 'exactly_x', label: 'Exactly X times' },
+    { value: 'atmost_x', label: 'At most X times' }
+  ],
   OPERATORS: {
     NUMBER: [
       { value: '>=', label: 'Greater than or equal to' },
@@ -132,8 +230,13 @@ const TRACKABLE_ASSETS = {
       { value: '>=', label: 'More than X days ago' }
     ],
     STRING: [
-      { value: '===', label: 'Equals' }
-    ]
+      { value: '===', label: 'Equals' },
+      { value: '!==', label: 'Does not equal' },
+    ],
+    TEXT: [
+      { value: 'equals', label: 'Equals' },
+      { value: 'contains', label: 'Contains' },
+    ],
   }
 };
 

@@ -363,6 +363,10 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                         log.error('[Warranty] Auto-assignment orders/create failed:', e.message)
                     );
                 }
+                if (client?.clientId) {
+                    const { scheduleSegmentCountRefresh } = require('../services/segmentCountSync');
+                    scheduleSegmentCountRefresh(client.clientId);
+                }
                 break;
             }
             case 'orders/cancelled':

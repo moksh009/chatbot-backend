@@ -7,7 +7,7 @@
 
 /** Product install cards — WA reply buttons max ~20 chars */
 const BTN_GUIDE = [
-  { id: "apex_talk_sup", title: "💬 Contact support" },
+  { id: "apex_talk_sup", title: "🙋 Talk to team" },
   { id: "apex_faq_list", title: "📚 FAQs" },
   { id: "apex_back_menu", title: "🏠 Main menu" },
 ];
@@ -27,48 +27,48 @@ const BTN_OTHER = [
 ];
 
 const T = {
-  hdmi21: `*APEX HDMI 2.1 TV BACKLIGHT (UPTO 90 INCH)*
+  hdmi21: `*Apex HDMI 2.1 TV Backlight (up to 90")*
 
-Here's the complete Installation Guide for this product
+Your install guide: video walkthrough + SmartLife app setup.
 
 📽️ *Video*
 https://youtu.be/b82bLHryIxM?feature=shared
 
-Must download *SmartLife* App.
-*Android:* https://play.google.com/store/apps/details?id=com.tuya.smartlife
-*iOS:* https://apps.apple.com/in/app/smartlife-smart-living/id1115101477`,
-  hdmi20: `*APEX HDMI 2.0 TV BACKLIGHT (UPTO 90 INCH) & APEX HDMI 2.0 TV BACKLIGHT + BAR LIGHT(UPTO 90 INCH)*
+*SmartLife app (required)*
+Android: https://play.google.com/store/apps/details?id=com.tuya.smartlife
+iOS: https://apps.apple.com/in/app/smartlife-smart-living/id1115101477`,
+  hdmi20: `*Apex HDMI 2.0 TV Backlight & 2.0 + Bar Light (up to 90")*
 
-Here's the complete Installation Guide for this product
+Your install guide: video walkthrough + SmartLife app setup.
 
 📽️ *Video*
 https://youtu.be/iPyzkp_guTA?feature=shared
 
-Must download *SmartLife* App.
-*Android:* https://play.google.com/store/apps/details?id=com.tuya.smartlife
-*iOS:* https://apps.apple.com/in/app/smartlife-smart-living/id1115101477`,
+*SmartLife app (required)*
+Android: https://play.google.com/store/apps/details?id=com.tuya.smartlife
+iOS: https://apps.apple.com/in/app/smartlife-smart-living/id1115101477`,
   otherCap: `📋 *Other product — we’re here to help*
 
 We don’t have a *dedicated install guide* for this item yet.
 
 ✍️ Tell us *exactly* what’s going wrong (or what you need) in *one message* below — our team reads every note.`,
-  faq1Intro: `❓ *Quick answers — FAQ pack 1*
+  faq1Intro: `*Quick answers — FAQ pack 1*
 
-Tap a question below — most fixes take under a minute ⏱️`,
-  faq2Intro: `✨ *Still browsing? — FAQ pack 2*
+Tap a question below — most fixes take under a minute.`,
+  faq2Intro: `*More FAQs — pack 2*
 
-More common topics below — you’ve got this 💪`,
-  supportPre: `🛟 *Before we loop in a human…*
+Common topics for sync, HDMI, and PlayStation setup.`,
+  supportPre: `*Need help?*
 
-Most HDMI / strip / app questions are already answered in our FAQs — worth a 10-second peek 👀
+Most HDMI, strip, and app questions are answered in our FAQs — try those first.
 
-✅ *Try this first*
-• Tap *📚 FAQs* — instant answers for sync, Wi‑Fi, cutting, HDMI, PS5 flicker, and more
+*Self-serve*
+Tap *FAQs* for sync, Wi-Fi, cutting, HDMI, and PS5 fixes.
 
-🙋 *Need a person?*
-• Tap *🙋 Talk to team* — we’ll *notify the crew* and pause the bot so a human can reply
+*Human support*
+Tap *Talk to team* — we notify our crew and pause the bot so someone can reply here.
 
-💡 *Pro tip:* add a *photo or short video* after — we solve things faster 📸`,
+Tip: send a photo or short video after — it helps us solve things faster.`,
 };
 
 const FAQ1 = [
@@ -170,7 +170,7 @@ const nodes = [
       interactiveType: "list",
       header: "✨ Apex Light",
       buttonText: "📋 Choose product",
-      text: "📦 *Installation guides*\n\nPick your product below — each option opens the *video + SmartLife* steps we recommend ✨",
+      text: "📦 *Installation guides*\n\nPick your product below — each opens the video and SmartLife steps we recommend.",
       sections: [
         {
           title: "📺 Your model",
@@ -230,7 +230,7 @@ const nodes = [
     data: {
       label: "Other — thanks + actions",
       interactiveType: "button",
-      text: "Thanks ✨ — we’ve got your note. Need anything else? Tap below 👇",
+      text: "Thanks — we've got your note. Need anything else? Tap below.",
       buttonsList: BTN_OTHER,
       heatmapCount: 0,
     },
@@ -301,19 +301,19 @@ const edges = [
   { id: "e_btn_install", source: "n_main_menu", sourceHandle: "btn_install", target: "n_install_menu" },
   { id: "e_tv_inst", source: "n_tv_cta", sourceHandle: "tv_install", target: "n_install_menu" },
   { id: "e_btn_support", source: "n_main_menu", sourceHandle: "btn_support", target: "n_support_pre" },
-  { id: "e_tv_sup", source: "n_tv_cta", sourceHandle: "tv_support", target: "n_support_pre" },
+  { id: "e_tv_sup", source: "n_tv_cta", sourceHandle: "tv_support", target: "n_admin_alert" },
   { id: "e_ff_support", source: "n_footer", sourceHandle: "f_support", target: "n_support_pre" },
   { id: "e_pi_mon", source: "n_monitor_cta", sourceHandle: "mon_pi", target: "n_install_menu" },
   { id: "e_pi_gov", source: "n_govee_cta", sourceHandle: "gov_pi", target: "n_install_menu" },
   { id: "e_pi_fl", source: "n_floor_cta", sourceHandle: "fl_pi", target: "n_install_menu" },
   { id: "e_pi_gm", source: "n_gaming_cta", sourceHandle: "gm_pi", target: "n_install_menu" },
   { id: "e_pi_st", source: "n_strip_cta", sourceHandle: "st_pi", target: "n_install_menu" },
-  { id: "e_ps_mon", source: "n_monitor_cta", sourceHandle: "mon_ps", target: "n_support_pre" },
-  { id: "e_ps_gov", source: "n_govee_cta", sourceHandle: "gov_ps", target: "n_support_pre" },
-  { id: "e_ps_fl", source: "n_floor_cta", sourceHandle: "fl_ps", target: "n_support_pre" },
-  { id: "e_ps_gm", source: "n_gaming_cta", sourceHandle: "gm_ps", target: "n_support_pre" },
-  { id: "e_ps_st", source: "n_strip_cta", sourceHandle: "st_ps", target: "n_support_pre" },
-  { id: "e_other_sup", source: "n_other_products", sourceHandle: "other_support", target: "n_support_pre" },
+  { id: "e_ps_mon", source: "n_monitor_cta", sourceHandle: "mon_ps", target: "n_admin_alert" },
+  { id: "e_ps_gov", source: "n_govee_cta", sourceHandle: "gov_ps", target: "n_admin_alert" },
+  { id: "e_ps_fl", source: "n_floor_cta", sourceHandle: "fl_ps", target: "n_admin_alert" },
+  { id: "e_ps_gm", source: "n_gaming_cta", sourceHandle: "gm_ps", target: "n_admin_alert" },
+  { id: "e_ps_st", source: "n_strip_cta", sourceHandle: "st_ps", target: "n_admin_alert" },
+  { id: "e_other_sup", source: "n_other_products", sourceHandle: "other_support", target: "n_admin_alert" },
   { id: "e_inst_hdmi21", source: "n_install_menu", sourceHandle: "inst_hdmi21", target: "n_inst_hdmi21_card" },
   { id: "e_inst_hdmi20", source: "n_install_menu", sourceHandle: "inst_hdmi20", target: "n_inst_hdmi20_card" },
   { id: "e_inst_other", source: "n_install_menu", sourceHandle: "inst_other", target: "n_inst_other_capture" },
@@ -334,7 +334,7 @@ for (const row of FAQ1) {
   });
   edges.push(
     { id: `e_fa_${row.id}_faq`, source: `n_faq_a_${row.id}`, sourceHandle: "apex_faq_list", target: "n_faq_list_1" },
-    { id: `e_fa_${row.id}_sup`, source: `n_faq_a_${row.id}`, sourceHandle: "apex_talk_sup", target: "n_support_pre" },
+    { id: `e_fa_${row.id}_sup`, source: `n_faq_a_${row.id}`, sourceHandle: "apex_talk_sup", target: "n_admin_alert" },
     { id: `e_fa_${row.id}_mm`, source: `n_faq_a_${row.id}`, sourceHandle: "apex_back_menu", target: "n_main_menu" }
   );
 }
@@ -348,20 +348,20 @@ for (const row of FAQ2) {
   });
   edges.push(
     { id: `e_fb_${row.id}_faq`, source: `n_faq_b_${row.id}`, sourceHandle: "apex_faq_list", target: "n_faq_list_1" },
-    { id: `e_fb_${row.id}_sup`, source: `n_faq_b_${row.id}`, sourceHandle: "apex_talk_sup", target: "n_support_pre" },
+    { id: `e_fb_${row.id}_sup`, source: `n_faq_b_${row.id}`, sourceHandle: "apex_talk_sup", target: "n_admin_alert" },
     { id: `e_fb_${row.id}_mm`, source: `n_faq_b_${row.id}`, sourceHandle: "apex_back_menu", target: "n_main_menu" }
   );
 }
 
 edges.push(
-  { id: "e_f2_19", source: "n_faq_list_2", sourceHandle: "faq_r19_support", target: "n_support_pre" },
+  { id: "e_f2_19", source: "n_faq_list_2", sourceHandle: "faq_r19_support", target: "n_admin_alert" },
   { id: "e_f2_20", source: "n_faq_list_2", sourceHandle: "faq_r20_menu", target: "n_main_menu" }
 );
 
 for (const id of ["n_inst_hdmi21_card", "n_inst_hdmi20_card", "n_inst_other_after"]) {
   edges.push(
     { id: `e_${id}_faq`, source: id, sourceHandle: "apex_faq_list", target: "n_faq_list_1" },
-    { id: `e_${id}_sup`, source: id, sourceHandle: "apex_talk_sup", target: "n_support_pre" },
+    { id: `e_${id}_sup`, source: id, sourceHandle: "apex_talk_sup", target: "n_admin_alert" },
     { id: `e_${id}_mm`, source: id, sourceHandle: "apex_back_menu", target: "n_main_menu" }
   );
 }

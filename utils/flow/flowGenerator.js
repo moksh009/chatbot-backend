@@ -2164,6 +2164,7 @@ function buildSupportBranch(ctx, IDS, content) {
           "Connecting you with our team on WhatsApp. Please stay on this chat — an agent will reply shortly.",
         flowTerminal: true,
         suppressAIFallbackLink: true,
+        notifyChannels: F.enableAdminAlerts ? ["Dashboard"] : ["Email", "Dashboard"],
         heatmapCount: 0,
       } }
   );
