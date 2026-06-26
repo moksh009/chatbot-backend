@@ -217,4 +217,5 @@ run()
     try {
       await mongoose.disconnect();
     } catch (_) {}
+    process.exit(process.exitCode || 0);
   });

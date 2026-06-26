@@ -398,7 +398,18 @@ router.post('/simulate', protect, async (req, res) => {
           edgeUsed = outgoingEdges[0] || null;
         }
       } else if (currentNode?.type === 'warranty_check' || currentNode?.type === 'warranty_lookup') {
-        edgeUsed = null;
+        const warrantyDone =
+          String(updatedVariables?.last_warranty_lookup_found || '').toLowerCase() === 'true' ||
+          String(updatedVariables?.warranty_scenario || '').trim() !== '';
+        if (warrantyDone) {
+          edgeUsed =
+            outgoingEdges.find((e) => {
+              const h = String(e.sourceHandle || '').toLowerCase();
+              return !h || ['bottom', 'output', 'default', 'a'].includes(h);
+            }) || outgoingEdges[0] || null;
+        } else {
+          edgeUsed = null;
+        }
       } else if (currentNode?.type === 'capture_input' || currentNode?.type === 'CaptureNode') {
         const varName = String(currentNode.data?.variable || 'last_input').replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim() || 'last_input';
         updatedVariables[varName] = userInput;
@@ -921,27 +932,11 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
       setCachedFlowGraph(clientId, flowId, flowPayload);
     }
 
-    const { applyCanvasLayout } = require('../utils/flow/flowLayoutOrganize');
-    const { persistFlowCanvasGraph } = require('../utils/flow/flowLayoutPersist');
-    const layout = applyCanvasLayout(flowPayload.nodes || [], flowPayload.edges || [], {
-      keepPositions: true,
-      addEntryEdges: true,
-      stampSections: true,
-    });
-    const displayNodes = layout.nodes;
-    const displayEdges = layout.edges;
+    const { countOrphanLayoutNodes } = require('../utils/flow/flowLayoutOrganize');
+    const displayNodes = flowPayload.nodes || [];
+    const displayEdges = flowPayload.edges || [];
     const flatCount = flattenFlowNodes(displayNodes).length;
-
-    if (layout.layoutApplied && layout.orphansBefore > 0) {
-      persistFlowCanvasGraph(clientId, flowId, displayNodes, displayEdges, {
-        name: flowPayload.name,
-        platform: flowPayload.platform,
-        status: flowPayload.status,
-        layoutSpecVersion: layout.layoutSpecVersion,
-      })
-        .then(() => clearClientCache(clientId))
-        .catch((err) => console.warn('[Flow API] layout persist:', err?.message));
-    }
+    const orphansBefore = countOrphanLayoutNodes(displayNodes);
 
     res.json({
       success: true,
@@ -957,9 +952,9 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         edges: displayEdges,
         nodeCount: flatCount || displayNodes.length,
         edgeCount: displayEdges.length,
-        layoutSpecVersion: layout.layoutSpecVersion,
-        layoutOrganized: layout.layoutApplied,
-        orphansBeforeLayout: layout.orphansBefore,
+        layoutSpecVersion: flowPayload.layoutSpecVersion || null,
+        layoutOrganized: !!flowPayload.layoutOrganized,
+        orphansBeforeLayout: orphansBefore,
         createdAt: flowPayload.createdAt,
         updatedAt: flowPayload.updatedAt,
         lastSyncedAt: flowPayload.lastSyncedAt,

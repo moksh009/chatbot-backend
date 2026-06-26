@@ -1601,14 +1601,13 @@ function buildFlow() {
   },
   {
     "id": "n_order",
-    "type": "order_action",
+    "type": "shopify_call",
     "position": {
       "x": 1120,
       "y": 200
     },
     "data": {
       "label": "Order status",
-      "actionType": "CHECK_ORDER_STATUS",
       "action": "CHECK_ORDER_STATUS"
     }
   },
@@ -2554,8 +2553,21 @@ function buildFlow() {
     "target": "n_service_menu"
   },
   {
-    "id": "e_ord_f",
+    "id": "e_ord_ok",
     "source": "n_order",
+    "sourceHandle": "success",
+    "target": "n_footer"
+  },
+  {
+    "id": "e_ord_nf",
+    "source": "n_order",
+    "sourceHandle": "not_found",
+    "target": "n_footer"
+  },
+  {
+    "id": "e_ord_err",
+    "source": "n_order",
+    "sourceHandle": "error",
     "target": "n_footer"
   },
   {

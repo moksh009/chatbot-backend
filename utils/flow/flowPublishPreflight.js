@@ -1,4 +1,4 @@
-const { normalizeNodeType } = require('./flowNodeContract');
+const { normalizeNodeType, isV1ForbiddenNodeType } = require('./flowNodeContract');
 const { validateFlowNode } = require('../core/validator');
 const { lintCopyInFlow } = require('./flowCopyLint');
 const { analyzeFlowGraph } = require('./flowStaticAnalysis');
@@ -128,11 +128,23 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
 
   // Node-level validation (templates, interactivity limits, captures, etc.)
   safeNodes.forEach((node) => {
+    const type = normalizeNodeType(node?.type);
+
+    if (isV1ForbiddenNodeType(type)) {
+      errors.push({
+        code: 'V1_FORBIDDEN_TYPE',
+        severity: 'block',
+        nodeId: node.id,
+        message: `Node type "${type}" is not supported in V1 (node "${node?.id || ''}").`,
+        fix: 'Remove this node before publishing.',
+      });
+      return;
+    }
+
     const res = validateFlowNode(node, client);
     if (res?.errors?.length) errors.push(...res.errors);
     if (res?.warnings?.length) warnings.push(...res.warnings);
 
-    const type = normalizeNodeType(node?.type);
     if (type === 'review') {
       if (!hasHandle(node.id, 'positive') || !hasHandle(node.id, 'negative')) {
         errors.push({

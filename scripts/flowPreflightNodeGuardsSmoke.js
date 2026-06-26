@@ -46,7 +46,22 @@ function run() {
       { id: "e2", source: "review_1", sourceHandle: "positive", target: "after" },
     ],
   });
-  assert(hasErrorCode(reviewBad, "REVIEW_BRANCH_MISSING"), "Expected review branch validation error");
+  assert(hasErrorCode(reviewBad, "V1_FORBIDDEN_TYPE"), "Expected V1 forbidden type for review");
+
+  const paymentBad = preflightValidateFlowGraph({
+    ...base,
+    nodes: [
+      { id: "trigger_1", type: "trigger", data: {} },
+      { id: "pay_1", type: "payment_link", data: {} },
+      { id: "after", type: "message", data: { text: "after" } },
+    ],
+    edges: [{ id: "e1", source: "trigger_1", target: "pay_1" }],
+  });
+  assert(hasErrorCode(paymentBad, "V1_FORBIDDEN_TYPE"), "Expected V1 forbidden type for payment_link");
+  assert(
+    paymentBad.errors.some((e) => e.severity === "block"),
+    "Expected V1 forbidden errors to be tier block"
+  );
 
   const warrantyBad = preflightValidateFlowGraph({
     ...base,
@@ -86,29 +101,26 @@ function run() {
     ...base,
     nodes: [
       { id: "trigger_1", type: "trigger", data: {} },
-      { id: "review_1", type: "review", data: {} },
       { id: "w_1", type: "warranty_check", data: {} },
       { id: "menu", type: "message", data: { text: "Menu" } },
     ],
     edges: [
-      { id: "e1", source: "trigger_1", target: "review_1" },
-      { id: "e4", source: "review_1", sourceHandle: "positive", target: "w_1" },
-      { id: "e5", source: "review_1", sourceHandle: "negative", target: "w_1" },
+      { id: "e1", source: "trigger_1", target: "w_1" },
       { id: "e6", source: "w_1", sourceHandle: "bottom", target: "menu" },
     ],
   });
-  assert(good.valid === true, "Expected valid graph for review/warranty guards");
+  assert(good.valid === true, "Expected valid graph for warranty guards");
 
   console.log("Flow Preflight Node Guards Smoke Pass");
   console.log("--------------------------------");
   console.log("PASS: Loyalty nodes rejected");
-  console.log("PASS: Review node branch validation");
+  console.log("PASS: V1 forbidden types blocked (review, payment_link)");
   console.log("PASS: Warranty node output validation");
   console.log("PASS: Valid graph passes preflight");
   console.log("--------------------------------");
   console.log("PASS: Warranty legacy-only edges rejected");
   console.log("--------------------------------");
-  console.log("All 5 checks passed.");
+  console.log("All 6 checks passed.");
 }
 
 run();

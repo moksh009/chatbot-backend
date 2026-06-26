@@ -19,20 +19,10 @@ function assert(cond, msg) {
   }
 }
 
-function walkChain(edges, startId, handleSequence) {
-  let cur = startId;
-  for (const h of handleSequence) {
-    const e = edges.find((x) => x.source === cur && (!h || String(x.sourceHandle || "") === h));
-    assert(e, `no edge from ${cur} with handle ${h}`);
-    cur = e.target;
-  }
-  return cur;
-}
-
 async function main() {
   const client = {
     clientId: "smoke_test_client",
-    wizardFeatures: {},
+    wizardFeatures: { enableOrderTracking: true, enableCancelOrder: true },
     platformVars: { brandName: "Smoke Brand" },
   };
   const { nodes, edges } = await generateEcommerceFlow(client, {
@@ -42,34 +32,49 @@ async function main() {
 
   assert(nodes.length > 5 && edges.length > 5, "flow should have nodes and edges");
 
-  const ordTrack = nodes.find((n) => String(n.id).includes("ord_track"));
-  const ordHub = nodes.find((n) => String(n.id).includes("ord_hub"));
-  const canConfirm = nodes.find((n) => String(n.id).includes("can_confirm"));
+  const ordAsk = nodes.find((n) => String(n.id).includes("ord_ask"));
+  const ordTrack = nodes.find(
+    (n) => String(n.id).includes("ord_track") && !String(n.id).includes("retry")
+  );
+  const ordStatus = nodes.find((n) => String(n.id).includes("ord_status_msg"));
+  const canFlowAsk = nodes.find((n) => String(n.id).includes("can_flow_ask"));
   const canLogic = nodes.find((n) => String(n.id).includes("can_logic"));
-  const canReason = nodes.find((n) => String(n.id).includes("can_reason"));
-  const canAction = nodes.find((n) => String(n.id).includes("can_action"));
+  const canReason = nodes.find((n) => String(n.id).includes("can_flow_reason"));
+  const canPostCancel =
+    nodes.find((n) => String(n.id).includes("can_flow_alert")) ||
+    nodes.find((n) => String(n.id).includes("can_flow_done"));
   const mainMenu = nodes.find((n) => String(n.id).includes("main_menu"));
 
-  assert(ordTrack && ordHub && canConfirm && canLogic && canReason && canAction && mainMenu, "expected order/cancel nodes present");
+  assert(
+    ordAsk &&
+      ordTrack &&
+      ordStatus &&
+      canFlowAsk &&
+      canLogic &&
+      canReason &&
+      canPostCancel &&
+      mainMenu,
+    "expected order/cancel nodes present"
+  );
 
-  // track → status message → hub (default edge, no handle)
-  let cur = ordTrack.id;
-  const toStatus = edges.find((e) => e.source === cur && e.sourceHandle === "success");
-  assert(toStatus, "ord_track success → status");
-  cur = toStatus.target;
-  const toHub = edges.find((e) => e.source === cur && e.target === ordHub.id);
-  assert(toHub, "status → ord_hub");
+  // Track: ask → shopify lookup → status message on success
+  const askToTrack = edges.find((e) => e.source === ordAsk.id && e.target === ordTrack.id);
+  assert(askToTrack, "ord_ask → ord_track");
+  const toStatus = edges.find((e) => e.source === ordTrack.id && e.sourceHandle === "success");
+  assert(toStatus && toStatus.target === ordStatus.id, "ord_track success → status");
 
-  // cancel → confirm → logic (yes)
-  cur = walkChain(edges, ordHub.id, ["cancel", "yes", "false"]);
-  assert(cur === canReason.id, `expected can_reason after shipped=false, got ${cur}`);
+  // Cancel: shipped gate → shipped bubble or choice list
+  const toShipped = edges.find((e) => e.source === canLogic.id && e.sourceHandle === "true");
+  const toChoice = edges.find((e) => e.source === canLogic.id && e.sourceHandle === "false");
+  assert(toShipped && String(toShipped.target).includes("can_flow_shipped"), "can_logic true → shipped");
+  assert(toChoice && String(toChoice.target).includes("can_flow_choice"), "can_logic false → choice");
 
-  const toAction = edges.find((e) => e.source === canReason.id);
-  assert(toAction && toAction.target === canAction.id, "reason → cancel action");
+  const toPostCancel = edges.find((e) => e.source === canReason.id);
+  assert(toPostCancel && toPostCancel.target === canPostCancel.id, "reason → cancel admin/done");
 
-  // Stale tap: lastStep at main menu, user taps "cancel" from old order hub bubble
-  const staleCancel = findInteractiveEdgeForButtonAcrossGraph(nodes, edges, "cancel", mainMenu.id);
-  assert(staleCancel && staleCancel.target === canConfirm.id, "cross-step cancel routes to confirm");
+  // Stale tap: lastStep at main menu, user taps cancel row from an older menu bubble
+  const staleCancel = findInteractiveEdgeForButtonAcrossGraph(nodes, edges, "mnu_cancel", mainMenu.id);
+  assert(staleCancel && staleCancel.target === canFlowAsk.id, "cross-step mnu_cancel routes to cancel ask");
 
   const staleMenu = findInteractiveEdgeForButtonAcrossGraph(nodes, edges, "menu", canLogic.id);
   assert(staleMenu && String(staleMenu.target).includes("main_menu"), "cross-step menu reaches main menu");

@@ -12,6 +12,7 @@ const {
   buildScenarioOneBody,
   buildScenarioFiveBody,
   buildListRows,
+  buildSimulatorWarrantyPreview,
   isMenuSelection,
   isListMoreSelection,
   MENU_BUTTON_ID,
@@ -145,5 +146,53 @@ describe("warrantyFlowLookup", () => {
     assert.equal(isMenuSelection({ buttonId: MENU_BUTTON_ID }), true);
     assert.equal(isMenuSelection({ buttonTitle: "Menu" }), true);
     assert.equal(isListMoreSelection({ buttonId: LIST_MORE_ID }), true);
+  });
+});
+
+describe("buildSimulatorWarrantyPreview", () => {
+  const phone = "+919876543210";
+
+  it("preview for no_customer (scenario 4/5 — profile missing)", () => {
+    const body = buildSimulatorWarrantyPreview({ displayPhone: phone }, "no_customer");
+    assert.match(body, /Phone number checked/);
+    assert.match(body, /Menu/);
+  });
+
+  it("preview for orders_no_warranty (scenario 3)", () => {
+    const body = buildSimulatorWarrantyPreview(
+      { displayPhone: phone, ordersWithWarranty: [] },
+      "orders_no_warranty"
+    );
+    assert.match(body, /Registered Number for Warranty Check/);
+  });
+
+  it("preview for multi_order (scenario 2)", () => {
+    const profile = {
+      displayPhone: phone,
+      ordersWithWarranty: [
+        { orderDisplay: "#1001", items: [{ productName: "A", status: "Active", duration: "1 Year" }] },
+        { orderDisplay: "#1002", items: [{ productName: "B", status: "Active", duration: "1 Year" }] },
+      ],
+    };
+    const body = buildSimulatorWarrantyPreview(profile, "multi_order");
+    assert.match(body, /Multiple orders/);
+    assert.match(body, /#1001/);
+    assert.match(body, /interactive list/i);
+  });
+
+  it("preview for single active warranty (scenario 1)", () => {
+    const profile = {
+      displayPhone: phone,
+      ordersWithWarranty: [
+        {
+          orderDisplay: "#1042",
+          items: [{ productName: "Shirt", status: "Active", duration: "1 Year" }],
+        },
+      ],
+    };
+    const body = buildSimulatorWarrantyPreview(profile, "single_order_single_item");
+    assert.match(body, /#1042/);
+    assert.match(body, /Shirt/);
+    assert.match(body, /Status:/);
   });
 });

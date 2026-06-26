@@ -65,13 +65,21 @@ const V1_PALETTE_ONLY_TYPES = new Set([
   'cod_prepaid',
 ]);
 
-/** Deprecated — validator blocks publish; migrate to message/equivalent. */
+/** Deprecated — validator blocks publish; render read-only in studio. */
 const V1_FORBIDDEN_NODE_TYPES = new Set([
   'review',
   'order_action',
   'payment_link',
   'cod_prepaid',
 ]);
+
+/**
+ * Legacy type statuses (not in V1 shippable set):
+ * - deprecated_readonly: payment_link, review, order_action
+ * - runtime_only: segment, sequence (no palette; render if present)
+ * - editor_only: sticky (stripped on publish)
+ * - migrated: image → message (sendImage)
+ */
 
 /** Legacy superset for normalization of old graphs. */
 const CANONICAL_NODE_TYPES = new Set([

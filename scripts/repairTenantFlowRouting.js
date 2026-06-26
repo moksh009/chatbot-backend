@@ -10,6 +10,7 @@
  * Usage:
  *   MONGODB_URI=... node scripts/repairTenantFlowRouting.js delitech_smarthomes
  *   MONGODB_URI=... node scripts/repairTenantFlowRouting.js --clientId=shubhampatelsbusiness_1cfb2b
+ *   node scripts/repairTenantFlowRouting.js delitech_smarthomes --flowId=flow_wizard_1781340681165_0_main_commerce
  *   node scripts/repairTenantFlowRouting.js delitech_smarthomes --dry-run
  */
 
@@ -29,6 +30,12 @@ function resolveClientId() {
   if (arg) return arg.split("=").slice(1).join("=").trim();
   const positional = process.argv.find((a) => !a.startsWith("-") && a !== process.argv[0] && a !== process.argv[1]);
   return positional || process.env.REPAIR_CLIENT_ID || "delitech_smarthomes";
+}
+
+function resolveFlowId() {
+  const arg = process.argv.find((a) => a.startsWith("--flowId="));
+  if (arg) return arg.split("=").slice(1).join("=").trim();
+  return process.env.REPAIR_FLOW_ID || "";
 }
 
 function graphFromWaDoc(doc) {
@@ -62,7 +69,17 @@ function graphFromVf(vf) {
   return null;
 }
 
-function pickBestGraph(sources) {
+function graphFromWaFlowId(sources, flowId) {
+  if (!flowId) return null;
+  const doc = sources.whatsappFlows.find((f) => String(f.flowId) === String(flowId));
+  const g = graphFromWaDoc(doc);
+  return g ? { ...g, from: "whatsapp_flowId" } : null;
+}
+
+function pickBestGraph(sources, { flowIdHint = "" } = {}) {
+  const hinted = graphFromWaFlowId(sources, flowIdHint);
+  if (hinted) return hinted;
+
   const published = sources.whatsappFlows.find((f) => f.status === "PUBLISHED");
   const fromPub = graphFromWaDoc(published);
   if (fromPub) return { ...fromPub, from: "whatsapp_published" };
@@ -70,6 +87,17 @@ function pickBestGraph(sources) {
   const activeVf = sources.visualFlows.find((f) => f.isActive);
   const fromActiveVf = graphFromVf(activeVf);
   if (fromActiveVf) return { ...fromActiveVf, from: "visual_active" };
+
+  const fromActiveVfWa = graphFromWaFlowId(sources, activeVf?.id);
+  if (fromActiveVfWa) return { ...fromActiveVfWa, from: "visual_active_wa" };
+
+  const waCandidates = sources.whatsappFlows
+    .map((doc) => ({ doc, g: graphFromWaDoc(doc) }))
+    .filter((x) => x.g?.nodes?.length)
+    .sort((a, b) => (b.g.nodes.length || 0) - (a.g.nodes.length || 0));
+  if (waCandidates[0]) {
+    return { ...waCandidates[0].g, from: "whatsapp_largest" };
+  }
 
   for (const doc of sources.whatsappFlows) {
     const g = graphFromWaDoc(doc);
@@ -101,6 +129,7 @@ function pickBestGraph(sources) {
 
 async function run() {
   const clientId = resolveClientId();
+  const flowIdHint = resolveFlowId();
   const dryRun = process.argv.includes("--dry-run");
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
   if (!uri) throw new Error("MONGODB_URI required");
@@ -110,7 +139,7 @@ async function run() {
   if (!client) throw new Error(`Client not found: ${clientId}`);
 
   const sources = await loadClientFlowSources(clientId);
-  const best = pickBestGraph(sources);
+  const best = pickBestGraph(sources, { flowIdHint });
   if (!best?.nodes?.length) {
     console.error(`[repair] No flow graph found for ${clientId}. Run setup script or import flows first.`);
     process.exit(1);
@@ -183,6 +212,7 @@ async function run() {
 
   console.log(`[repair] Done. Published flowId=${flowId}. Restart API and send "hi" on WhatsApp to verify.`);
   await mongoose.disconnect();
+  process.exit(0);
 }
 
 run().catch((e) => {

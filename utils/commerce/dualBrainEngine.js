@@ -3863,6 +3863,25 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   // 10. Intent Trigger Node (Execution part)
+  if (node.type === 'story_mention') {
+    const nextEdge = flowEdges.find((e) => e.source === nodeId);
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
+    return true;
+  }
+
   if (node.type === 'intent_trigger') {
       // Usually an entry point, but if reached in flow, we just proceed.
       const nextEdge = flowEdges.find(e => e.source === nodeId);
@@ -4685,7 +4704,8 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // HTTP Request Node — with success/error edge routing
   if (node.type === 'http_request' || node.type === 'HttpRequestNode') {
-    const { url, method, body, variable, headers: customHeaders } = node.data;
+    const { url, method, body: rawBody, bodyJSON, variable, headers: customHeaders } = node.data;
+    const body = rawBody || bodyJSON;
     let httpSuccess = false;
     try {
       const resolvedUrl = replaceVariables(url, client, lead, convo);
@@ -5078,7 +5098,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         data.header,
         data.body || data.text,
         data.flowId,
-        data.buttonLabel || data.flowCta,
+        data.buttonLabel || data.flowButtonText || data.flowCta || 'Open Flow',
         data.screen
       );
     }
@@ -5313,8 +5333,50 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
       try {
-        let subject = replaceVariables(data.subject || 'Update', client, lead, convo);
-        let emailBody = replaceVariables(data.body || '', client, lead, convo);
+        let subject = data.subject || 'Update';
+        let emailBody = data.body || '';
+
+        const templateId = String(data.templateId || '').trim();
+        if (templateId) {
+          try {
+            const mongoose = require('mongoose');
+            const { PREBUILT_ORDER_EMAIL_TEMPLATES } = require('../../constants/prebuiltOrderEmailTemplates');
+            const { getEmailTemplate } = require('../../services/emailTemplateService');
+            const EmailTemplate = require('../../models/EmailTemplate');
+            const prebuilt = PREBUILT_ORDER_EMAIL_TEMPLATES[templateId];
+            if (prebuilt) {
+              subject = prebuilt.subject || subject;
+              emailBody = prebuilt.bodyHtml || emailBody;
+            } else if (mongoose.Types.ObjectId.isValid(templateId)) {
+              const tpl = await getEmailTemplate(client.clientId, templateId);
+              if (tpl) {
+                subject = tpl.subject || subject;
+                emailBody = tpl.content || tpl.bodyHtml || emailBody;
+              } else {
+                log.warn(`[Email] templateId ${templateId} not found — using node subject/body`);
+              }
+            } else {
+              const row = await EmailTemplate.findOne({
+                clientId: client.clientId,
+                legacyLocalId: templateId,
+                isActive: true,
+              })
+                .select('subject bodyHtml')
+                .lean();
+              if (row) {
+                subject = row.subject || subject;
+                emailBody = row.bodyHtml || emailBody;
+              } else {
+                log.warn(`[Email] templateId ${templateId} not found — using node subject/body`);
+              }
+            }
+          } catch (tplErr) {
+            log.warn(`[Email] template resolve failed for ${templateId}: ${tplErr.message}`);
+          }
+        }
+
+        subject = replaceVariables(subject, client, lead, convo);
+        emailBody = replaceVariables(emailBody, client, lead, convo);
         await emailService.sendEmail(client, {
           to: recipient,
           subject,

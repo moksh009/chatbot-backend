@@ -159,6 +159,7 @@ async function run() {
   }
 
   await mongoose.disconnect();
+  process.exit(0);
 }
 
 run().catch((e) => {

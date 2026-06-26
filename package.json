@@ -14,6 +14,7 @@
     "repair:deps": "bash scripts/repair-prod-deps.sh --no-restart",
     "smoke:template-eligibility": "node scripts/templateEligibilitySmokePass.js",
     "smoke:flow-preflight-guards": "node scripts/flowPreflightNodeGuardsSmoke.js",
+    "smoke:flow-overhaul": "npm run flow-regression && npm run smoke:flow-preflight-guards && node --test tests/warrantyFlowLookup.test.js tests/commerce/orderLookupService.test.js",
     "dry-run:review-pipeline": "node scripts/reviewPipelineDryRun.js",
     "test:catalog-menu": "node tests/catalogMenuBuilder.test.js",
     "test:settings-sync": "node tests/settingsSyncMapper.test.js",

@@ -46,10 +46,27 @@ async function publishFlowForClient({
 
   const publishWarnings = [...(migration.warnings || []), ...(preflight.warnings || [])];
 
-  if (!preflight.valid && !forcePublish) {
+  const blockErrors = (preflight.errors || []).filter((e) => e.severity === 'block');
+  const bypassableErrors = (preflight.errors || []).filter((e) => e.severity !== 'block');
+
+  if (blockErrors.length > 0) {
+    const summary = blockErrors
+      .map((e) => `${e.nodeId || 'node'} (${e.code || 'block'})`)
+      .join(', ');
+    const err = new Error(
+      `This flow contains node types not supported in V1. Remove these nodes before publishing: ${summary}`
+    );
+    err.status = 400;
+    err.errors = blockErrors;
+    err.warnings = publishWarnings;
+    err.blocked = true;
+    throw err;
+  }
+
+  if (bypassableErrors.length > 0 && !forcePublish) {
     const err = new Error('Flow publish blocked: validation failed.');
     err.status = 400;
-    err.errors = preflight.errors;
+    err.errors = bypassableErrors;
     err.warnings = publishWarnings;
     throw err;
   }

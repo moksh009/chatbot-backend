@@ -14,6 +14,45 @@ const WhatsAppFlow = require("../../models/WhatsAppFlow");
 const { sanitizeFlowNodesMedia } = require('./sanitizeFlowMedia');
 const { normalizeFlowNodes } = require('./normalizeFlowVariables');
 
+/** Migrate legacy node types / field names on graph load. */
+function migrateLegacyNodeTypes(nodes) {
+  if (!Array.isArray(nodes)) return nodes;
+  return nodes.map((node) => {
+    if (!node) return node;
+
+    if (node.type === 'image') {
+      const caption = node.data?.caption || node.data?.text || node.data?.body || '';
+      return {
+        ...node,
+        type: 'message',
+        data: {
+          ...(node.data || {}),
+          text: caption,
+          body: caption,
+          imageUrl: node.data?.imageUrl || '',
+          sendImage: true,
+          label: node.data?.label || 'Message',
+        },
+      };
+    }
+
+    if (node.type === 'http_request' || node.type === 'HttpRequestNode') {
+      const data = { ...(node.data || {}) };
+      if (!String(data.body || '').trim() && String(data.bodyJSON || '').trim()) {
+        data.body = data.bodyJSON;
+      }
+      delete data.bodyJSON;
+      return { ...node, data };
+    }
+
+    return node;
+  });
+}
+
+function normalizeGraphNodes(nodes) {
+  return migrateLegacyNodeTypes(normalizeFlowNodes(sanitizeFlowNodesMedia(nodes)));
+}
+
 const RUNTIME_SKIP_NODE_TYPES = new Set(["folder", "group", "sticky", "StickyNote"]);
 
 function flattenFlowNodes(nodes) {
@@ -49,7 +88,7 @@ function pickGraphFromFlowDoc(doc) {
   if (!rawNodes?.length) return null;
   const rawEdges = pubEdges || doc.edges || [];
   return {
-    nodes: normalizeFlowNodes(sanitizeFlowNodesMedia(rawNodes)),
+    nodes: normalizeGraphNodes(rawNodes),
     edges: rawEdges,
     status: doc.status || "DRAFT",
     fromPublished: !!pubNodes?.length,
@@ -59,7 +98,7 @@ function pickGraphFromFlowDoc(doc) {
 function pickGraphFromVisualEntry(vf) {
   if (!vf?.nodes?.length) return null;
   return {
-    nodes: normalizeFlowNodes(sanitizeFlowNodesMedia(vf.nodes)),
+    nodes: normalizeGraphNodes(vf.nodes),
     edges: vf.edges || [],
     status: vf.isActive ? "PUBLISHED" : "DRAFT",
     fromPublished: !!vf.isActive,
