@@ -15,6 +15,12 @@ const warrantyRecordSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  shopify_internal_id: {
+    type: String,
+  },
+  shopify_order_name: {
+    type: String,
+  },
   productId: {
     type: String,
     required: true

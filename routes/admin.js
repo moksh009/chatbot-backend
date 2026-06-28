@@ -258,6 +258,8 @@ router.post('/warranty/migrate-legacy', protect, async (req, res) => {
             clientId: targetClientId,
             customerId: contact._id,
             shopifyOrderId: String(legacy.orderId || `legacy-${lead._id}-${Date.now()}`),
+            shopify_internal_id: String(legacy.orderId || `legacy-${lead._id}-${Date.now()}`),
+            shopify_order_name: String(legacy.orderId || `legacy-${lead._id}-${Date.now()}`),
             productId: String(legacy.serialNumber || legacy.productName || 'legacy-product'),
             productName: String(legacy.productName || 'Registered Product'),
             purchaseDate,

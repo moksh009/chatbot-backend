@@ -148,6 +148,8 @@ async function processWarrantyAutoAssignment(client, data) {
                     clientId: client.clientId,
                     customerId: contact._id,
                     shopifyOrderId: data.name || `#${data.id}`,
+                    shopify_internal_id: String(data.id),
+                    shopify_order_name: String(data.name || `#${data.id}`),
                     productId: productId,
                     productName: item.title,
                     purchaseDate: orderDate,

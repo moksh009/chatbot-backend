@@ -39,6 +39,7 @@ function collectOrderKeys(orders = []) {
 
 function formatOrderDisplay(order, orderKey) {
   const raw =
+    order?.shopify_order_name ||
     order?.orderName ||
     order?.name ||
     order?.orderNumber ||
@@ -259,7 +260,7 @@ async function buildWarrantyCustomerProfile(clientId, phone) {
     const orderDoc = orderByKey.get(key) || null;
     const entry = grouped.get(key) || {
       orderKey: key,
-      orderDisplay: formatOrderDisplay(orderDoc, key),
+      orderDisplay: formatOrderDisplay(orderDoc || wr, key),
       placedAt: orderDoc?.createdAt || null,
       items: [],
     };
