@@ -278,12 +278,41 @@ async function processSequenceDispatchJob(job) {
     const outcome = classifyEnvelopeOutcome(result, (step.attempts || 0) + 1);
 
     if (outcome.action === 'sent') {
-      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', {
+      const sentPatch = {
         sentAt: new Date(),
         lockedBy: null,
         lockedAt: null,
-      });
+        channel: stepChannel,
+      };
+      if (result?.messageId) sentPatch.messageId = String(result.messageId);
+      if (result?.envelopeId) sentPatch.envelopeId = result.envelopeId;
+
+      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', sentPatch);
       await maybeFinalizeSequence(sequenceId, clientId);
+
+      if (seq.sourceFlowId && stepChannel === 'whatsapp' && result?.messageId) {
+        try {
+          const TemplateSendLog = require('../models/TemplateSendLog');
+          await TemplateSendLog.create({
+            clientId,
+            templateName: step.templateName || '',
+            contextType: 'journey_sequence',
+            failureCode: 'sent',
+            channel: 'whatsapp',
+            recipientPhone: lead?.phoneNumber || seq.phone || '',
+            messageId: String(result.messageId),
+            status: 'sent',
+            contextData: {
+              sourceFlowId: seq.sourceFlowId,
+              sequenceId: String(sequenceId),
+              stepIndex: stepIdx,
+              blueprintId: seq.sourceFlowId,
+            },
+          });
+        } catch (logErr) {
+          log.warn(`Journey TemplateSendLog ${sequenceId}:${stepIdx}: ${logErr.message}`);
+        }
+      }
       logDispatchEvent('SequenceDispatch', 'sequence_step_sent', {
         clientId,
         sequenceId: String(sequenceId),

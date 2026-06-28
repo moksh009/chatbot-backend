@@ -44,7 +44,7 @@ const ROUTE_FILES = [
   'onboardingState.js', 'onboardingV2.js', 'media.js', 'payment.js', 'abandonedCarts.js',
   'inboxRoutes.js', 'igAutomationRoutes.js', 'catalog.js', 'ai.js', 'business.js',
   'checkoutConsent.js', 'shopifyPixel.js', 'metaWorkspace.js', 'metaAds.js', 'reseller.js',
-  'whitelabel.js', 'dataDeletion.js', 'intents.js', 'oauth.js', 'templateGate.js',
+  'whitelabel.js', 'dataDeletion.js', 'intents.js', 'oauth.js', 'templateGate.js', 'journeys.js',
 ];
 
 async function testCrossTenantPerFile() {

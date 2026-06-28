@@ -545,7 +545,7 @@ router.get('/', protect, apiCache(30), async (req, res) => {
     const [client, dbFlows] = await Promise.all([
       timer.time('getCachedClient', () => getCachedClient(clientId, 'flowFolders clientId')),
       timer.time('WhatsAppFlow.find_lite', () =>
-        WhatsAppFlow.find({ clientId })
+        WhatsAppFlow.find({ clientId, flowType: { $nin: ['journey', 'post_purchase_journey'] } })
           .select('flowId name platform folderId status version createdAt updatedAt nodes edges')
           .lean()
       ),
@@ -629,7 +629,7 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     const { mergeFlowsListForDashboard } = require('../utils/flow/flowGraphResolver');
     const lite = req.query.lite === '1' || req.query.lite === 'true';
-    const flowFind = WhatsAppFlow.find({ clientId });
+    const flowFind = WhatsAppFlow.find({ clientId, flowType: { $nin: ['journey', 'post_purchase_journey'] } });
     if (lite) {
       flowFind.select(
         'flowId name platform folderId status version createdAt updatedAt lastSyncedAt nodes edges publishedNodes publishedEdges'

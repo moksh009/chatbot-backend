@@ -364,6 +364,49 @@ router.get("/:clientId/workspace", verifyToken, apiCache(25), async (req, res) =
   }
 });
 
+// ─── GET /api/catalog/:clientId/collections-menu — menu preview for Flow Builder ─
+router.get("/:clientId/collections-menu", verifyToken, apiCache(20), async (req, res) => {
+  try {
+    const cid = req.params.clientId;
+    const client = await getCachedClient(cid, "clientId");
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+    const {
+      getCollectionsMenuForClient,
+    } = require('../utils/flow/catalogBranchBuilder');
+    const menu = await getCollectionsMenuForClient(cid);
+    res.json(menu);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/catalog/:clientId/build-branch — insertable catalog subgraph ────
+router.post("/:clientId/build-branch", verifyToken, async (req, res) => {
+  try {
+    const cid = req.params.clientId;
+    const client = await getCachedClient(cid, "clientId");
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+    const positionX = Number(req.body?.positionX ?? req.body?.x ?? 0);
+    const positionY = Number(req.body?.positionY ?? req.body?.y ?? 0);
+    const nextNodeOrder = Math.max(1, parseInt(req.body?.nextNodeOrder, 10) || 1);
+    const {
+      buildCatalogBranchForClient,
+    } = require('../utils/flow/catalogBranchBuilder');
+    const result = await buildCatalogBranchForClient(cid, {
+      position: { x: positionX, y: positionY },
+      seed: Date.now(),
+      nextNodeOrder,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── GET /api/catalog/:clientId/orders — list WA catalog orders ─────────────
 router.get("/:clientId/orders", verifyToken, apiCache(60), async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');

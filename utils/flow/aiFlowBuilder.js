@@ -284,6 +284,38 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
   };
 }
 
+async function maybeAppendCatalogBranch(flow, prompt, client, contextExtras = {}) {
+  try {
+    const {
+      detectBrowseCatalogIntent,
+      loadCatalogBranchContext,
+      appendCatalogBranchIfMissing,
+    } = require('./catalogBranchBuilder');
+    const slug =
+      contextExtras?.storeCategory ||
+      client?.onboardingData?.storeCategory ||
+      '';
+    if (slug) {
+      try {
+        const { getStoreCategoryBySlug } = require('../../constants/storeCategories');
+        const cat = getStoreCategoryBySlug(slug);
+        if (cat?.catalog === false) return flow;
+      } catch (_) {}
+    }
+    if (!detectBrowseCatalogIntent(prompt, contextExtras)) {
+      return flow;
+    }
+    const clientId = client?.clientId;
+    if (!clientId) return flow;
+    const ctx = await loadCatalogBranchContext(clientId);
+    if (!ctx.products.length && !ctx.collections.length) return flow;
+    return appendCatalogBranchIfMissing(flow, ctx);
+  } catch (err) {
+    console.warn('[AI Flow Builder] catalog branch append skipped:', err.message);
+    return flow;
+  }
+}
+
 // ─── FALLBACK FLOW ────────────────────────────────────────────────────────────
 // Returned when Gemini fails entirely. Ensures user can always work.
 function buildFallbackFlow(prompt, yOffset = 0) {
@@ -349,7 +381,9 @@ async function buildFlowFromPrompt(prompt, client, yOffset = 0, strategy = null,
     return buildFallbackFlow(prompt, yOffset);
   }
 
-  return validateAndCleanFlow(parsed, yOffset);
+  let cleaned = validateAndCleanFlow(parsed, yOffset);
+  cleaned = await maybeAppendCatalogBranch(cleaned, prompt, client, contextExtras);
+  return cleaned;
 }
 
 // ─── VARIANT GENERATION ───────────────────────────────────────────────────────

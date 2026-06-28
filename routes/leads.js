@@ -1348,8 +1348,12 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
       formatWarrantyStatusDisplay,
       formatWarrantyDuration,
     } = require('../utils/commerce/warrantyCustomerProfileService');
-    const { buildSimulatorWarrantyPreview } = require('../utils/commerce/warrantyFlowLookup');
+    const {
+      buildSimulatorWarrantyPreview,
+      buildSimulatorWarrantyInteractive,
+    } = require('../utils/commerce/warrantyFlowLookup');
 
+    const page = Math.max(0, parseInt(String(req.query.page || '0'), 10) || 0);
     const normalized = normalizePhone(phone);
     const profile = await buildWarrantyCustomerProfile(clientId, normalized || phone);
     const scenario = classifyWarrantyScenario(profile);
@@ -1361,6 +1365,7 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
         scenario,
         warranty: null,
         previewMessage: buildSimulatorWarrantyPreview(profile, scenario),
+        interactiveUi: buildSimulatorWarrantyInteractive(profile, scenario, page),
       });
     }
 
@@ -1372,6 +1377,7 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
       found: true,
       scenario,
       previewMessage: buildSimulatorWarrantyPreview(profile, scenario),
+      interactiveUi: buildSimulatorWarrantyInteractive(profile, scenario, page),
       warranty: {
         customerName: profile.displayPhone || normalized || phone,
         phone: profile.customerPhone || normalized || phone,
@@ -1388,6 +1394,7 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
         orderCount: profile.orderCount,
         warrantyOrderCount: profile.ordersWithWarranty.length,
         ordersWithWarranty: profile.ordersWithWarranty.map((o) => ({
+          orderKey: o.orderKey,
           orderDisplay: o.orderDisplay,
           items: o.items.map((i) => ({
             productName: i.productName,
@@ -1395,6 +1402,8 @@ router.get('/:clientId/warranty', protect, async (req, res) => {
             duration: i.duration,
           })),
         })),
+        displayPhone: profile.displayPhone || normalized || phone,
+        customerPhone: profile.customerPhone || normalized || phone,
       },
     });
   } catch (err) {
@@ -1418,13 +1427,19 @@ router.get('/:clientId/orders/latest', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone query param is required' });
     }
     const Client = require('../models/Client');
-    const { fetchLatestOrderForFlow } = require('../utils/commerce/orderLookupService');
+    const {
+      fetchLatestOrderForFlow,
+      normalizePhoneE164ForShopifyQuery,
+    } = require('../utils/commerce/orderLookupService');
     const client = await Client.findOne({ clientId }).lean();
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
-    const { sanitizePhoneForStorage } = require('../utils/core/phoneE164Policy');
-    const result = await fetchLatestOrderForFlow({ client, phone: sanitizePhoneForStorage(phone) || phone });
+    const normalizedPhone = normalizePhoneE164ForShopifyQuery(phone);
+    if (!normalizedPhone || normalizedPhone.replace(/\D/g, '').length < 10) {
+      return res.status(400).json({ success: false, message: 'Invalid phone number' });
+    }
+    const result = await fetchLatestOrderForFlow({ client, phone: normalizedPhone });
     return res.json({
       success: true,
       found: !!result.found,

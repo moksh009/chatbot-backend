@@ -648,6 +648,48 @@ async function runAbandonedCartTick() {
                     });
                 }
 
+                // Journey-only cart recovery when published cart-recovery-3step blueprint is live.
+                let _journeyCartOnlyMode = false;
+                let _journeyCartEnrolledLeadIds = new Set();
+                try {
+                  const _WFModel = require('../models/WhatsAppFlow');
+                  const hasCartJourney = await _WFModel.exists({
+                    clientId: client.clientId,
+                    flowType: 'journey',
+                    status: 'PUBLISHED',
+                    isActive: true,
+                    playbookKey: 'cart-recovery-3step',
+                  });
+                  _journeyCartOnlyMode = Boolean(hasCartJourney);
+
+                  if (hasCartJourney) {
+                    const { routeToJourneyBlueprints: _routeCart } = require('../services/journeyBuilder/journeyTriggerRouter');
+                    const abandonedBatch = await require('../models/AdLead').find({
+                      clientId: client.clientId,
+                      cartStatus: 'abandoned',
+                      recoveryStep: { $in: [null, 0] },
+                      phoneNumber: { $exists: true, $ne: '' },
+                    }).select('_id phoneNumber email name').limit(50).lean();
+
+                    for (const lead of abandonedBatch) {
+                      const result = await _routeCart(client.clientId, 'cart_abandoned', lead).catch(() => null);
+                      if (result?.enrolled > 0) {
+                        _journeyCartEnrolledLeadIds.add(String(lead._id));
+                      }
+                    }
+                    if (_journeyCartEnrolledLeadIds.size > 0) {
+                      log.info(`[JourneyBridge] cart_abandoned enrolled ${_journeyCartEnrolledLeadIds.size} lead(s) in journey for ${client.clientId}`);
+                    }
+                  }
+                } catch (_jbErr) {
+                  log.warn(`[JourneyBridge] cart journey bridge error: ${_jbErr.message}`);
+                }
+
+                if (_journeyCartOnlyMode) {
+                  log.debug(`[AbandonedCart] ${client.clientId} — cart-recovery-3step journey live; skipping SAC ladder`);
+                }
+
+                if (!_journeyCartOnlyMode) {
                 // --- Step 1: First Nudge (cartAbandonedAt + phone required) ---
                 if (!cartRuleActive('followup_1')) {
                     log.debug(`[AbandonedCart] ${client.clientId} followup_1 paused — skip step 1`);
@@ -682,6 +724,8 @@ async function runAbandonedCartTick() {
                     const dedupeKey = cartLeadDedupeKey(lead);
                     if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
                     if (!dedupeKey) continue;
+                    // Skip leads already enrolled in a journey blueprint this tick
+                    if (_journeyCartEnrolledLeadIds.has(String(lead._id))) continue;
                     if (await hasPendingMarketingSequenceSend(client.clientId, lead._id)) continue;
                     if (await wasCartRecoverySentRecently(client.clientId, dedupeKey, 1, lead)) continue;
                     const gate = await gateCartSend(client, lead, config, now);
@@ -891,6 +935,7 @@ async function runAbandonedCartTick() {
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }
                 }
+                } // end !_journeyCartOnlyMode SAC ladder
 
                 // --- Step 4: Post-Purchase Cross-sell (1 hour after order) ---
                 const batch4 = await AdLead.find({

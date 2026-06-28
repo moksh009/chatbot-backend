@@ -10,6 +10,7 @@ const Order = require("../../models/Order");
 const { normalizePhone } = require('../core/helpers');
 const { sanitizePhoneForStorage, phoneStorageLookupVariants } = require('../core/phoneE164Policy');
 const { withShopifyRetry, withShopifyGraphQL } = require('../shopify/shopifyHelper');
+const { extractPrimaryFulfillment } = require('../shopify/shopifyOrderMapper');
 const { withTimeout } = require('../core/asyncTimeout');
 const log = require('../core/logger')("OrderLookup");
 
@@ -197,6 +198,7 @@ async function resolveLatestOrderContext({ client, phone }) {
     return {
       found: true,
       source: "shopify",
+      shopifyOrder,
       userMessage: msg,
       orderData,
       mergedMeta,
@@ -261,6 +263,7 @@ async function resolveLatestOrderContext({ client, phone }) {
   return {
     found: true,
     source: "local",
+    localOrder: local,
     userMessage: statusMsg,
     orderData,
     mergedMeta,
@@ -392,6 +395,7 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
   return {
     found: true,
     source: "shopify_name",
+    shopifyOrder,
     userMessage: msg,
     orderData,
     mergedMeta,
@@ -400,25 +404,36 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
 
 // ---------------------------------------------------------------------------
 // GraphQL-based Fetch Latest Order — powers the "Fetch Latest Order" Shopify node
-// Returns 8 mapped variables ready to be injected into convo.metadata.
-// All variables fall back to "NA" on missing / null data.
+// Phone → Shopify customers search → lastOrder → 9 mapped variables (NA fallback)
 // ---------------------------------------------------------------------------
 
+/**
+ * Mandatory E.164 prep for Shopify customer search (live WA + simulator).
+ * Strip spaces, dashes, brackets; ensure leading "+".
+ */
+function normalizePhoneE164ForShopifyQuery(raw) {
+  const stripped = String(raw ?? '')
+    .trim()
+    .replace(/[\s\-()[\]]/g, '');
+  if (!stripped) return '';
+  return stripped.startsWith('+') ? stripped : `+${stripped}`;
+}
+
 const FETCH_LATEST_ORDER_GQL = `
-query getLatestOrderByPhone($phoneString: String!) {
-  customers(first: 1, query: $phoneString) {
+query getLatestOrderByPhone($phoneQuery: String!) {
+  customers(first: 1, query: $phoneQuery) {
     nodes {
       lastOrder {
         name
         createdAt
+        displayFinancialStatus
+        displayFulfillmentStatus
         totalPriceSet {
           presentmentMoney {
             amount
             currencyCode
           }
         }
-        displayFinancialStatus
-        displayFulfillmentStatus
         shippingAddress {
           formatted
         }
@@ -428,13 +443,12 @@ query getLatestOrderByPhone($phoneString: String!) {
             quantity
           }
         }
-        fulfillments {
-          displayStatus
-          status
-          trackingInfo(first: 3) {
-            company
-            number
-            url
+        fulfillments(first: 1) {
+          nodes {
+            trackingInfo(first: 1) {
+              status
+              url
+            }
           }
         }
       }
@@ -444,27 +458,12 @@ query getLatestOrderByPhone($phoneString: String!) {
 `;
 
 /**
- * Build phone search query strings that Shopify's customer search understands.
- * Shopify normalises customer phones to E.164 in their index, so we try the
- * most likely formats: raw, with country prefix stripped, and E.164-prefixed.
+ * Build Shopify customer search query string from normalized E.164 phone.
  */
-function buildShopifyPhoneQueries(rawPhone) {
-  const digits = String(rawPhone || '').replace(/\D/g, '');
-  const e164 = digits.length >= 10 ? `+${digits}` : null;
-  const candidates = new Set();
-
-  if (rawPhone) candidates.add(`phone:${String(rawPhone).trim()}`);
-  if (e164) candidates.add(`phone:${e164}`);
-  if (digits.length === 12 && digits.startsWith('91')) {
-    candidates.add(`phone:+${digits}`);
-    candidates.add(`phone:${digits.slice(2)}`);
-  }
-  if (digits.length === 10) {
-    candidates.add(`phone:+91${digits}`);
-    candidates.add(`phone:${digits}`);
-  }
-
-  return [...candidates].filter(Boolean);
+function buildShopifyCustomerPhoneQuery(normalizedE164) {
+  const phone = String(normalizedE164 || '').trim();
+  if (!phone) return '';
+  return `phone:${phone}`;
 }
 
 /**
@@ -477,8 +476,75 @@ function safeStr(val) {
   return s || NA;
 }
 
+function formatOrderDateValue(raw) {
+  if (!raw) return NA;
+  try {
+    return new Date(raw).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch (_) {
+    return safeStr(raw);
+  }
+}
+
+function formatShippingAddressFormatted(addr) {
+  if (!addr || typeof addr !== 'object') return NA;
+  const formatted = addr.formatted;
+  if (Array.isArray(formatted)) {
+    const joined = formatted.filter(Boolean).join(', ');
+    return joined || NA;
+  }
+  if (typeof formatted === 'string' && formatted.trim()) {
+    return formatted.trim();
+  }
+  return NA;
+}
+
+/** GraphQL line items: "[title]x [quantity]" per line, newline-separated. */
+function formatGraphqlOrderedItems(lineNodes) {
+  const items = Array.isArray(lineNodes) ? lineNodes : [];
+  if (!items.length) return NA;
+  return items
+    .map((item) => {
+      const title = String(item?.title || 'Item').trim();
+      const qty = Number(item?.quantity);
+      const quantity = Number.isFinite(qty) && qty > 0 ? qty : 1;
+      return `${title}x ${quantity}`;
+    })
+    .join('\n');
+}
+
 /**
- * Map a Shopify GraphQL lastOrder object → 8 flat variables.
+ * Resolve first fulfillment tracking info from GraphQL lastOrder (connection or legacy array).
+ */
+function extractGraphqlTrackingInfo(lastOrder) {
+  const fulfillmentConnection = lastOrder?.fulfillments?.nodes;
+  const fulfillmentList = Array.isArray(lastOrder?.fulfillments) ? lastOrder.fulfillments : null;
+  const firstFulfillment = fulfillmentConnection?.[0] || fulfillmentList?.[0];
+  if (!firstFulfillment) {
+    return { status: NA, url: NA };
+  }
+
+  const trackingRaw = firstFulfillment.trackingInfo;
+  let tracking = null;
+  if (Array.isArray(trackingRaw)) {
+    tracking = trackingRaw[0];
+  } else if (trackingRaw && Array.isArray(trackingRaw.nodes)) {
+    tracking = trackingRaw.nodes[0];
+  } else if (trackingRaw && typeof trackingRaw === 'object') {
+    tracking = trackingRaw;
+  }
+
+  return {
+    status: tracking?.status != null && String(tracking.status).trim() ? safeStr(tracking.status) : NA,
+    url: tracking?.url != null && String(tracking.url).trim() ? safeStr(tracking.url) : NA,
+  };
+}
+
+/**
+ * Map a Shopify GraphQL lastOrder object → 9 Shopify Action variables.
  */
 function mapOrderToVariables(lastOrder) {
   if (!lastOrder) {
@@ -496,57 +562,115 @@ function mapOrderToVariables(lastOrder) {
   }
 
   const orderId = safeStr(lastOrder.name);
+  const orderDate = lastOrder.createdAt ? formatOrderDateValue(lastOrder.createdAt) : NA;
 
-  let orderDate = NA;
-  if (lastOrder.createdAt) {
-    try {
-      orderDate = new Date(lastOrder.createdAt).toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      });
-    } catch (_) {
-      orderDate = safeStr(lastOrder.createdAt);
-    }
-  }
-
-  const lineNodes = Array.isArray(lastOrder.lineItems?.nodes)
-    ? lastOrder.lineItems.nodes
-    : [];
-  const orderedItems = lineNodes.length
-    ? lineNodes
-        .map((item) => {
-          const qty = Number(item.quantity) || 1;
-          return qty > 1 ? `${qty}x ${item.title}` : item.title;
-        })
-        .join('\n')
-    : NA;
+  const lineNodes = Array.isArray(lastOrder.lineItems?.nodes) ? lastOrder.lineItems.nodes : [];
+  const orderedItems = formatGraphqlOrderedItems(lineNodes);
 
   const money = lastOrder.totalPriceSet?.presentmentMoney;
   const orderTotal =
-    money?.amount && money?.currencyCode
+    money?.amount != null && money?.currencyCode
       ? `${parseFloat(money.amount).toFixed(2)} ${money.currencyCode}`
       : NA;
 
-  const formatted = lastOrder.shippingAddress?.formatted;
-  const shippingAddress = Array.isArray(formatted)
-    ? formatted.filter(Boolean).join(', ') || NA
-    : safeStr(formatted);
+  const shippingAddress = formatShippingAddressFormatted(lastOrder.shippingAddress);
 
-  const paymentStatus = safeStr(lastOrder.displayFinancialStatus);
-  const fulfillmentStatus = safeStr(lastOrder.displayFulfillmentStatus);
+  const paymentStatus =
+    lastOrder.displayFinancialStatus != null && String(lastOrder.displayFinancialStatus).trim()
+      ? safeStr(lastOrder.displayFinancialStatus)
+      : NA;
+  const fulfillmentStatus =
+    lastOrder.displayFulfillmentStatus != null && String(lastOrder.displayFulfillmentStatus).trim()
+      ? safeStr(lastOrder.displayFulfillmentStatus)
+      : NA;
 
-  const fulfillments = Array.isArray(lastOrder.fulfillments) ? lastOrder.fulfillments : [];
-  const firstFulfillment = fulfillments[0];
-  const trackingInfo = Array.isArray(firstFulfillment?.trackingInfo)
-    ? firstFulfillment.trackingInfo
-    : [];
-  const tracking = trackingInfo[0];
+  const { status: deliveryStatus, url: trackingLink } = extractGraphqlTrackingInfo(lastOrder);
+
+  return {
+    order_id: orderId,
+    order_date: orderDate,
+    ordered_items: orderedItems,
+    order_total: orderTotal,
+    shipping_address: shippingAddress,
+    payment_status: paymentStatus,
+    fulfillment_status: fulfillmentStatus,
+    delivery_status: deliveryStatus,
+    tracking_link: trackingLink,
+  };
+}
+
+function formatStatusLabel(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return NA;
+  return s.replace(/_/g, ' ').toUpperCase();
+}
+
+function formatAddressObject(addr) {
+  if (!addr || typeof addr !== 'object') return NA;
+  const formatted = addr.formatted;
+  if (Array.isArray(formatted)) {
+    const joined = formatted.filter(Boolean).join(', ');
+    if (joined) return joined;
+  } else if (typeof formatted === 'string' && formatted.trim()) {
+    return formatted.trim();
+  }
+  const parts = [
+    addr.name,
+    addr.address1,
+    addr.address2,
+    addr.city,
+    addr.province,
+    addr.zip,
+    addr.country,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : NA;
+}
+
+/** REST / local line items — same "[title]x [quantity]" contract as GraphQL path. */
+function formatLineItemsList(lineItems) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  if (!items.length) return NA;
+  return items
+    .map((item) => {
+      const title = String(item.title || item.name || 'Item').trim();
+      const qty = Number(item.quantity);
+      const quantity = Number.isFinite(qty) && qty > 0 ? qty : 1;
+      return `${title}x ${quantity}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Map Shopify Admin REST order JSON → 9 Shopify Action variables (+ tracking_link).
+ */
+function mapShopifyRestOrderToVariables(shopifyOrder) {
+  if (!shopifyOrder) return mapOrderToVariables(null);
+
+  const orderId = safeStr(
+    shopifyOrder.name ||
+      (shopifyOrder.order_number != null ? `#${shopifyOrder.order_number}` : '')
+  );
+  const orderDate = formatOrderDateValue(shopifyOrder.created_at);
+  const orderedItems = formatLineItemsList(shopifyOrder.line_items);
+  const orderTotal =
+    shopifyOrder.total_price != null && shopifyOrder.currency
+      ? `${parseFloat(shopifyOrder.total_price).toFixed(2)} ${shopifyOrder.currency}`
+      : NA;
+
+  const shippingAddress = formatAddressObject(shopifyOrder.shipping_address);
+  const paymentStatus = formatStatusLabel(shopifyOrder.financial_status);
+  const fulfillmentStatus = formatStatusLabel(
+    shopifyOrder.fulfillment_status || 'unfulfilled'
+  );
+
+  const ff = extractPrimaryFulfillment(shopifyOrder);
   const deliveryStatus = safeStr(
-    tracking?.number ||
-      tracking?.company ||
-      firstFulfillment?.displayStatus ||
-      firstFulfillment?.status
+    (ff.shipmentStatus && ff.shipmentStatus.replace(/_/g, ' ')) ||
+      ff.trackingNumber ||
+      shopifyOrder.fulfillments?.[0]?.tracking_number
+  );
+  const tracking_link = safeStr(
+    ff.trackingUrl || shopifyOrder.fulfillments?.[0]?.tracking_url
   );
 
   return {
@@ -558,16 +682,61 @@ function mapOrderToVariables(lastOrder) {
     payment_status: paymentStatus,
     fulfillment_status: fulfillmentStatus,
     delivery_status: deliveryStatus,
-    tracking_link: safeStr(tracking?.url),
+    tracking_link,
   };
 }
 
 /**
- * Map REST / local orderData from resolveLatestOrderContext → same 8 flow variables.
+ * Map local Mongo Order document → same 8 Shopify Action variables.
+ */
+function mapLocalOrderToVariables(local) {
+  if (!local) return mapOrderToVariables(null);
+
+  const items = Array.isArray(local.items) ? local.items : [];
+  const orderedItems = items.length ? formatLineItemsList(
+    items.map((i) => ({ title: i.name, quantity: i.quantity || 1 }))
+  ) : NA;
+
+  const shippingAddress =
+    formatAddressObject(local.shippingAddress) !== NA
+      ? formatAddressObject(local.shippingAddress)
+      : safeStr(local.address);
+
+  const currency = local.currency || 'INR';
+  const amt = local.totalPrice ?? local.amount;
+  const orderTotal =
+    amt != null ? `${parseFloat(amt).toFixed(2)} ${currency}` : NA;
+
+  return {
+    order_id: safeStr(local.orderNumber || local.orderId),
+    order_date: formatOrderDateValue(local.createdAt),
+    ordered_items: orderedItems,
+    order_total: orderTotal,
+    shipping_address: shippingAddress,
+    payment_status: formatStatusLabel(local.financialStatus || local.status),
+    fulfillment_status: formatStatusLabel(local.fulfillmentStatus || local.status),
+    delivery_status: safeStr(local.lastShipmentStatus || local.trackingNumber),
+    tracking_link: safeStr(local.trackingUrl),
+  };
+}
+
+function resolveFlowVariablesFromLookup(legacy) {
+  if (!legacy) return mapOrderToVariables(null);
+  if (legacy.shopifyOrder) return mapShopifyRestOrderToVariables(legacy.shopifyOrder);
+  if (legacy.localOrder) return mapLocalOrderToVariables(legacy.localOrder);
+  return mapRestOrderDataToVariables(legacy.orderData, legacy.mergedMeta || {});
+}
+
+/**
+ * Map REST / local orderData from resolveLatestOrderContext → same 9 flow variables.
  */
 function mapRestOrderDataToVariables(orderData = {}, mergedMeta = {}) {
   if (!orderData || (!orderData.orderId && !orderData.orderNumber)) {
     return mapOrderToVariables(null);
+  }
+
+  if (orderData._shopifyRestOrder) {
+    return mapShopifyRestOrderToVariables(orderData._shopifyRestOrder);
   }
 
   const orderId = safeStr(
@@ -580,85 +749,88 @@ function mapRestOrderDataToVariables(orderData = {}, mergedMeta = {}) {
 
   return {
     order_id: orderId,
-    order_date: NA,
+    order_date: orderData.createdAt ? formatOrderDateValue(orderData.createdAt) : NA,
     ordered_items: safeStr(orderData.itemsSummary),
     order_total: orderTotal,
-    shipping_address: NA,
-    payment_status: safeStr(orderData.status),
-    fulfillment_status: safeStr(orderData.status),
-    delivery_status: NA,
+    shipping_address: safeStr(orderData.shippingAddress),
+    payment_status: formatStatusLabel(orderData.financialStatus || orderData.payment_status),
+    fulfillment_status: formatStatusLabel(orderData.fulfillmentStatus || orderData.status),
+    delivery_status: safeStr(orderData.deliveryStatus || orderData.trackingNumber),
     tracking_link: orderData.trackingUrl ? safeStr(orderData.trackingUrl) : NA,
   };
 }
 
 /**
- * Fetch the customer's latest Shopify order using GraphQL.
+ * Fetch the customer's latest Shopify order using GraphQL (live API only).
  *
  * @param {object} params
- * @param {string} params.clientId   - TopEdge client ID
- * @param {string} params.phone      - WhatsApp E.164 or raw phone number
- * @returns {Promise<{found: boolean, variables: object}>}
- *   `variables` always contains all 8 keys; missing data uses "NA".
+ * @param {string} params.clientId - TopEdge client ID
+ * @param {string} params.phone    - Pre-normalized E.164 (+CC…) or raw (normalized here)
  */
 async function fetchLatestOrderByPhoneGraphQL({ clientId, phone }) {
   const emptyVars = mapOrderToVariables(null);
+  const normalizedPhone = normalizePhoneE164ForShopifyQuery(phone);
+  const phoneQuery = buildShopifyCustomerPhoneQuery(normalizedPhone);
 
-  const queries = buildShopifyPhoneQueries(phone);
-  if (!queries.length) {
-    log.warn('[fetchLatestOrderByPhoneGraphQL] No phone variants to try', { phone });
-    return { found: false, variables: emptyVars, apiError: null };
+  if (!phoneQuery) {
+    log.warn('[fetchLatestOrderByPhoneGraphQL] Invalid phone', { phone });
+    return {
+      found: false,
+      variables: emptyVars,
+      apiError: 'invalid_phone',
+      normalizedPhone: '',
+    };
   }
 
-  let lastError = null;
-  for (const phoneQuery of queries) {
-    try {
-      const data = await withShopifyGraphQL(clientId, FETCH_LATEST_ORDER_GQL, {
-        phoneString: phoneQuery,
-      });
-
-      const customerNodes = data?.customers?.nodes;
-      if (!Array.isArray(customerNodes) || customerNodes.length === 0) {
-        continue;
-      }
-
-      const lastOrder = customerNodes[0]?.lastOrder;
-      if (!lastOrder) {
-        continue;
-      }
-
-      return {
-        found: true,
-        variables: mapOrderToVariables(lastOrder),
-        apiError: null,
-      };
-    } catch (err) {
-      lastError = err;
-      log.warn('[fetchLatestOrderByPhoneGraphQL] Query attempt failed', {
-        phoneQuery,
-        message: err.message,
-      });
-    }
-  }
-
-  if (lastError) {
-    log.error('[fetchLatestOrderByPhoneGraphQL] All attempts failed', {
-      clientId,
-      message: lastError.message,
+  try {
+    const data = await withShopifyGraphQL(clientId, FETCH_LATEST_ORDER_GQL, {
+      phoneQuery,
     });
-  }
 
-  return {
-    found: false,
-    variables: emptyVars,
-    apiError: lastError ? String(lastError.message || lastError) : null,
-  };
+    const customerNodes = data?.customers?.nodes;
+    if (!Array.isArray(customerNodes) || customerNodes.length === 0) {
+      log.info('[fetchLatestOrderByPhoneGraphQL] No customer for phone', {
+        clientId,
+        phoneQuery,
+      });
+      return { found: false, variables: emptyVars, apiError: null, normalizedPhone };
+    }
+
+    const lastOrder = customerNodes[0]?.lastOrder;
+    if (!lastOrder) {
+      log.info('[fetchLatestOrderByPhoneGraphQL] Customer has no lastOrder', {
+        clientId,
+        phoneQuery,
+      });
+      return { found: false, variables: emptyVars, apiError: null, normalizedPhone };
+    }
+
+    return {
+      found: true,
+      variables: mapOrderToVariables(lastOrder),
+      apiError: null,
+      normalizedPhone,
+    };
+  } catch (err) {
+    log.error('[fetchLatestOrderByPhoneGraphQL] Query failed', {
+      clientId,
+      phoneQuery,
+      message: err.message,
+    });
+    return {
+      found: false,
+      variables: emptyVars,
+      apiError: String(err.message || err),
+      normalizedPhone,
+    };
+  }
 }
 
 /**
- * Flow Builder + simulator: GraphQL first, REST/local fallback when GraphQL errors or misses.
- * Optional `identifier` — order ID or alternate phone from convo.metadata (queryVariable).
+ * Flow Builder simulator + live shopify_call CHECK_ORDER_STATUS — GraphQL only (no REST/mock).
+ * Phone must come from WhatsApp session (live) or simulator input (test).
  */
-async function fetchLatestOrderForFlow({ client, phone, identifier }) {
+async function fetchLatestOrderForFlow({ client, phone }) {
   const clientId = client?.clientId;
   if (!clientId) {
     return {
@@ -670,90 +842,51 @@ async function fetchLatestOrderForFlow({ client, phone, identifier }) {
     };
   }
 
-  const storagePhone = sanitizePhoneForStorage(phone) || phone;
-  const rawIdentifier = String(identifier || '').trim();
-
-  if (rawIdentifier) {
-    const byId = await resolveOrderContextByIdentifier({
-      client,
-      phone: storagePhone,
-      identifier: rawIdentifier,
-    });
-    if (byId?.found) {
-      const variables = mapRestOrderDataToVariables(byId.orderData, byId.mergedMeta || {});
-      return {
-        found: true,
-        lookupFailed: false,
-        source: byId.source || 'identifier',
-        variables,
-        mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
-        userMessage: byId.userMessage || null,
-        orderData: byId.orderData || null,
-      };
-    }
-    if (byId && byId.found === false) {
-      return {
-        found: false,
-        lookupFailed: false,
-        apiError: null,
-        source: 'identifier_miss',
-        variables: mapOrderToVariables(null),
-        mergedMeta: { last_order_lookup_found: 'false' },
-        userMessage: byId.userMessage || null,
-      };
-    }
+  const normalizedPhone = normalizePhoneE164ForShopifyQuery(phone);
+  const digitCount = normalizedPhone.replace(/\D/g, '').length;
+  if (!normalizedPhone || digitCount < 10) {
+    return {
+      found: false,
+      lookupFailed: false,
+      apiError: 'invalid_phone',
+      source: 'none',
+      variables: mapOrderToVariables(null),
+      mergedMeta: { last_order_lookup_found: 'false' },
+    };
   }
 
-  const gql = await fetchLatestOrderByPhoneGraphQL({ clientId, phone: storagePhone });
+  const gql = await fetchLatestOrderByPhoneGraphQL({ clientId, phone: normalizedPhone });
+
   if (gql.found) {
+    const variables = gql.variables;
     return {
       found: true,
       lookupFailed: false,
       source: 'graphql',
-      variables: gql.variables,
-      mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
+      variables,
+      mergedMeta: {
+        last_order_lookup_found: 'true',
+        shopify_order_found: 'true',
+        lookup_phone: gql.normalizedPhone || normalizedPhone,
+        ...variables,
+      },
       userMessage: null,
     };
   }
 
-  try {
-    const legacy = await resolveLatestOrderContext({ client, phone: storagePhone });
-    if (legacy?.found) {
-      const variables = mapRestOrderDataToVariables(legacy.orderData, legacy.mergedMeta || {});
-      return {
-        found: true,
-        lookupFailed: false,
-        source: legacy.source || 'rest',
-        variables,
-        mergedMeta: { last_order_lookup_found: 'true', shopify_order_found: 'true' },
-        userMessage: legacy.userMessage || null,
-        orderData: legacy.orderData || null,
-      };
-    }
-
-    return {
-      found: false,
-      lookupFailed: Boolean(gql.apiError),
-      apiError: gql.apiError,
-      source: gql.apiError ? 'graphql_error' : 'none',
-      variables: gql.variables,
-      mergedMeta: { last_order_lookup_found: 'false' },
-      userMessage: legacy?.userMessage || null,
-    };
-  } catch (err) {
-    log.error('[fetchLatestOrderForFlow] REST fallback failed', {
-      clientId,
-      message: err.message,
-    });
-    return {
-      found: false,
-      lookupFailed: true,
-      apiError: err.message,
-      source: 'failed',
-      variables: gql.variables,
-      mergedMeta: { last_order_lookup_found: 'false' },
-    };
-  }
+  return {
+    found: false,
+    lookupFailed: Boolean(gql.apiError && gql.apiError !== 'invalid_phone'),
+    apiError: gql.apiError,
+    source: gql.apiError ? 'graphql_error' : 'none',
+    variables: gql.variables,
+    mergedMeta: {
+      last_order_lookup_found: 'false',
+      shopify_order_found: 'false',
+      lookup_phone: gql.normalizedPhone || normalizedPhone,
+    },
+    userMessage: null,
+  };
 }
 
 module.exports = {
@@ -761,8 +894,13 @@ module.exports = {
   resolveOrderContextByIdentifier,
   findLocalOrder,
   phoneSearchVariants,
+  normalizePhoneE164ForShopifyQuery,
+  buildShopifyCustomerPhoneQuery,
   fetchLatestOrderByPhoneGraphQL,
   fetchLatestOrderForFlow,
   mapOrderToVariables,
+  mapShopifyRestOrderToVariables,
+  mapLocalOrderToVariables,
   mapRestOrderDataToVariables,
+  resolveFlowVariablesFromLookup,
 };

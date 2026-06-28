@@ -53,11 +53,11 @@ const V1_SHIPPABLE_NODE_TYPES = new Set([
   'tag_lead',
   'webhook',
   'http_request',
-  'automation',
   'install_guide_entry',
   'template',
   'folder',
   'image',
+  // 'automation' removed in Phase 3 — outbound cart/order via Journey Builder
 ]);
 
 /** Palette-only or legacy — not emitted by generator/AI in V1. */
@@ -65,12 +65,21 @@ const V1_PALETTE_ONLY_TYPES = new Set([
   'cod_prepaid',
 ]);
 
-/** Deprecated — validator blocks publish; render read-only in studio. */
+/**
+ * Deprecated — validator blocks new publish; render read-only in studio for existing graphs.
+ *
+ * Phase 3 additions:
+ *  - `automation`: outbound cart-recovery outbound node — use Journey Builder `cart-recovery-3step`
+ *  - `abandoned_cart`: same outbound pattern — use Journey Builder
+ * Both are now JOURNEY_ONLY_TYPES per §R.3/§R.4 of JOURNEY-BUILDER-MASTER-PLAN.md.
+ */
 const V1_FORBIDDEN_NODE_TYPES = new Set([
   'review',
   'order_action',
   'payment_link',
   'cod_prepaid',
+  'automation',
+  'abandoned_cart',
 ]);
 
 /**
@@ -103,7 +112,7 @@ const V1_CORE_D2C_FEATURES = {
   enableWarranty: true,
   enableInstallSupport: true,
   enableFAQ: true,
-  enableAbandonedCart: true,
+  enableAbandonedCart: false, // Phase 3: cart via Journey Builder cart-recovery-3step playbook
   enableReviewCollection: false,
   enableSupportEscalation: true,
   enableAIFallback: true,

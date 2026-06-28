@@ -63,6 +63,24 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     mediaUrl: String,
     /** When true, sendAt matches previous step (same beat as WhatsApp + email) */
     parallelWithPrevious: { type: Boolean, default: false },
+    /** Journey Phase 2 — interactive step fields */
+    interactionMode: {
+      type: String,
+      enum: ['none', 'awaiting_button', 'awaiting_text'],
+      default: 'none',
+    },
+    /** Expected button payload IDs for this step (e.g. ['cod_confirm', 'cod_cancel']) */
+    expectedActions: { type: [String], default: [] },
+    /** Arbitrary context for this step (e.g. { orderId, codConfirmRequested: true }) */
+    context: { type: mongoose.Schema.Types.Mixed, default: null },
+    /** Phase 4 — WA Graph message id for webhook backfill */
+    messageId: { type: String, default: '' },
+    /** Phase 4 — email envelope for open/click tracking */
+    envelopeId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    channel: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    deliveredAt: { type: Date, default: null },
+    readAt: { type: Date, default: null },
+    clickedAt: { type: Date, default: null },
   }]
 }, { timestamps: true });
 
@@ -70,6 +88,7 @@ FollowUpSequenceSchema.index({ status: 1, "steps.sendAt": 1 });
 FollowUpSequenceSchema.index({ clientId: 1, status: 1 });
 /** Active sequences per lead — speeds enrollment checks + cron */
 FollowUpSequenceSchema.index({ clientId: 1, leadId: 1, status: 1 });
+FollowUpSequenceSchema.index({ clientId: 1, sourceFlowId: 1, createdAt: -1 });
 
 FollowUpSequenceSchema.pre('validate', function followUpLeadIdGuard() {
   if (!this.leadId) {

@@ -4245,13 +4245,15 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       
       // --- Fetch Latest Order (Shopify GraphQL + REST fallback) ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
-        const { fetchLatestOrderForFlow } = require('./orderLookupService');
+        const {
+          fetchLatestOrderForFlow,
+          normalizePhoneE164ForShopifyQuery,
+        } = require('./orderLookupService');
         const prevMeta = { ...(convo.metadata || {}) };
         const messageBody = node.data?.messageBody || '';
-        const qVar = String(node.data?.queryVariable || '').trim();
-        const identifier = qVar ? String(convo?.metadata?.[qVar] || '').trim() : '';
+        const lookupPhone = normalizePhoneE164ForShopifyQuery(phone);
 
-        const lookup = await fetchLatestOrderForFlow({ client, phone, identifier });
+        const lookup = await fetchLatestOrderForFlow({ client, phone: lookupPhone });
 
         if (lookup.lookupFailed) {
           log.warn(`[shopify_call] Order lookup failed: ${lookup.apiError || 'unknown'}`);
@@ -4266,6 +4268,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           const { injectShopifyActionMessage } = require('../core/variableInjector');
           const routingMeta = {
             ...prevMeta,
+            ...(lookup.variables || {}),
             last_order_lookup_found: 'true',
             shopify_order_found: 'true',
           };

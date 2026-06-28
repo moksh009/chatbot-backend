@@ -175,9 +175,9 @@ describe("buildSimulatorWarrantyPreview", () => {
       ],
     };
     const body = buildSimulatorWarrantyPreview(profile, "multi_order");
-    assert.match(body, /Multiple orders/);
-    assert.match(body, /#1001/);
-    assert.match(body, /interactive list/i);
+    assert.match(body, /multiple orders with warranty/i);
+    assert.match(body, /Choose order/i);
+    assert.match(body, /Menu/i);
   });
 
   it("preview for single active warranty (scenario 1)", () => {

@@ -295,6 +295,7 @@ app.use('/api/ecommerce', ecommerceRoutes);
 const sequencesRoutes = require('./routes/sequences');
 
 app.use('/api/sequences', sequencesRoutes);
+app.use('/api/journeys', require('./routes/journeys'));
 const settingsRoutes = require('./routes/settings');
 app.use('/api/settings', settingsRoutes);
 const flowRoutes = require('./routes/flow');

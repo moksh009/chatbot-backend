@@ -207,6 +207,17 @@ async function processStatuses(statuses) {
             });
           }
           try {
+            const { updateJourneyStepStatus } = require('../utils/commerce/journeyAttributionHelper');
+            await updateJourneyStepStatus({
+              clientId: cartClientId || liveMsg?.clientId || null,
+              messageId,
+              status,
+              timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
+            });
+          } catch (_) {
+            /* non-fatal */
+          }
+          try {
             const { updateTemplateSendLogStatus } = require('../utils/commerce/templateSendLogStatus');
             await updateTemplateSendLogStatus({
               messageId,
@@ -587,6 +598,43 @@ async function processMessages(messages, metadata, contacts) {
           require('../utils/meta/voiceNoteHandler').processVoiceNote(message, client, from, convo._id, global.io, phone_number_id, profileName).catch(e => log.error('VoiceNote error', { error: e.message }));
         }
         continue;
+      }
+
+      // 3c. Journey Interactive Router — claim button taps from journey enrollments
+      // before dualBrainEngine so COD confirm/cancel are handled correctly.
+      if (message.type === 'button' || message.type === 'interactive') {
+        try {
+          const { handleJourneyButtonTap } = require('../services/journeyBuilder/journeyInteractiveRouter');
+          const Client = require('../models/Client');
+          const jrnClient = waClientFilter ? await Client.findOne(waClientFilter).select('clientId').lean() : null;
+          if (jrnClient?.clientId) {
+            const jrnResult = await handleJourneyButtonTap(jrnClient.clientId, from, message);
+            if (jrnResult?.claimed) {
+              log.debug(`[JourneyInteractiveRouter] claimed button tap from ${from} (action: ${jrnResult.action || 'unknown'})`);
+              continue; // Skip dualBrainEngine for this message
+            }
+          }
+        } catch (jrnErr) {
+          log.warn(`[JourneyInteractiveRouter] Error handling button tap: ${jrnErr.message}`);
+        }
+      }
+
+      // 3c2. Journey text replies (address verify / awaiting_text steps)
+      if (message.type === 'text' && message.text?.body) {
+        try {
+          const { handleJourneyTextReply } = require('../services/journeyBuilder/journeyInteractiveRouter');
+          const Client = require('../models/Client');
+          const jrnClient = waClientFilter ? await Client.findOne(waClientFilter).select('clientId').lean() : null;
+          if (jrnClient?.clientId) {
+            const jrnText = await handleJourneyTextReply(jrnClient.clientId, from, message.text.body);
+            if (jrnText?.claimed) {
+              log.debug(`[JourneyInteractiveRouter] claimed text from ${from} (action: ${jrnText.action || 'text'})`);
+              continue;
+            }
+          }
+        } catch (jrnTextErr) {
+          log.warn(`[JourneyInteractiveRouter] Error handling text reply: ${jrnTextErr.message}`);
+        }
       }
 
       // 4. Route to primary engine pipeline

@@ -313,6 +313,12 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                  *  2. dispatchOrderStatusAutomation — legacy commerce rules (checks ledger before send)
                  *  3. commerceAutomationService — SKU-scoped automations only (skipOrderStatusRules)
                  *  AWAIT step 1 before 2 so dedup pre-check sees ledger writes. */
+                // Journey Trigger Router — runs before SAC handler; writes OrderStatusSent dedup row
+                const { routeToJourneyBlueprints } = require('../services/journeyBuilder/journeyTriggerRouter');
+                await routeToJourneyBlueprints(client.clientId, 'order_placed', data).catch((e) =>
+                  log.warn(`[JourneyTriggerRouter] order_placed failed: ${e.message}`)
+                );
+
                 await processOrderStatusAutomations({
                   client,
                   payload: data,
@@ -515,6 +521,11 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   shopifyTopic: 'orders/fulfilled',
                   storeKey,
                 });
+                // Journey Trigger Router — order_shipped
+                const { routeToJourneyBlueprints: _routeShipped } = require('../services/journeyBuilder/journeyTriggerRouter');
+                _routeShipped(client.clientId, 'order_shipped', data).catch((e) =>
+                  log.warn(`[JourneyTriggerRouter] order_shipped failed: ${e.message}`)
+                );
                 const { schedulePostDeliveryUpsell } = require('../utils/commerce/upsellEngine');
                 await schedulePostDeliveryUpsell(client, data);
                 // Fire any flow with order_fulfilled trigger
@@ -935,18 +946,23 @@ async function handleOrder(client, data, storeKey = '') {
       const fin = String(data.financial_status || newOrder.financialStatus || '').toLowerCase();
       const successStatuses = ['paid', 'fulfilled', 'delivered', 'partially_fulfilled'];
       if (successStatuses.includes(fin)) {
+        const orderPayload = {
+          clientId: client.clientId,
+          customerPhone: cleanPhone,
+          totalPrice: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
+          amount: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
+          orderId: data.name || String(data.id),
+          shopifyOrderId: String(data.id || data.name || ''),
+          createdAt: new Date(data.created_at || newOrder.createdAt || Date.now()),
+        };
+        try {
+          const { attributeRevenueToJourney } = require('../utils/commerce/journeyAttributionHelper');
+          await attributeRevenueToJourney(orderPayload, lead);
+        } catch (jAttrErr) {
+          log.warn(`[ShopifyWebhook] journey revenue attribution skipped: ${jAttrErr.message}`);
+        }
         const { attributeRevenueToCampaign } = require('../utils/commerce/campaignStatsHelper');
-        await attributeRevenueToCampaign(
-          {
-            clientId: client.clientId,
-            customerPhone: cleanPhone,
-            totalPrice: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
-            amount: parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0,
-            orderId: data.name || String(data.id),
-            createdAt: new Date(data.created_at || newOrder.createdAt || Date.now()),
-          },
-          lead
-        );
+        await attributeRevenueToCampaign(orderPayload, lead);
       }
     } catch (attrErr) {
       log.warn(`[ShopifyWebhook] campaign revenue attribution skipped: ${attrErr.message}`);

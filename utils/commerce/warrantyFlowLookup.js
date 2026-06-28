@@ -429,22 +429,49 @@ function buildSimulatorWarrantyPreview(profile, scenario) {
     return buildScenarioOneBody(display);
   }
   if (scenario === 'multi_order') {
-    const orders = profile?.ordersWithWarranty || [];
-    const lines = orders.map((o, i) => `${i + 1}. ${o.orderDisplay}`).join('\n');
     return [
       `👉 Registered Number for Warranty Check: ${display}`,
       '',
-      '📋 Multiple orders with warranty coverage:',
-      lines,
+      '📋 You have multiple orders with warranty coverage.',
       '',
-      '_In live WhatsApp, customers pick an order from an interactive list._',
-      '',
-      "Tap 'Menu' for support or further assistance.",
+      'Tap **Choose order** below to pick one, or **Menu** for support.',
     ].join('\n');
   }
   const orderGroup = profile?.ordersWithWarranty?.[0];
   if (orderGroup) return buildDetailsBody(display, orderGroup);
   return buildScenarioFiveBody(display);
+}
+
+/** Interactive UI payload for Flow Builder simulator (buttons / list parity with live WA). */
+function buildSimulatorWarrantyInteractive(profile, scenario, page = 0) {
+  const menuButton = { id: MENU_BUTTON_ID, title: "Menu" };
+
+  if (scenario === "multi_order" && profile?.ordersWithWarranty?.length) {
+    const rows = buildListRows(profile.ordersWithWarranty, page);
+    return {
+      type: "list",
+      menuLabel: "Choose order",
+      sections: [{ title: "Orders with warranty", rows }],
+      buttons: [menuButton],
+      orderKeyByRowId: buildOrderMap(profile.ordersWithWarranty),
+      listPage: page,
+      hasMore: page * LIST_PAGE_SIZE + LIST_PAGE_SIZE < profile.ordersWithWarranty.length,
+    };
+  }
+
+  return {
+    type: "buttons",
+    buttons: [menuButton],
+  };
+}
+
+function buildSimulatorWarrantyOrderDetails(profile, orderKey) {
+  const display = profile?.displayPhone || profile?.customerPhone || "";
+  const orderGroup = (profile?.ordersWithWarranty || []).find(
+    (o) => String(o.orderKey) === String(orderKey)
+  );
+  if (!orderGroup) return "";
+  return buildDetailsBody(display, orderGroup);
 }
 
 module.exports = {
@@ -466,4 +493,7 @@ module.exports = {
   buildScenarioFiveBody,
   buildListRows,
   buildSimulatorWarrantyPreview,
+  buildSimulatorWarrantyInteractive,
+  buildSimulatorWarrantyOrderDetails,
+  decodeOrderRowId,
 };

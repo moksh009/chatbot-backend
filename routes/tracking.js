@@ -208,6 +208,8 @@ router.post('/order-webhook', verifyShopifyTrackingWebhook, async (req, res) => 
 
             if (lead && io) {
                 // Attribution Logic: Check if this lead recently received a campaign message
+                const { attributeRevenueToJourney } = require('../utils/commerce/journeyAttributionHelper');
+                await attributeRevenueToJourney(order, lead);
                 const { attributeRevenueToCampaign } = require('../utils/commerce/campaignStatsHelper');
                 await attributeRevenueToCampaign(order, lead);
                 

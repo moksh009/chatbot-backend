@@ -2416,7 +2416,26 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   // so merchants publish one WhatsApp flow document. Webhooks still match triggers by node.
   const commerceSlices = [];
   const splitAuto = !!mergedWizard._splitAutomations;
-  if (!splitAuto && F.enableAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
+  let includeAbandonedCart = !splitAuto && F.enableAbandonedCart;
+  if (includeAbandonedCart) {
+    const clientIdStr = resolvePersistedClientId(client);
+    if (clientIdStr) {
+      try {
+        const WhatsAppFlow = require('../../models/WhatsAppFlow');
+        const hasJourneyCart = await WhatsAppFlow.exists({
+          clientId: clientIdStr,
+          flowType: 'journey',
+          status: 'PUBLISHED',
+          isActive: true,
+          playbookKey: 'cart-recovery-3step',
+        });
+        if (hasJourneyCart) includeAbandonedCart = false;
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
+  }
+  if (includeAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
   // Order placed + COD confirmation run via Order messages (sys_commerce_*), not embedded flow triggers.
 
   const b2bParallel = F.enableB2BWholesale ? buildB2BBranch(ctx, IDS) : { nodes: [], edges: [] };

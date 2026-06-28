@@ -322,6 +322,7 @@ async function processPixelEvent(clientId, eventData) {
     "checkout_started",
     "contact_identified",
     "checkout_contact_identified",
+    "customer_identified",
     "exit_intent",
   ];
   if (trackableEvents.includes(eventName)) {
@@ -508,6 +509,54 @@ async function processPixelEvent(clientId, eventData) {
       });
 
       return { success: true, leadId: idLead?._id };
+    });
+  }
+
+  // customer_identified: logged-in Shopify customer added to cart → stitch identity + create active cart lead
+  if (eventName === 'customer_identified') {
+    return withPixelCaptureLock(clientId, dedupeKey, async () => {
+      const custPhone = data?.customer?.phone || data?.phone || phone;
+      const custEmail = data?.customer?.email || data?.email || email;
+      if (!custPhone && !custEmail) {
+        return { success: true, status: 'customer_identified_no_identity' };
+      }
+      const qPhone = custPhone ? (normalizeIndianPhone(custPhone) || normalizePhoneWithCountry(custPhone, client)) : null;
+      const qEmail = custEmail ? String(custEmail).trim().toLowerCase() : null;
+      if (qPhone) {
+        await stitchVisitorIdentity(clientId, client, {
+          phone: qPhone,
+          email: qEmail,
+          checkoutToken,
+          visitorId,
+          sessionId,
+          source: 'customer_identified',
+        }).catch((e) => log.debug(`customer_identified stitch error: ${e.message}`));
+      }
+      const cartItems = mapCartItems(data);
+      const idLead = await upsertLeadFromCommerce(client, clientId, {
+        phone: qPhone,
+        email: qEmail,
+        checkoutToken,
+        checkoutUrl,
+        cartItems,
+        cartTotal: data?.cartTotal || data?.total_price,
+        cartStatus: 'active',
+        setAbandonTimestamps: false,
+        extraSet: {
+          source: 'customer_identified',
+          customerIdentifiedAt: new Date(),
+          ...utmFields,
+        },
+      });
+      if (idLead?._id) {
+        await recordPixelEvent(clientId, idLead._id, 'customer_identified', {
+          phone: qPhone,
+          email: qEmail,
+          visitorId,
+        }).catch(() => {});
+      }
+      log.info(`[PixelProcessor] customer_identified: clientId=${clientId} phone=${qPhone || '-'}`);
+      return { success: true, status: 'customer_identified_stitched', leadId: idLead?._id };
     });
   }
 
