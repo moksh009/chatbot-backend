@@ -16,7 +16,7 @@ const {
   WHATSAPP_CREDENTIAL_SELECT,
   EMAIL_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
-const { buildMappedBodyComponent } = require('../utils/meta/templateParams');
+const { buildJourneySequenceWhatsAppPayload } = require('../services/journeyBuilder/journeySequenceWhatsApp');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { emitToClient } = require('../utils/core/socket');
@@ -74,43 +74,7 @@ function inferDefaultVariableMapping(templateComponents) {
 }
 
 async function buildSequenceWhatsAppPayload({ client, clientId, step, lead, seq }) {
-  const templateName = step.templateName;
-  const row = {
-    name: lead?.name || seq?.name || 'Customer',
-    customerName: lead?.name || seq?.name || 'Customer',
-    phone: lead?.phoneNumber || seq?.phone,
-    email: lead?.email || seq?.email,
-    tags: lead?.tags,
-    totalSpent: lead?.totalSpent,
-    lastPurchaseDate: lead?.lastPurchaseDate,
-    capturedData: lead?.capturedData,
-  };
-
-  let variableMapping =
-    step.variableMapping && typeof step.variableMapping === 'object' ? { ...step.variableMapping } : {};
-
-  const { resolveTemplateForSend } = require('../services/templateResolver');
-  const resolved = await resolveTemplateForSend(clientId, { name: templateName });
-  const tpl = resolved?.template;
-
-  if (!Object.keys(variableMapping).length) {
-    const fromTpl =
-      tpl?.variableMappings?.body || tpl?.variableMapping?.body || tpl?.variableMapping;
-    if (fromTpl && typeof fromTpl === 'object' && Object.keys(fromTpl).length) {
-      variableMapping = { ...fromTpl };
-    } else {
-      variableMapping = inferDefaultVariableMapping(tpl?.components);
-    }
-  }
-
-  const mappedBody = buildMappedBodyComponent({ variableMapping, row, client });
-  const components = mappedBody ? [mappedBody] : [];
-
-  return {
-    templateName,
-    templateLanguage: tpl?.language || step.templateLanguage || 'en',
-    components,
-  };
+  return buildJourneySequenceWhatsAppPayload({ client, clientId, step, lead, seq });
 }
 
 async function maybeFinalizeSequence(sequenceId, clientId) {
@@ -154,7 +118,7 @@ async function processSequenceDispatchJob(job) {
   const step = seq.steps?.[stepIdx];
   if (!step) return;
 
-  const stepChannel = resolveStepChannel(step);
+  const stepType = String(step?.type || 'whatsapp').toLowerCase();
   const fromStatus = step.status === 'pending' ? 'pending' : step.status;
   if (!['queued', 'pending', 'retrying'].includes(fromStatus)) return;
 
@@ -175,6 +139,94 @@ async function processSequenceDispatchJob(job) {
     await emitSequenceProgress(clientId, sequenceId);
     return;
   }
+
+  if (stepType === 'flow_handoff') {
+    if (phone.length < 10) {
+      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+        lockedBy: WORKER_ID,
+        lockedAt: new Date(),
+        attempts: (step.attempts || 0) + 1,
+        lastAttemptAt: new Date(),
+      });
+      await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_phone');
+      await maybeFinalizeSequence(sequenceId, clientId);
+      await emitSequenceProgress(clientId, sequenceId);
+      return;
+    }
+
+    const targetFlowId = String(step.targetFlowId || '').trim();
+    if (!targetFlowId) {
+      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+        lockedBy: WORKER_ID,
+        lockedAt: new Date(),
+        attempts: (step.attempts || 0) + 1,
+        lastAttemptAt: new Date(),
+      });
+      await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_target_flow');
+      await maybeFinalizeSequence(sequenceId, clientId);
+      await emitSequenceProgress(clientId, sequenceId);
+      return;
+    }
+
+    const client = await Client.findOne({ clientId }).select(WHATSAPP_CREDENTIAL_SELECT).lean();
+    if (!client) return;
+
+    const gate = await acquire({ client, clientId, channel: 'whatsapp' });
+    if (!gate.acquired) {
+      await enqueueSequenceStepJob({ ...job.data, channel: 'whatsapp' }, { delay: (gate.retryAfter || 2) * 1000 });
+      return;
+    }
+
+    let hbKey;
+    try {
+      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+        lockedBy: WORKER_ID,
+        lockedAt: new Date(),
+        attempts: (step.attempts || 0) + 1,
+        lastAttemptAt: new Date(),
+      });
+      hbKey = startHeartbeat({ workerId: WORKER_ID, type: 'sequence_step', recordId: sequenceId, stepIdx });
+
+      const { executeJourneyFlowHandoff } = require('../services/journeyBuilder/journeyFlowHandoff');
+      await executeJourneyFlowHandoff({
+        clientId,
+        phone: lead?.phoneNumber || seq.phone || phone,
+        targetFlowId,
+        sequenceId,
+      });
+
+      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', {
+        sentAt: new Date(),
+        lockedBy: null,
+        lockedAt: null,
+        channel: 'whatsapp',
+      });
+      await maybeFinalizeSequence(sequenceId, clientId);
+      logDispatchEvent('SequenceDispatch', 'sequence_flow_handoff', {
+        clientId,
+        sequenceId: String(sequenceId),
+        stepIdx,
+        targetFlowId,
+        outcome: 'sent',
+      });
+      await emitSequenceProgress(clientId, sequenceId);
+    } catch (handoffErr) {
+      log.warn(`Flow handoff ${sequenceId}:${stepIdx}: ${handoffErr.message}`);
+      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+        failureReason: handoffErr.message,
+        lockedBy: null,
+        lockedAt: null,
+      });
+      await maybeFinalizeSequence(sequenceId, clientId);
+      await emitSequenceProgress(clientId, sequenceId);
+    } finally {
+      if (hbKey) stopHeartbeat(hbKey);
+      await release({ clientId, channel: 'whatsapp' });
+    }
+    return;
+  }
+
+  const stepChannel = resolveStepChannel(step);
 
   if (stepChannel === 'email' && (!email || !email.includes('@'))) {
     await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {

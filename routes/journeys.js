@@ -72,6 +72,12 @@ async function validateCompiledSteps(steps, syncedMetaTemplates = [], clientId =
   for (let idx = 0; idx < (steps || []).length; idx += 1) {
     const step = steps[idx];
     const type = String(step?.type || 'whatsapp').toLowerCase();
+    if (type === 'flow_handoff') {
+      if (!String(step?.targetFlowId || '').trim()) {
+        failures.push({ step: idx + 1, type: 'flow_handoff', reasons: ['Select a published flow for chatbot handoff'] });
+      }
+      continue;
+    }
     if (type === 'email') {
       if (!String(step?.subject || '').trim()) {
         failures.push({ step: idx + 1, type: 'email', reasons: ['Email subject is required'] });
@@ -105,12 +111,14 @@ async function validateCompiledSteps(steps, syncedMetaTemplates = [], clientId =
   return failures;
 }
 
-function scanChannels(nodes = []) {
+function scanChannels(...nodeLists) {
   const channels = new Set();
-  for (const n of nodes) {
-    const t = String(n?.type || n?.data?.nodeType || '');
-    if (t === JOURNEY_NODE_TYPES.SEND_WHATSAPP) channels.add('whatsapp');
-    if (t === JOURNEY_NODE_TYPES.SEND_EMAIL) channels.add('email');
+  for (const list of nodeLists) {
+    for (const n of list || []) {
+      const t = String(n?.type || n?.data?.nodeType || '');
+      if (t === JOURNEY_NODE_TYPES.SEND_WHATSAPP) channels.add('whatsapp');
+      if (t === JOURNEY_NODE_TYPES.SEND_EMAIL) channels.add('email');
+    }
   }
   return [...channels];
 }
@@ -126,9 +134,8 @@ function triggerSummary(flow) {
 }
 
 function serializeBlueprint(doc, stats = {}) {
-  const nodes = doc.status === 'PUBLISHED' && doc.publishedNodes?.length
-    ? doc.publishedNodes
-    : doc.nodes || [];
+  const draftNodes = doc.nodes || [];
+  const publishedNodes = doc.publishedNodes || [];
   return {
     id: doc.flowId,
     _id: doc._id,
@@ -148,7 +155,7 @@ function serializeBlueprint(doc, stats = {}) {
     edges: doc.edges || [],
     publishedNodes: doc.publishedNodes || [],
     publishedEdges: doc.publishedEdges || [],
-    channels: scanChannels(nodes),
+    channels: scanChannels(draftNodes, publishedNodes),
     triggerSummary: triggerSummary(doc),
     stats: {
       uniqueRecipients: stats.uniqueRecipients || 0,
@@ -322,6 +329,66 @@ router.get('/:clientId/:flowId/stats', protect, async (req, res) => {
   }
 });
 
+// GET /api/journeys/:clientId/:flowId/analytics/detail — per-journey stats + recipient drill-down
+router.get('/:clientId/:flowId/analytics/detail', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId))
+      .select('flowId name')
+      .lean();
+    if (!flow) {
+      return res.status(404).json({ success: false, message: 'Journey not found' });
+    }
+    const {
+      getJourneyAnalyticsDetail,
+    } = require('../services/journeyBuilder/journeyEnrollmentDetailService');
+    const detail = await getJourneyAnalyticsDetail(clientId, flow.flowId, {
+      period: req.query.period || '7d',
+      page: req.query.page,
+      limit: req.query.limit,
+      search: req.query.search,
+    });
+    res.json({
+      success: true,
+      journey: { flowId: flow.flowId, name: flow.name },
+      ...detail,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/journeys/:clientId/:flowId/enrollments/export — CSV with engagement columns
+router.get('/:clientId/:flowId/enrollments/export', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId))
+      .select('flowId')
+      .lean();
+    if (!flow) {
+      return res.status(404).json({ success: false, message: 'Journey not found' });
+    }
+    const {
+      exportJourneyEnrollmentsCsv,
+    } = require('../services/journeyBuilder/journeyEnrollmentDetailService');
+    const out = await exportJourneyEnrollmentsCsv(clientId, flow.flowId, {
+      period: req.query.period || 'all',
+      search: req.query.search,
+    });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(out.csv);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // GET /api/journeys/:clientId/:flowId
 router.get('/:clientId/:flowId', protect, async (req, res) => {
   try {
@@ -359,20 +426,9 @@ router.post('/:clientId', protect, async (req, res) => {
     const { PLAYBOOK_CATALOG } = require('../services/journeyBuilder/seedPlaybooks');
     const validPlaybookKeys = PLAYBOOK_CATALOG.map((p) => p.playbookKey).filter(Boolean);
     if (playbookKey && validPlaybookKeys.includes(playbookKey)) {
-      const catalogEntry = PLAYBOOK_CATALOG.find((p) => p.playbookKey === playbookKey);
-      if (catalogEntry?.tier >= 3) {
-        const clientDoc = await Client.findOne({ clientId }).select('logisticsMode').lean();
-        const mode = clientDoc?.logisticsMode || 'shopify_only';
-        if (!['hybrid', 'direct'].includes(mode)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Connect logistics in Settings before creating logistics shipment journeys.',
-          });
-        }
-      }
       await seedPlaybooksForClient(clientId, {
         keys: [playbookKey],
-        maxTier: catalogEntry?.tier >= 3 ? 3 : 2,
+        maxTier: 2,
       });
       const existing = await WhatsAppFlow.findOne({
         clientId,
@@ -453,11 +509,55 @@ router.delete('/:clientId/:flowId', protect, async (req, res) => {
     if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const flow = await WhatsAppFlow.findOneAndDelete(journeyQuery(clientId, req.params.flowId));
+
+    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId));
     if (!flow) {
       return res.status(404).json({ success: false, message: 'Journey not found' });
     }
-    res.json({ success: true });
+
+    const sourceFlowId = String(flow.flowId || flow._id);
+    const activeSeqs = await FollowUpSequence.find({
+      clientId,
+      sourceFlowId,
+      status: 'active',
+    })
+      .select('_id leadId')
+      .lean();
+
+    if (activeSeqs.length) {
+      const now = new Date();
+      await FollowUpSequence.updateMany(
+        { clientId, sourceFlowId, status: 'active' },
+        {
+          $set: {
+            status: 'cancelled',
+            cancelledReason: 'journey_deleted',
+            cancelledAt: now,
+          },
+        }
+      );
+
+      const leadIds = [...new Set(activeSeqs.map((s) => String(s.leadId)).filter(Boolean))];
+      await Promise.all(
+        leadIds.map(async (leadId) => {
+          const count = await FollowUpSequence.countDocuments({
+            clientId,
+            leadId,
+            status: 'active',
+          });
+          await AdLead.findByIdAndUpdate(leadId, {
+            $set: { 'metaData.hasActiveSequence': count > 0 },
+          });
+        })
+      );
+    }
+
+    await WhatsAppFlow.deleteOne({ _id: flow._id });
+
+    res.json({
+      success: true,
+      cancelledEnrollments: activeSeqs.length,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -483,7 +583,7 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
     if (!steps.length) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot publish: add at least one send step to your journey.',
+        message: 'Cannot publish: add at least one WhatsApp, email, or chatbot handoff step.',
         warnings,
       });
     }
@@ -512,19 +612,6 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
       .select('_id clientId syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected logisticsMode')
       .lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const { PLAYBOOK_CATALOG } = require('../services/journeyBuilder/seedPlaybooks');
-    const catalogEntry = PLAYBOOK_CATALOG.find((p) => p.playbookKey === flow.playbookKey);
-    if (catalogEntry?.tier >= 3 && catalogEntry?.requiresLogistics) {
-      const mode = client.logisticsMode || 'shopify_only';
-      if (!['hybrid', 'direct'].includes(mode)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Publish blocked: connect logistics integration in Settings before going live with shipment journeys.',
-          warnings,
-        });
-      }
-    }
 
     const stepFailures = await validateCompiledSteps(steps, client.syncedMetaTemplates || [], clientId);
     if (stepFailures.length) {
@@ -711,7 +798,7 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
 // Phase 3 — Migration status: reads commerceAutomations[] and maps to journeys
 // ---------------------------------------------------------------------------
 const SYSTEM_RULE_TO_PLAYBOOK = {
-  sys_fulfillment_unfulfilled: { playbookKey: 'order-placed', triggerType: 'order_placed', tier: 1 },
+  sys_fulfillment_unfulfilled: { playbookKey: 'order-placed-confirm', triggerType: 'order_placed', tier: 1 },
   sys_commerce_cod_confirm:    { playbookKey: 'cod-confirm-basic', triggerType: 'order_placed', tier: 1 },
   sys_cart_followup_1:         { playbookKey: 'cart-recovery-3step', triggerType: 'cart_abandoned', tier: 1 },
   sys_cart_followup_2:         { playbookKey: 'cart-recovery-3step', triggerType: 'cart_abandoned', tier: 1 },

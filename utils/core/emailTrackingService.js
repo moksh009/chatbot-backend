@@ -213,6 +213,18 @@ async function recordEmailOpen(envelopeId, clientId, req = {}) {
       { _id: envelopeId, clientId, 'tracking.firstOpenAt': null },
       { $set: { 'tracking.firstOpenAt': now } }
     );
+
+    try {
+      const { updateJourneyStepFromEnvelope } = require('../commerce/journeyAttributionHelper');
+      await updateJourneyStepFromEnvelope({
+        clientId,
+        envelopeId,
+        type: 'open',
+        timestamp: now,
+      });
+    } catch (_) {
+      /* non-fatal */
+    }
   } catch (err) {
     const log = require('./logger')('EmailTracking');
     log.warn('recordEmailOpen envelope update failed', {
@@ -239,6 +251,18 @@ async function recordEmailClick(envelopeId, clientId, url, req = {}) {
     { _id: envelopeId, clientId },
     { $inc: { 'tracking.clickCount': 1 } }
   );
+
+  try {
+    const { updateJourneyStepFromEnvelope } = require('../commerce/journeyAttributionHelper');
+    await updateJourneyStepFromEnvelope({
+      clientId,
+      envelopeId,
+      type: 'click',
+      timestamp: now,
+    });
+  } catch (_) {
+    /* non-fatal */
+  }
 }
 
 async function processEmailUnsubscribe(token, req = {}) {

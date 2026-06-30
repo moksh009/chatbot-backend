@@ -49,18 +49,44 @@ const EMAIL_CREDENTIAL_SELECT =
   "clientId emailMethod gmailAddress emailUser gmailRefreshToken gmailAccessToken " +
   "emailAppPassword emailHost emailPort emailSecure name translationConfig";
 
+/** True when a string can be sent to Meta Graph (not empty, not an undecrypted blob). */
+function isUsableGraphAccessToken(token) {
+  if (!token || typeof token !== "string") return false;
+  const s = token.trim();
+  if (s.length < 20) return false;
+  if (looksLikeAppEncryptedToken(s)) return false;
+  return true;
+}
+
+/** All decrypted token candidates in storage precedence order (deduped). */
+function collectWhatsAppTokenCandidates(client) {
+  if (!client) return [];
+  const raw = [
+    client.premiumAccessToken,
+    client.whatsappToken,
+    client.whatsapp?.accessToken,
+    client.config?.whatsappToken,
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const val of raw) {
+    const t = maybeDecryptSecret(val);
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 /**
- * Bearer token for Graph API: premium → root whatsappToken → nested whatsapp/config.
+ * Bearer token for Graph API — first usable candidate across all storage paths.
+ * Skips empty values and undecrypted iv:ciphertext blobs so a bad premium token
+ * does not block a valid root whatsappToken fallback.
  */
 function getEffectiveWhatsAppAccessToken(client) {
-  if (!client) return "";
-  const premium = maybeDecryptSecret(client.premiumAccessToken);
-  if (premium) return premium;
-  const root = maybeDecryptSecret(client.whatsappToken);
-  if (root) return root;
-  const nested = maybeDecryptSecret(client.whatsapp?.accessToken);
-  if (nested) return nested;
-  return maybeDecryptSecret(client.config?.whatsappToken);
+  const candidates = collectWhatsAppTokenCandidates(client);
+  return candidates.find(isUsableGraphAccessToken) || "";
 }
 
 /**
@@ -180,6 +206,9 @@ module.exports = {
   WHATSAPP_CONNECTION_STATUS_SELECT,
   EMAIL_CREDENTIAL_SELECT,
   maybeDecryptSecret,
+  looksLikeAppEncryptedToken,
+  isUsableGraphAccessToken,
+  collectWhatsAppTokenCandidates,
   getEffectiveWhatsAppAccessToken,
   getEffectiveWhatsAppPhoneNumberId,
   getEffectiveWhatsAppWabaId,

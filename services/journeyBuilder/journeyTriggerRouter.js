@@ -23,7 +23,7 @@ const FollowUpSequence = require('../../models/FollowUpSequence');
 const OrderStatusSent = require('../../models/OrderStatusSent');
 const AdLead = require('../../models/AdLead');
 const { compileGraphToSteps } = require('./compileGraphToSteps');
-const { normalizeFilters } = require('./journeyNodeContract');
+const { evaluateTriggerRules } = require('./journeyTriggerEvaluator');
 const { enqueueDueStepsForSequence } = require('../../utils/messaging/sequenceStepEnqueue');
 const log = require('../../utils/core/logger')('JourneyTriggerRouter');
 
@@ -51,36 +51,18 @@ function extractOrderId(payload) {
   return String(payload?.name || payload?.id || payload?.orderId || '');
 }
 
-function isCodOrder(payload) {
-  const gateways = payload?.payment_gateway_names || [];
-  const gateway = String(payload?.gateway || payload?.payment_gateway || '');
-  return gateways.some((g) => /cod|cash/i.test(String(g))) || /cod|cash/i.test(gateway);
-}
-
 /**
  * Match a blueprint's journeyTrigger.filters against the event payload.
  * Returns true if the blueprint should enroll.
  */
-function filtersMatch(blueprintFilters, triggerType, payload) {
-  const f = normalizeFilters(blueprintFilters || {});
-
-  if (f.codOnly) {
-    if (!isCodOrder(payload)) return false;
-  }
-
-  if (Array.isArray(f.productIds) && f.productIds.length > 0) {
-    const lineItems = Array.isArray(payload?.line_items) ? payload.line_items : [];
-    const orderProductIds = lineItems.map((li) => String(li?.product_id || '')).filter(Boolean);
-    const matches = f.productIds.some((id) => orderProductIds.includes(String(id)));
-    if (!matches) return false;
-  }
-
-  if (Number.isFinite(f.minOrderTotal) && f.minOrderTotal > 0) {
-    const total = Number(payload?.total_price || payload?.subtotal_price || 0);
-    if (total < f.minOrderTotal) return false;
-  }
-
-  return true;
+async function filtersMatch(clientId, blueprintFilters, triggerType, payload) {
+  const { match } = await evaluateTriggerRules({
+    clientId,
+    triggerType,
+    payload,
+    filters: blueprintFilters || {},
+  });
+  return match;
 }
 
 /**
@@ -200,7 +182,7 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
     const filters = blueprint?.journeyTrigger?.filters || {};
 
     // Filter matching
-    if (!filtersMatch(filters, triggerType, payload)) {
+    if (!(await filtersMatch(clientId, filters, triggerType, payload))) {
       skipped.push(`${flowId}:filter_mismatch`);
       continue;
     }

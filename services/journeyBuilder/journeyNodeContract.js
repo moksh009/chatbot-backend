@@ -44,22 +44,15 @@ function normalizeEntryType(raw) {
   return ENTRY_TYPES.includes(t) ? t : 'manual';
 }
 
+const { normalizeTriggerRules, serializeTriggerRules, summarizeTriggerRules } = require('./triggerFilterCatalog');
+
 /**
  * Normalise journeyTrigger.filters from canvas data to a clean object.
  * Defensive — accepts any shape from studio form.
  */
 function normalizeFilters(raw) {
-  if (!raw || typeof raw !== 'object') return {};
-  const out = {};
-  if (raw.codOnly === true || raw.paymentMethod === 'cod') out.codOnly = true;
-  if (Array.isArray(raw.productIds) && raw.productIds.length) {
-    out.productIds = raw.productIds.filter(Boolean);
-  }
-  if (Number.isFinite(Number(raw.minOrderTotal)) && Number(raw.minOrderTotal) > 0) {
-    out.minOrderTotal = Number(raw.minOrderTotal);
-  }
-  if (raw.shipmentStatus) out.shipmentStatus = String(raw.shipmentStatus);
-  return out;
+  if (!raw || typeof raw !== 'object') return { rules: [] };
+  return serializeTriggerRules(normalizeTriggerRules(raw));
 }
 
 /**
@@ -79,8 +72,8 @@ function journeyTriggerSummary(journeyTrigger) {
     order_delivered: 'Order delivered',
   };
   let label = labels[type] || String(type || 'Manual enroll');
-  if (filters.codOnly) label += ' · COD';
-  if (filters.productIds?.length) label += ` · ${filters.productIds.length} product(s)`;
+  const parts = summarizeTriggerRules(filters?.rules?.length ? filters.rules : normalizeTriggerRules(filters));
+  if (parts.length) label += ` · ${parts.join(' · ')}`;
   return label;
 }
 

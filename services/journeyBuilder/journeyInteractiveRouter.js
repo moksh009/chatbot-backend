@@ -105,6 +105,22 @@ async function handleJourneyButtonTap(clientId, phone, buttonPayload) {
     return { claimed: true, alreadyHandled: true };
   }
 
+  const clickTs = new Date();
+  try {
+    const clickPath = `steps.${stepIndex}.clickedAt`;
+    const clickTypePath = `steps.${stepIndex}.clickType`;
+    const patch = {
+      [clickPath]: clickTs,
+      [clickTypePath]: 'button',
+    };
+    if (!step.deliveredAt) {
+      patch[`steps.${stepIndex}.deliveredAt`] = clickTs;
+    }
+    await FollowUpSequence.updateOne({ _id: sequence._id }, { $set: patch });
+  } catch (_) {
+    /* non-fatal */
+  }
+
   // Idempotency — only handle if step is still awaiting interaction
   const actionableStatuses = ['pending', 'queued', 'sent'];
   const isAwaiting = step.interactionMode === 'awaiting_button' ||

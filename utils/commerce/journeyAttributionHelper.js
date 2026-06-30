@@ -43,6 +43,79 @@ async function updateJourneyStepStatus({ clientId, messageId, status, timestamp 
 }
 
 /**
+ * Record WhatsApp template button / link tap on a journey step (context.messageId).
+ */
+async function updateJourneyStepClick({ clientId, messageId, timestamp, clickType = 'button' }) {
+  const mid = String(messageId || '').trim();
+  if (!mid) return false;
+  const ts = timestamp instanceof Date ? timestamp : new Date();
+
+  const filter = { 'steps.messageId': mid };
+  if (clientId) filter.clientId = clientId;
+
+  const seq = await FollowUpSequence.findOne(filter).lean();
+  if (!seq?.steps?.length) return false;
+
+  const stepIdx = seq.steps.findIndex((s) => String(s?.messageId || '') === mid);
+  if (stepIdx < 0) return false;
+
+  const path = `steps.${stepIdx}`;
+  const $set = {
+    [`${path}.clickedAt`]: ts,
+    [`${path}.clickType`]: String(clickType || 'button'),
+  };
+  if (!seq.steps[stepIdx]?.deliveredAt) {
+    $set[`${path}.deliveredAt`] = ts;
+  }
+
+  await FollowUpSequence.updateOne({ _id: seq._id }, { $set });
+  return true;
+}
+
+/**
+ * Backfill journey email step open/click from MessageEnvelope tracking webhooks.
+ */
+async function updateJourneyStepFromEnvelope({ clientId, envelopeId, type, timestamp }) {
+  const envId = envelopeId;
+  if (!envId || !type) return false;
+  const ts = timestamp instanceof Date ? timestamp : new Date();
+
+  const filter = { 'steps.envelopeId': envId };
+  if (clientId) filter.clientId = clientId;
+
+  const seq = await FollowUpSequence.findOne(filter).lean();
+  if (!seq?.steps?.length) return false;
+
+  const stepIdx = seq.steps.findIndex(
+    (s) => s?.envelopeId && String(s.envelopeId) === String(envId)
+  );
+  if (stepIdx < 0) return false;
+
+  const path = `steps.${stepIdx}`;
+  const $set = {};
+  if (type === 'open') {
+    $set[`${path}.readAt`] = ts;
+    if (!seq.steps[stepIdx]?.deliveredAt) {
+      $set[`${path}.deliveredAt`] = ts;
+    }
+  } else if (type === 'click') {
+    $set[`${path}.clickedAt`] = ts;
+    $set[`${path}.clickType`] = 'link';
+    if (!seq.steps[stepIdx]?.readAt) {
+      $set[`${path}.readAt`] = ts;
+    }
+    if (!seq.steps[stepIdx]?.deliveredAt) {
+      $set[`${path}.deliveredAt`] = ts;
+    }
+  } else {
+    return false;
+  }
+
+  await FollowUpSequence.updateOne({ _id: seq._id }, { $set });
+  return true;
+}
+
+/**
  * Find the best journey enrollment for last-touch attribution within the window.
  */
 function latestJourneyTouch(sequences, orderDate, windowStart) {
@@ -168,6 +241,9 @@ async function attributeRevenueToJourney(order, lead) {
 
 module.exports = {
   updateJourneyStepStatus,
+  updateJourneyStepClick,
+  updateJourneyStepFromEnvelope,
   attributeRevenueToJourney,
+  latestJourneyTouch,
   ATTRIBUTION_WINDOW_HOURS,
 };

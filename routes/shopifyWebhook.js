@@ -435,19 +435,27 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                         );
                         const fullOrder = orderRes.data?.order;
                         if (fullOrder) {
-                            await processOrderStatusAutomations({
-                                client,
-                                payload: fullOrder,
-                                source: `shopify_webhook:${topic}`,
-                            }).catch((e) =>
-                                log.error(`OrderStatus automation ${topic} failed: ${e.message}`)
-                            );
                             const shipmentStatus = String(
                                 fulfillmentMeta?.shipmentStatus ||
                                 data.shipment_status ||
                                 data.status ||
                                 ''
                             ).toLowerCase();
+                            const { routeToJourneyBlueprints: _routeJourneyFulfillment } = require('../services/journeyBuilder/journeyTriggerRouter');
+                            const journeyTriggerType =
+                                shipmentStatus === 'delivered' || shipmentStatus === 'delivery'
+                                    ? 'order_delivered'
+                                    : 'order_shipped';
+                            await _routeJourneyFulfillment(client.clientId, journeyTriggerType, fullOrder).catch((e) =>
+                                log.warn(`[JourneyTriggerRouter] ${journeyTriggerType} failed: ${e.message}`)
+                            );
+                            await processOrderStatusAutomations({
+                                client,
+                                payload: fullOrder,
+                                source: `shopify_webhook:${topic}`,
+                            }                            ).catch((e) =>
+                                log.error(`OrderStatus automation ${topic} failed: ${e.message}`)
+                            );
                             const { shouldSkipSacForNdr } = require('../utils/commerce/rtoProtectionService');
                             if (!shouldSkipSacForNdr(client, shipmentStatus, fulfillmentMeta?.ndrResult)) {
                                 await processShipmentStatusAutomations({

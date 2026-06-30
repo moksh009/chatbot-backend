@@ -34,9 +34,12 @@ const FollowUpSequenceSchema = new mongoose.Schema({
   steps: [{
     type: {
       type: String,
-      enum: ['whatsapp', 'email', 'review_request', 'warranty_resend'],
+      enum: ['whatsapp', 'email', 'review_request', 'warranty_resend', 'flow_handoff'],
       default: 'whatsapp',
     },
+    /** Journey chatbot handoff — published Flow Builder flow id */
+    targetFlowId: { type: String, default: '' },
+    targetFlowName: { type: String, default: '' },
     templateId: String, // For Meta WhatsApp Templates
     templateName: String,
     subject: String, // For Email
@@ -81,6 +84,7 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     deliveredAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
     clickedAt: { type: Date, default: null },
+    clickType: { type: String, enum: ['button', 'link', ''], default: '' },
   }]
 }, { timestamps: true });
 

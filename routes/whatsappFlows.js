@@ -11,6 +11,7 @@ const { apiCache } = require('../middleware/apiCache');
 const {
   resolveWhatsAppCredentials,
   isWhatsAppOutboundReady,
+  isUsableGraphAccessToken,
   WHATSAPP_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
 
@@ -30,8 +31,20 @@ function formatFlowForClient(doc) {
 }
 
 function isMetaOAuthError(err) {
-    const code = Number(err?.response?.data?.error?.code);
+    const code = Number(
+        err?.response?.data?.error?.code ??
+        err?.code ??
+        err?.error?.code
+    );
     return code === 190 || code === 102 || code === 10;
+}
+
+function integrationAuthResponse(res, message, detail) {
+    return res.status(403).json({
+        error: message,
+        detail: detail || message,
+        isIntegrationAuthError: true,
+    });
 }
 
 /**
@@ -45,6 +58,11 @@ async function loadWhatsAppGraphCredentials(clientId) {
         throw err;
     }
     const { token, wabaId } = resolveWhatsAppCredentials(client);
+    if (!isUsableGraphAccessToken(token)) {
+        const err = new Error('WhatsApp access token missing or unreadable. Reconnect WhatsApp in Settings.');
+        err.code = 'WA_TOKEN_INVALID';
+        throw err;
+    }
     return { client, token, wabaId };
 }
 
@@ -127,19 +145,23 @@ router.post('/sync', protect, async (req, res) => {
 
         res.json({ success: true, count: formatted.length, flows: formatted });
     } catch (err) {
-        if (err.code === 'WA_NOT_CONFIGURED') {
-            return res.status(403).json({ error: err.message, isIntegrationAuthError: true });
+        if (err.code === 'WA_NOT_CONFIGURED' || err.code === 'WA_TOKEN_INVALID') {
+            return integrationAuthResponse(res, err.message);
         }
         const metaErr = err.response?.data?.error;
         log.error('Sync Error:', metaErr || err.message);
         const detail = metaErr?.message || err.message;
-        const authError = isMetaOAuthError(err);
-        res.status(authError ? 403 : 500).json({
-            error: authError
-                ? 'WhatsApp token rejected by Meta. Reconnect WhatsApp in Settings → Connections.'
-                : 'Failed to sync flows from Meta.',
+        if (isMetaOAuthError(err) || isMetaOAuthError(metaErr)) {
+            return integrationAuthResponse(
+                res,
+                'WhatsApp token rejected by Meta. Reconnect WhatsApp in Settings → Connections.',
+                detail
+            );
+        }
+        res.status(500).json({
+            error: 'Failed to sync flows from Meta.',
             detail,
-            isIntegrationAuthError: authError,
+            isIntegrationAuthError: false,
         });
     }
 });

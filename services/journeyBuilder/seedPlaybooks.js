@@ -3,6 +3,7 @@
 const WhatsAppFlow = require('../../models/WhatsAppFlow');
 const { JOURNEY_NODE_TYPES } = require('./journeyNodeContract');
 const { CART_RECOVERY_DEFAULTS } = require('../../constants/cartRecoveryDefaults');
+const { PREBUILT_ORDER_EMAIL_TEMPLATES } = require('../../constants/prebuiltOrderEmailTemplates');
 
 function edge(id, source, target, sourceHandle) {
   const e = { id, source, target, type: 'default' };
@@ -17,6 +18,62 @@ function node(id, type, data, position) {
     position: position || { x: 0, y: 0 },
     data: { nodeType: type, ...data },
   };
+}
+
+function emailFromPrebuilt(key, id, label, position) {
+  const tpl = PREBUILT_ORDER_EMAIL_TEMPLATES[key];
+  if (!tpl) {
+    throw new Error(`Missing prebuilt email template: ${key}`);
+  }
+  return node(id, JOURNEY_NODE_TYPES.SEND_EMAIL, {
+    templateId: key,
+    templateName: tpl.name,
+    subject: tpl.subject,
+    content: tpl.bodyHtml,
+    label: label || tpl.name,
+  }, position);
+}
+
+function waSend(id, templateName, label, extra = {}, position) {
+  const PREBUILT_VM = {
+    order_confirmation_v1: {
+      header: 'first_product_image',
+      body: { 1: 'first_name', 2: 'order_id', 3: 'order_items', 4: 'order_total', 5: 'shipping_address' },
+    },
+    order_shipped_v1: {
+      body: { 1: 'first_name', 2: 'order_id', 3: 'estimated_delivery' },
+      buttons: { 0: 'tracking_url' },
+    },
+    cart_recovery_1: {
+      header: 'first_product_image',
+      body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total' },
+      buttons: { 0: 'checkout_url' },
+    },
+    cart_recovery_2: {
+      header: 'first_product_image',
+      body: { 1: 'first_name', 2: 'product_name' },
+      buttons: { 0: 'checkout_url' },
+    },
+    cart_recovery_3: {
+      header: 'first_product_image',
+      body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 4: 'discount_code' },
+      buttons: { 0: 'checkout_url' },
+    },
+    cod_confirmation_v1: {
+      header: 'first_product_image',
+      body: { 1: 'first_name', 2: 'order_id', 3: 'order_items', 4: 'order_total', 5: 'shipping_address' },
+    },
+    order_cancellation_v1: {
+      body: { 1: 'first_name', 2: 'order_id', 3: 'order_total', 4: 'brand_name' },
+    },
+  };
+  const preset = templateName ? PREBUILT_VM[templateName] : null;
+  return node(id, JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
+    templateName,
+    label,
+    ...(preset ? { variableMappings: preset } : {}),
+    ...extra,
+  }, position);
 }
 
 /** Quick 3-step drip — mirrors FollowUpSequenceModal defaults (15m / 6h between sends). */
@@ -60,42 +117,39 @@ function buildCartRecovery3StepGraph() {
       journeyTrigger: { type: 'cart_abandoned', filters: { cartDelayMinutes: d1m } },
       cancelOnReply: true,
     }, { x: 80, y: 40 }),
-    node('send_1', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: 'cart_recovery_1',
-      label: 'Cart recovery — nudge 1',
-    }, { x: 80, y: 160 }),
+    waSend('send_wa_1', 'cart_recovery_1', 'Cart recovery — nudge 1 (WhatsApp)', {}, { x: 80, y: 160 }),
+    emailFromPrebuilt('cart_recovery_email_1', 'send_email_1', 'Cart recovery — nudge 1 (email)', { x: 80, y: 280 }),
     node('wait_1', JOURNEY_NODE_TYPES.WAIT, {
       delayValue: d2h,
       delayUnit: 'h',
       label: `Wait ${d2h} hours`,
-    }, { x: 80, y: 280 }),
-    node('send_2', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: 'cart_recovery_2',
-      label: 'Cart recovery — nudge 2',
     }, { x: 80, y: 400 }),
+    waSend('send_wa_2', 'cart_recovery_2', 'Cart recovery — nudge 2 (WhatsApp)', {}, { x: 80, y: 520 }),
+    emailFromPrebuilt('cart_recovery_email_2', 'send_email_2', 'Cart recovery — nudge 2 (email)', { x: 80, y: 640 }),
     node('wait_2', JOURNEY_NODE_TYPES.WAIT, {
       delayValue: d3h,
       delayUnit: 'h',
       label: `Wait ${d3h} hours`,
-    }, { x: 80, y: 520 }),
-    node('send_3', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: 'cart_recovery_3',
-      label: 'Cart recovery — final nudge',
-    }, { x: 80, y: 640 }),
-    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 760 }),
+    }, { x: 80, y: 760 }),
+    waSend('send_wa_3', 'cart_recovery_3', 'Cart recovery — final nudge (WhatsApp)', {}, { x: 80, y: 880 }),
+    emailFromPrebuilt('cart_recovery_email_3', 'send_email_3', 'Cart recovery — final nudge (email)', { x: 80, y: 1000 }),
+    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 1120 }),
   ];
   const edges = [
-    edge('e1', 'trigger_1', 'send_1'),
-    edge('e2', 'send_1', 'wait_1'),
-    edge('e3', 'wait_1', 'send_2'),
-    edge('e4', 'send_2', 'wait_2'),
-    edge('e5', 'wait_2', 'send_3'),
-    edge('e6', 'send_3', 'end_1'),
+    edge('e1', 'trigger_1', 'send_wa_1'),
+    edge('e2', 'send_wa_1', 'send_email_1'),
+    edge('e3', 'send_email_1', 'wait_1'),
+    edge('e4', 'wait_1', 'send_wa_2'),
+    edge('e5', 'send_wa_2', 'send_email_2'),
+    edge('e6', 'send_email_2', 'wait_2'),
+    edge('e7', 'wait_2', 'send_wa_3'),
+    edge('e8', 'send_wa_3', 'send_email_3'),
+    edge('e9', 'send_email_3', 'end_1'),
   ];
   return { nodes, edges };
 }
 
-/** Order placed confirmation — single send, Tier 1. */
+/** Order placed confirmation — WhatsApp + email (mirrors Order messages dual-channel). */
 function buildOrderPlacedGraph() {
   const nodes = [
     node('trigger_1', JOURNEY_NODE_TYPES.JOURNEY_TRIGGER, {
@@ -103,15 +157,14 @@ function buildOrderPlacedGraph() {
       journeyTrigger: { type: 'order_placed', filters: {} },
       cancelOnReply: false,
     }, { x: 80, y: 40 }),
-    node('send_1', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: '',
-      label: 'Order confirmation',
-    }, { x: 80, y: 160 }),
-    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 280 }),
+    waSend('send_wa_1', 'order_confirmation_v1', 'Order confirmation — WhatsApp', {}, { x: 80, y: 160 }),
+    emailFromPrebuilt('order_confirmed', 'send_email_1', 'Order confirmation — email', { x: 80, y: 280 }),
+    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 400 }),
   ];
   const edges = [
-    edge('e1', 'trigger_1', 'send_1'),
-    edge('e2', 'send_1', 'end_1'),
+    edge('e1', 'trigger_1', 'send_wa_1'),
+    edge('e2', 'send_wa_1', 'send_email_1'),
+    edge('e3', 'send_email_1', 'end_1'),
   ];
   return { nodes, edges };
 }
@@ -128,43 +181,36 @@ function buildCodConfirmBasicGraph() {
       journeyTrigger: { type: 'order_placed', filters: { codOnly: true } },
       cancelOnReply: false,
     }, { x: 80, y: 40 }),
-    node('send_1', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: '',
-      label: 'COD confirm — initial ask',
-      codConfirmTemplate: true,
-    }, { x: 80, y: 160 }),
+    waSend('send_wa_1', 'cod_confirmation_v1', 'COD confirm — initial ask', { codConfirmTemplate: true }, { x: 80, y: 160 }),
+    emailFromPrebuilt('order_confirmed', 'send_email_1', 'COD order confirmation — email', { x: 80, y: 280 }),
     node('wait_1', JOURNEY_NODE_TYPES.WAIT, {
       delayValue: 2,
       delayUnit: 'h',
       label: 'Wait 2 hours',
-    }, { x: 80, y: 280 }),
+    }, { x: 80, y: 400 }),
     node('cond_1', JOURNEY_NODE_TYPES.CONDITION, {
       condition: 'no_reply',
       label: 'No confirm yet?',
-    }, { x: 80, y: 400 }),
-    node('send_2', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: '',
-      label: 'Cancel reminder',
     }, { x: 80, y: 520 }),
-    node('send_3', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: '',
-      label: 'Address verification',
-      addressVerifyTemplate: true,
-    }, { x: 80, y: 640 }),
-    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 760 }),
+    waSend('send_wa_2', 'order_cancellation_v1', 'Cancel reminder', {}, { x: 80, y: 640 }),
+    emailFromPrebuilt('order_cancelled', 'send_email_2', 'Cancellation notice — email', { x: 80, y: 760 }),
+    waSend('send_wa_3', '', 'Address verification', { addressVerifyTemplate: true }, { x: 80, y: 880 }),
+    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 1000 }),
   ];
   const edges = [
-    edge('e1', 'trigger_1', 'send_1'),
-    edge('e2', 'send_1', 'wait_1'),
-    edge('e3', 'wait_1', 'cond_1'),
-    edge('e4', 'cond_1', 'send_2', 'default'),
-    edge('e5', 'send_2', 'send_3'),
-    edge('e6', 'send_3', 'end_1'),
+    edge('e1', 'trigger_1', 'send_wa_1'),
+    edge('e2', 'send_wa_1', 'send_email_1'),
+    edge('e3', 'send_email_1', 'wait_1'),
+    edge('e4', 'wait_1', 'cond_1'),
+    edge('e5', 'cond_1', 'send_wa_2', 'default'),
+    edge('e6', 'send_wa_2', 'send_email_2'),
+    edge('e7', 'send_email_2', 'send_wa_3'),
+    edge('e8', 'send_wa_3', 'end_1'),
   ];
   return { nodes, edges };
 }
 
-/** Order shipped tracking — single send, Tier 2. */
+/** Order shipped tracking — WhatsApp + email (mirrors Order messages). */
 function buildOrderShippedTrackingGraph() {
   const nodes = [
     node('trigger_1', JOURNEY_NODE_TYPES.JOURNEY_TRIGGER, {
@@ -172,73 +218,16 @@ function buildOrderShippedTrackingGraph() {
       journeyTrigger: { type: 'order_shipped', filters: {} },
       cancelOnReply: false,
     }, { x: 80, y: 40 }),
-    node('send_1', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: '',
-      label: 'Shipping notification',
-    }, { x: 80, y: 160 }),
-    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 280 }),
+    waSend('send_wa_1', 'order_shipped_v1', 'Shipping notification — WhatsApp', {}, { x: 80, y: 160 }),
+    emailFromPrebuilt('order_shipped', 'send_email_1', 'Shipping notification — email', { x: 80, y: 280 }),
+    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 400 }),
   ];
   const edges = [
-    edge('e1', 'trigger_1', 'send_1'),
-    edge('e2', 'send_1', 'end_1'),
+    edge('e1', 'trigger_1', 'send_wa_1'),
+    edge('e2', 'send_wa_1', 'send_email_1'),
+    edge('e3', 'send_email_1', 'end_1'),
   ];
   return { nodes, edges };
-}
-
-/** Tier 3 logistics shipment update — single send. */
-function buildLogisticsShipmentGraph({ shipmentStatus, label, templateSlot }) {
-  const nodes = [
-    node('trigger_1', JOURNEY_NODE_TYPES.JOURNEY_TRIGGER, {
-      entryType: 'order_shipped',
-      journeyTrigger: {
-        type: 'order_shipped',
-        filters: { shipmentStatus },
-      },
-      cancelOnReply: false,
-    }, { x: 80, y: 40 }),
-    node('send_1', JOURNEY_NODE_TYPES.SEND_WHATSAPP, {
-      templateName: templateSlot || '',
-      label: label || 'Shipment update',
-    }, { x: 80, y: 160 }),
-    node('end_1', JOURNEY_NODE_TYPES.END, { label: 'End' }, { x: 80, y: 280 }),
-  ];
-  const edges = [
-    edge('e1', 'trigger_1', 'send_1'),
-    edge('e2', 'send_1', 'end_1'),
-  ];
-  return { nodes, edges };
-}
-
-function buildOrderInTransitGraph() {
-  return buildLogisticsShipmentGraph({
-    shipmentStatus: 'in_transit',
-    label: 'In transit update',
-    templateSlot: 'om_in_transit',
-  });
-}
-
-function buildOrderOutForDeliveryGraph() {
-  return buildLogisticsShipmentGraph({
-    shipmentStatus: 'out_for_delivery',
-    label: 'Out for delivery',
-    templateSlot: 'om_out_for_delivery',
-  });
-}
-
-function buildOrderAttemptedDeliveryGraph() {
-  return buildLogisticsShipmentGraph({
-    shipmentStatus: 'attempted_delivery',
-    label: 'Delivery attempt',
-    templateSlot: 'om_delivery_failed',
-  });
-}
-
-function buildOrderRtoRescueGraph() {
-  return buildLogisticsShipmentGraph({
-    shipmentStatus: 'failure',
-    label: 'RTO rescue',
-    templateSlot: 'om_ndr_rescue',
-  });
 }
 
 /**
@@ -258,7 +247,7 @@ const PLAYBOOK_CATALOG = [
   {
     playbookKey: 'cart-recovery-3step',
     name: 'Cart recovery — 3 messages',
-    description: '25 min, 4 h, 36 h cart nudges using your approved cart recovery templates.',
+    description: '25 min, 4 h, 36 h cart nudges on WhatsApp + email using prebuilt templates.',
     tier: 1,
     buildGraph: buildCartRecovery3StepGraph,
     journeyTrigger: { type: 'cart_abandoned', filters: {} },
@@ -266,7 +255,7 @@ const PLAYBOOK_CATALOG = [
   {
     playbookKey: 'order-placed-confirm',
     name: 'Order placed confirmation',
-    description: 'Instant WhatsApp confirmation when a Shopify order is created.',
+    description: 'Instant WhatsApp + email confirmation when a Shopify order is created.',
     tier: 1,
     buildGraph: buildOrderPlacedGraph,
     journeyTrigger: { type: 'order_placed', filters: {} },
@@ -274,7 +263,7 @@ const PLAYBOOK_CATALOG = [
   {
     playbookKey: 'cod-confirm-basic',
     name: 'COD confirm + cancel flow',
-    description: 'Ask for COD confirmation → wait 2h → send cancel reminder if no reply.',
+    description: 'COD WhatsApp confirm + paired email, then cancel reminder if no reply.',
     tier: 1,
     buildGraph: buildCodConfirmBasicGraph,
     journeyTrigger: { type: 'order_placed', filters: { codOnly: true } },
@@ -282,46 +271,10 @@ const PLAYBOOK_CATALOG = [
   {
     playbookKey: 'order-shipped-tracking',
     name: 'Order shipped — tracking update',
-    description: 'Send a tracking link when your Shopify order ships.',
+    description: 'WhatsApp + email tracking update when your Shopify order ships.',
     tier: 2,
     buildGraph: buildOrderShippedTrackingGraph,
     journeyTrigger: { type: 'order_shipped', filters: {} },
-  },
-  {
-    playbookKey: 'order-in-transit',
-    name: 'Shipment update — in transit',
-    description: 'Notify customers when their parcel is in transit (requires logistics integration).',
-    tier: 3,
-    requiresLogistics: true,
-    buildGraph: buildOrderInTransitGraph,
-    journeyTrigger: { type: 'order_shipped', filters: { shipmentStatus: 'in_transit' } },
-  },
-  {
-    playbookKey: 'order-out-for-delivery',
-    name: 'Out for delivery update',
-    description: 'Alert when the courier is out for delivery (requires logistics integration).',
-    tier: 3,
-    requiresLogistics: true,
-    buildGraph: buildOrderOutForDeliveryGraph,
-    journeyTrigger: { type: 'order_shipped', filters: { shipmentStatus: 'out_for_delivery' } },
-  },
-  {
-    playbookKey: 'order-attempted-delivery',
-    name: 'Delivery attempt update',
-    description: 'Follow up after a failed delivery attempt (requires logistics integration).',
-    tier: 3,
-    requiresLogistics: true,
-    buildGraph: buildOrderAttemptedDeliveryGraph,
-    journeyTrigger: { type: 'order_shipped', filters: { shipmentStatus: 'attempted_delivery' } },
-  },
-  {
-    playbookKey: 'order-rto-rescue',
-    name: 'Failed delivery (RTO) rescue',
-    description: 'Rescue message when delivery fails or RTO risk is high (requires logistics).',
-    tier: 3,
-    requiresLogistics: true,
-    buildGraph: buildOrderRtoRescueGraph,
-    journeyTrigger: { type: 'order_shipped', filters: { shipmentStatus: 'failure' } },
   },
 ];
 
@@ -329,8 +282,56 @@ const PLAYBOOK_CATALOG = [
 const TIER1_PLAYBOOKS = PLAYBOOK_CATALOG.filter((p) => p.tier === 1);
 
 /**
+ * Refresh DRAFT playbook graphs that were seeded before dual-channel + prebuilt templates.
+ * Skips published journeys and merchant-edited graphs that already have templates + email.
+ */
+async function upgradeStaleDraftPlaybooks(clientId) {
+  const commerceKeys = [
+    'cart-recovery-3step',
+    'order-placed-confirm',
+    'cod-confirm-basic',
+    'order-shipped-tracking',
+  ];
+  let upgraded = 0;
+
+  for (const playbookKey of commerceKeys) {
+    const doc = await WhatsAppFlow.findOne({
+      clientId,
+      flowType: 'journey',
+      playbookKey,
+      status: 'DRAFT',
+    });
+    if (!doc) continue;
+
+    const nodes = doc.nodes || [];
+    const hasEmail = nodes.some((n) => String(n.type || n.data?.nodeType) === JOURNEY_NODE_TYPES.SEND_EMAIL);
+    const waEmpty = nodes.some(
+      (n) => String(n.type || n.data?.nodeType) === JOURNEY_NODE_TYPES.SEND_WHATSAPP
+        && !String(n.data?.templateName || '').trim()
+    );
+    const waMissingMappings = nodes.some(
+      (n) => String(n.type || n.data?.nodeType) === JOURNEY_NODE_TYPES.SEND_WHATSAPP
+        && String(n.data?.templateName || '').trim()
+        && !Object.keys(n.data?.variableMappings?.body || {}).length
+    );
+    if (hasEmail && !waEmpty && !waMissingMappings) continue;
+
+    const playbook = PLAYBOOK_CATALOG.find((p) => p.playbookKey === playbookKey);
+    if (!playbook) continue;
+
+    const { nodes: nextNodes, edges: nextEdges } = playbook.buildGraph();
+    await WhatsAppFlow.updateOne(
+      { _id: doc._id },
+      { $set: { nodes: nextNodes, edges: nextEdges, description: playbook.description } }
+    );
+    upgraded += 1;
+  }
+
+  return upgraded;
+}
+
+/**
  * Seeds Tier 1 + Tier 2 playbooks as DRAFT for a client.
- * Never seeds Tier 3 (Tier 3 = future phase).
  * Idempotent — skips if playbookKey already exists for the client.
  */
 async function seedPlaybooksForClient(clientId, { keys = null, maxTier = 2 } = {}) {
@@ -368,6 +369,7 @@ async function seedPlaybooksForClient(clientId, { keys = null, maxTier = 2 } = {
     });
     created += 1;
   }
+  await upgradeStaleDraftPlaybooks(clientId);
   return created;
 }
 
@@ -379,9 +381,6 @@ module.exports = {
   buildOrderPlacedGraph,
   buildCodConfirmBasicGraph,
   buildOrderShippedTrackingGraph,
-  buildOrderInTransitGraph,
-  buildOrderOutForDeliveryGraph,
-  buildOrderAttemptedDeliveryGraph,
-  buildOrderRtoRescueGraph,
   seedPlaybooksForClient,
+  upgradeStaleDraftPlaybooks,
 };

@@ -406,6 +406,19 @@ async function processMessages(messages, metadata, contacts) {
           } catch (tplClickErr) {
             log.debug(`TemplateSendLog click hook skipped: ${tplClickErr.message}`);
           }
+          try {
+            const { updateJourneyStepClick } = require('../utils/commerce/journeyAttributionHelper');
+            const Client = require('../models/Client');
+            const clickClient = waClientFilter ? await Client.findOne(waClientFilter).select('clientId').lean() : null;
+            await updateJourneyStepClick({
+              clientId: clickClient?.clientId || null,
+              messageId: contextMessageId,
+              timestamp: new Date(),
+              clickType,
+            });
+          } catch (jrnClickErr) {
+            log.debug(`Journey step click hook skipped: ${jrnClickErr.message}`);
+          }
         }
         CampaignMessage.findOneAndUpdate(
           { phone: from, status: { $in: ['sent', 'delivered', 'read', 'replied'] } },
