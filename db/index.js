@@ -1,9 +1,22 @@
+const dns = require("dns");
 const mongoose = require("mongoose");
 require("../mongoose/phoneE164Plugin").registerPhoneE164GlobalPlugin();
 
+/** ISP/router DNS on Windows often refuses SRV lookups required by mongodb+srv:// */
+function applyMongoSrvDnsFix() {
+    const uri = process.env.MONGODB_URI || "";
+    if (!uri.includes("mongodb+srv")) return;
+    if (process.env.MONGODB_DNS_FIX === "false") return;
+    const servers = (process.env.DNS_SERVERS || "8.8.8.8,1.1.1.1")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    if (servers.length) dns.setServers(servers);
+}
 
 async function connectDB(){
     try {
+        applyMongoSrvDnsFix();
         console.log("Attempting to connect to MongoDB...");
         const maxPool = Math.min(
             50,
