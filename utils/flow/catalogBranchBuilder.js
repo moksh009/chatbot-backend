@@ -17,6 +17,7 @@ const {
   splitCollectionsForWhatsAppMenu,
   MORE_ROW_ID,
   OVERFLOW_PAGE_TITLE,
+  MAX_EXPLORE_MENU_ROWS,
   menuLabelForCollection,
   collectionToRow,
   truncate,
@@ -37,10 +38,18 @@ function productsForCollection(products, collectionId) {
 }
 
 function variantIdsFromProducts(products, limit = MAX_PER_SECTION) {
-  return (products || [])
-    .slice(0, limit)
+  const ids = (products || [])
     .map((p) => String(p.shopifyVariantId || "").trim())
     .filter(Boolean);
+  
+  if (ids.length > limit) {
+    try {
+      const log = require('../core/logger')("CatalogBuilder");
+      log.info(`[Catalog] Truncating ${ids.length} products to ${limit} (WhatsApp MPM limit)`);
+    } catch (e) {}
+  }
+  
+  return ids.slice(0, limit);
 }
 
 function buildProductBuckets(products) {
@@ -56,34 +65,70 @@ function buildProductBuckets(products) {
     .slice(0, MAX_BUCKET_ROWS);
 }
 
-function makeMpmNodeData({
+/** Browse-branch catalog nodes use native product_list (no Meta marketing template). */
+function makeBrowseListNodeData({
   label,
   sectionTitle,
   body,
   productIds,
-  mpmTemplateName,
   metaCollectionId,
   browseBranch = true,
 }) {
   const ids = Array.isArray(productIds) ? productIds : String(productIds || "").split(",");
   const cleanIds = ids.map((s) => String(s).trim()).filter(Boolean);
+  const title = sectionTitle || label || "Products";
+  const defaultBody = `Browse our *${title}* — tap to view items in WhatsApp.`;
   return {
-    label: label || sectionTitle || "Product carousel",
-    catalogType: "mpm_template",
-    metaTemplateName: mpmTemplateName || "",
-    templateName: mpmTemplateName || "",
-    languageCode: "en",
-    header: sectionTitle || label || "Products",
-    sectionTitle: sectionTitle || label || "Products",
-    body: body || `Browse our *${sectionTitle || "products"}* — tap *View items* for the carousel.`,
-    text: body || `Browse our *${sectionTitle || "products"}* — tap *View items* for the carousel.`,
+    label: label || title || "Product list",
+    catalogType: "multi",
+    header: title,
+    sectionTitle: title,
+    body: body || defaultBody,
+    text: body || defaultBody,
     metaCollectionId: metaCollectionId || "",
     productIds: cleanIds.join(","),
-    thumbnailProductRetailerId: cleanIds[0] || "",
     apexDualMethod: true,
     browseBranch,
     heatmapCount: 0,
   };
+}
+
+/** @deprecated Use makeBrowseListNodeData for browse branches. Kept for legacy imports. */
+function makeMpmNodeData(opts) {
+  return makeBrowseListNodeData(opts);
+}
+
+/** Collections that appear on primary or overflow WhatsApp list menus (max 19). */
+function getMenuVisibleCollections(menuSplit) {
+  if (!menuSplit) return [];
+  if (!menuSplit.hasOverflow) {
+    return menuSplit.allCollections || [];
+  }
+  const primary = menuSplit.primary || [];
+  const overflow = (menuSplit.overflow || []).slice(0, MAX_EXPLORE_MENU_ROWS);
+  return [...primary, ...overflow];
+}
+
+function productIdCount(nodeData) {
+  return String(nodeData?.productIds || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+}
+
+function collectEmptyProductWarnings(nodes) {
+  const warnings = [];
+  for (const n of nodes) {
+    if (n.type !== "catalog" || !n.data?.browseBranch) continue;
+    if (productIdCount(n.data) > 0) continue;
+    warnings.push({
+      code: "empty_products",
+      nodeId: n.id,
+      collectionId: n.data.metaCollectionId || null,
+      label: n.data.label || n.data.sectionTitle || "Category",
+    });
+  }
+  return warnings;
 }
 
 async function loadCatalogBranchContext(clientId) {
@@ -215,8 +260,8 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
   if (useCollections && menuSplit) {
     menuSections = menuSplit.primarySections;
     menuIntro = hasOverflow
-      ? "✨ *{{brand_name}} store*\n\nBrowse by collection — tap *More categories* for additional ranges."
-      : "✨ *{{brand_name}} store*\n\nPick a collection, then *View items* to browse the WhatsApp carousel.";
+      ? "Welcome to the *{{brand_name}} store*! ✨\n\nBrowse by collection — tap *More categories* for additional ranges."
+      : "Welcome to the *{{brand_name}} store*! ✨\n\nChoose a category below to explore our products right here in WhatsApp.";
   } else {
     const rows = buckets.map(([name, items], idx) => ({
       id: `cat_${idx}`,
@@ -227,7 +272,7 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
       rows.push({ id: "cat_0", title: "All products", description: "Browse our range" });
     }
     menuSections = [{ title: "{{brand_name}} collections", rows }];
-    menuIntro = "✨ *{{brand_name}} store*\n\nPick a category to browse products in WhatsApp.";
+    menuIntro = "Welcome to the *{{brand_name}} store*! ✨\n\nPick a category to browse products in WhatsApp.";
   }
 
   pushNode({
@@ -314,11 +359,17 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
       source: ids.next,
       target: ids.cart,
       sourceHandle: "checkout",
+    },
+    {
+      id: `e_${ids.next}_menu_${seed}`,
+      source: ids.next,
+      target: ids.menu,
+      sourceHandle: "menu",
     }
   );
 
-  // ── Per-category MPM nodes ────────────────────────────────────────────────
-  const wireMpm = (menuId, handleId, nodeId, nodeData) => {
+  // ── Per-category product_list nodes (menu-visible collections only) ───────
+  const wireCatalogNode = (menuId, handleId, nodeId, nodeData) => {
     pushNode({
       id: nodeId,
       type: "catalog",
@@ -341,8 +392,8 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
   };
 
   if (useCollections && menuSplit) {
-    const allCols = menuSplit.allCollections || [];
-    for (const col of allCols) {
+    const visibleCols = getMenuVisibleCollections(menuSplit);
+    for (const col of visibleCols) {
       const handleId = `collection_${col.shopifyCollectionId}`;
       const label = menuLabelForCollection(col);
       const matched = productsForCollection(products, col.shopifyCollectionId);
@@ -351,30 +402,30 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
       const draftNode = {
         id: nid,
         type: "catalog",
-        data: makeMpmNodeData({
-          label: `MPM — ${truncate(col.title, 22)}`,
+        data: makeBrowseListNodeData({
+          label: `${truncate(col.title, 22)}`,
           sectionTitle: label,
-          body: `Here are our *${label}* — tap *View items* for the WhatsApp carousel.`,
+          body: `Browse our *${label}* — tap to view items in WhatsApp.`,
           productIds: idsList,
-          mpmTemplateName,
           metaCollectionId: col.shopifyCollectionId,
         }),
       };
-      const patches = buildPatchesForNodes([draftNode], products, mpmTemplateName);
-      const patch = patches[nid];
-      if (patch?.productIds) {
-        draftNode.data = {
-          ...draftNode.data,
-          productIds: patch.productIds,
-          thumbnailProductRetailerId: patch.thumbnailProductRetailerId || idsList[0] || "",
-        };
+      if (!idsList.length && products.length) {
+        const patches = buildPatchesForNodes([draftNode], products, mpmTemplateName);
+        const patch = patches[nid];
+        if (patch?.productIds) {
+          draftNode.data = {
+            ...draftNode.data,
+            productIds: patch.productIds,
+          };
+        }
       }
       const menuId =
         menuSplit.overflow.some((c) => c.shopifyCollectionId === col.shopifyCollectionId) &&
         hasOverflow
           ? ids.menuMore
           : ids.menu;
-      wireMpm(menuId, handleId, nid, draftNode.data);
+      wireCatalogNode(menuId, handleId, nid, draftNode.data);
     }
   } else {
     const bucketList = buckets.length ? buckets : [["All products", products.slice(0, MAX_PER_SECTION)]];
@@ -383,20 +434,28 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
       const catLabel = truncate(name, 24);
       const idsList = variantIdsFromProducts(items);
       const nid = mpmNodeId(`bucket_${idx}`);
-      wireMpm(
-        ids.menu,
-        handleId,
-        nid,
-        makeMpmNodeData({
-          label: `MPM — ${truncate(name, 22)}`,
+      const draftNode = {
+        id: nid,
+        type: "catalog",
+        data: makeBrowseListNodeData({
+          label: truncate(name, 22),
           sectionTitle: catLabel,
           body: `Browse *${name}* from {{brand_name}}.`,
           productIds: idsList,
-          mpmTemplateName,
-        })
-      );
+        }),
+      };
+      if (!idsList.length && products.length) {
+        const patches = buildPatchesForNodes([draftNode], products, mpmTemplateName);
+        const patch = patches[nid];
+        if (patch?.productIds) {
+          draftNode.data = { ...draftNode.data, productIds: patch.productIds };
+        }
+      }
+      wireCatalogNode(ids.menu, handleId, nid, draftNode.data);
     });
   }
+
+  const warnings = collectEmptyProductWarnings(nodes);
 
   return {
     nodes,
@@ -405,6 +464,7 @@ function buildInsertableCatalogBranch(ctx, options = {}) {
     overflowNodeId: hasOverflow ? ids.menuMore : null,
     catalogLinked,
     categoryCount: nodes.filter((n) => n.type === "catalog").length,
+    warnings,
   };
 }
 
@@ -429,7 +489,7 @@ function appendCatalogBranchIfMissing(existingGraph, ctx, options = {}) {
         n.data?.interactiveType === "list" &&
         n.data?.populateFromShopify
     ) ||
-    nodes.filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template").length >= 2;
+    nodes.filter((n) => n.type === "catalog" && n.data?.browseBranch).length >= 2;
 
   if (hasBranch) return existingGraph;
 
@@ -468,5 +528,7 @@ module.exports = {
   detectBrowseCatalogIntent,
   productsForCollection,
   variantIdsFromProducts,
+  makeBrowseListNodeData,
   makeMpmNodeData,
+  getMenuVisibleCollections,
 };

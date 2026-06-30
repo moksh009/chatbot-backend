@@ -40,8 +40,23 @@ function applyTenantCustomVariableDefaults(merged, clientLean) {
   return merged;
 }
 
+const LOGIC_VAR_ALIASES = {
+  email: 'customer_email',
+  city: 'customer_city',
+  agent_name: 'bot_name',
+  business_hours: 'open_hours',
+};
+
+function resolveLogicVariableKey(name) {
+  const key = normalizeVariableKey(name);
+  if (!key) return '';
+  return LOGIC_VAR_ALIASES[key] || key;
+}
+
 module.exports = {
   normalizeVariableKey,
   normalizeCaptureValidationType,
   applyTenantCustomVariableDefaults,
+  LOGIC_VAR_ALIASES,
+  resolveLogicVariableKey,
 };

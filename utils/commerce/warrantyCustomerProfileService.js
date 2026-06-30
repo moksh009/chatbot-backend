@@ -37,6 +37,14 @@ function collectOrderKeys(orders = []) {
   return [...keys];
 }
 
+function normalizeOrderNameLabel(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.startsWith("#")) return s;
+  if (/^\d+$/.test(s)) return `#${s}`;
+  return s;
+}
+
 function formatOrderDisplay(order, orderKey) {
   const raw =
     order?.shopify_order_name ||
@@ -46,11 +54,36 @@ function formatOrderDisplay(order, orderKey) {
     order?.shopifyOrderId ||
     order?.orderId ||
     orderKey;
-  const s = String(raw || "").trim();
+  const s = normalizeOrderNameLabel(raw);
   if (!s) return `#${orderKey}`;
-  if (s.startsWith("#")) return s;
-  if (/^\d+$/.test(s)) return `#${s}`;
   return s;
+}
+
+/**
+ * Split Shopify internal id vs human-readable order name for WarrantyRecord writes.
+ * @param {object} order - Synced Order doc or partial { shopifyOrderId, orderId, name, orderNumber }
+ * @param {string} [fallbackId] - Fallback when no order doc (manual entry)
+ */
+function resolveWarrantyOrderFields(order = {}, fallbackId = "") {
+  const internalRaw = String(
+    order.shopifyOrderId || order.orderId || order.shopify_internal_id || fallbackId || ""
+  ).trim();
+  const displayRaw = String(
+    order.shopify_order_name || order.name || order.orderNumber || order.orderName || ""
+  ).trim();
+
+  let shopify_order_name = normalizeOrderNameLabel(displayRaw);
+  if (!shopify_order_name && internalRaw) {
+    shopify_order_name = normalizeOrderNameLabel(internalRaw);
+  }
+  if (!shopify_order_name && fallbackId) {
+    shopify_order_name = normalizeOrderNameLabel(fallbackId);
+  }
+
+  const shopify_internal_id = internalRaw || String(fallbackId || "").trim() || shopify_order_name;
+  const shopifyOrderId = shopify_order_name || shopify_internal_id;
+
+  return { shopifyOrderId, shopify_internal_id, shopify_order_name };
 }
 
 function displayPhone(phone) {
@@ -321,6 +354,8 @@ module.exports = {
   formatWarrantyStatusDisplay,
   formatWarrantyDuration,
   formatOrderDisplay,
+  normalizeOrderNameLabel,
+  resolveWarrantyOrderFields,
   displayPhone,
   orderRefKeys,
 };

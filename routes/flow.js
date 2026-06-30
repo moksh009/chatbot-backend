@@ -148,9 +148,10 @@ router.post('/', protect, async (req, res) => {
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const { normalizeFlowAutomationPlatform } = require('../constants/flowAutomationPlatform');
     const body = req.body || {};
     const name = String(body.name || 'Untitled automation').trim();
-    const platform = body.platform || 'whatsapp';
+    const platform = normalizeFlowAutomationPlatform(body.platform);
     const folderId = body.folderId || '';
     const nodes = Array.isArray(body.nodes) ? body.nodes : [];
     const edges = Array.isArray(body.edges) ? body.edges : [];
@@ -318,17 +319,64 @@ router.post('/simulate', protect, async (req, res) => {
     let updatedVariables = { ...variables };
 
     if (!currentNodeId) {
-      nextNode = safeNodes.find(n => n.type === 'trigger');
+      const {
+        findKeywordTriggerEntry,
+        getTriggerConfigFromNode,
+        intentTriggerMatches,
+      } = require('../utils/flow/triggerEngine');
+      const triggerNode = safeNodes.find((n) => n.type === 'trigger');
+      const text = String(userInput || '').trim();
+      if (triggerNode && text) {
+        const cfg = getTriggerConfigFromNode(triggerNode);
+        if (cfg?.type === 'first_message' || cfg?.type === 'FIRST_MESSAGE') {
+          const edge = safeEdges.find((e) => e.source === triggerNode.id);
+          nextNode = edge ? safeNodes.find((n) => n.id === edge.target) : null;
+        } else if (cfg?.type === 'keyword' || cfg?.type === 'KEYWORD') {
+          const routingEdges = safeEdges.filter((e) => e.source === triggerNode.id);
+          const entry = findKeywordTriggerEntry(text, [triggerNode], routingEdges);
+          if (entry?.startNodeId) {
+            nextNode = safeNodes.find((n) => n.id === entry.startNodeId) || null;
+          }
+        } else if (cfg?.type === 'intent_match') {
+          const mockParsed = {
+            detectedIntentId: req.body.detectedIntentId || '',
+            detectedIntentName: req.body.detectedIntentName || '',
+          };
+          if (intentTriggerMatches(cfg, mockParsed)) {
+            const edge = safeEdges.find((e) => e.source === triggerNode.id);
+            nextNode = edge ? safeNodes.find((n) => n.id === edge.target) : null;
+          }
+        }
+      }
     } else {
       const currentNode = safeNodes.find(n => n.id === currentNodeId);
       const outgoingEdges = safeEdges.filter(e => e.source === currentNodeId);
 
       if (currentNode?.type === 'interactive') {
-        const textLower = (userInput || '').toLowerCase();
-        const buttons = currentNode.data?.buttonsList || [];
-        const btnIndex = buttons.findIndex(b => b.title.toLowerCase() === textLower);
-        const sourceHandle = btnIndex !== -1 ? (buttons[btnIndex].id || `btn_${btnIndex}`) : textLower.replace(/\s+/g, '_');
-        edgeUsed = outgoingEdges.find(e => e.sourceHandle === sourceHandle);
+        const textLower = String(userInput || '').toLowerCase().trim();
+        const isList = currentNode.data?.interactiveType === 'list';
+        if (isList) {
+          const sections = currentNode.data?.sections || [];
+          const rows = sections.flatMap((s) => s.rows || []);
+          const matched = rows.find(
+            (r) =>
+              String(r.id || '') === String(userInput || '').trim() ||
+              String(r.title || '').toLowerCase() === textLower
+          );
+          const sourceHandle = matched?.id || String(userInput || '').trim();
+          edgeUsed = outgoingEdges.find((e) => e.sourceHandle === sourceHandle);
+        } else {
+          const buttons = currentNode.data?.buttonsList || [];
+          const btnIndex = buttons.findIndex((b) => String(b.title || '').toLowerCase() === textLower);
+          const sourceHandle = btnIndex !== -1 ? (buttons[btnIndex].id || `btn_${btnIndex}`) : textLower.replace(/\s+/g, '_');
+          edgeUsed = outgoingEdges.find((e) => e.sourceHandle === sourceHandle);
+        }
+      } else if (currentNode?.type === 'template' || currentNode?.type === 'TemplateNode') {
+        const { deriveTemplateSourceHandle } = require('../utils/flow/flowTemplateUtils');
+        const tplName = currentNode.data?.templateName;
+        const synced = (req.clientConfig?.syncedMetaTemplates || []).find((t) => t.name === tplName);
+        const sourceHandle = deriveTemplateSourceHandle(synced, userInput);
+        edgeUsed = outgoingEdges.find((e) => e.sourceHandle === sourceHandle);
       } else if (currentNode?.type === 'review') {
         const textLower = String(userInput || '').toLowerCase();
         let sourceHandle = '';
@@ -582,38 +630,6 @@ router.get('/', protect, apiCache(30), async (req, res) => {
 });
 
 
-// GET /api/flow/templates — installable e-commerce flow template catalog
-router.get('/templates', protect, async (req, res) => {
-  try {
-    const { listTemplateCatalog } = require('../utils/flow/flowTemplateCatalog');
-    res.json({ success: true, templates: listTemplateCatalog() });
-  } catch (err) {
-    console.error('[GET /flow/templates]', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to list templates' });
-  }
-});
-
-// POST /api/flow/templates/:key/install — generate + persist template pack as DRAFT
-router.post('/templates/:key/install', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const { installFlowTemplate } = require('../utils/flow/flowTemplateInstaller');
-    const replace = req.body?.replace === true;
-    const result = await installFlowTemplate(client, req.params.key, { replace });
-
-    res.json({ success: true, ...result });
-  } catch (err) {
-    const status = err.statusCode || 500;
-    console.error('[POST /flow/templates/:key/install]', err);
-    res.status(status).json({ success: false, message: err.message || 'Template install failed' });
-  }
-});
-
 // GET /api/flow/flows
 router.get('/flows', protect, apiCache(30), async (req, res) => {
   const { createTimer } = require('../utils/core/perfLogger');
@@ -745,6 +761,7 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const { normalizeFlowAutomationPlatform } = require('../constants/flowAutomationPlatform');
 
     const original = await WhatsAppFlow.findOne({ clientId, flowId });
     if (!original) return res.status(404).json({ success: false, message: 'Flow not found' });
@@ -754,7 +771,7 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
       clientId,
       flowId: newFlowId,
       name: `${original.name} (Copy)`,
-      platform: original.platform || 'whatsapp',
+      platform: normalizeFlowAutomationPlatform(original.platform),
       folderId: original.folderId || '',
       status: 'DRAFT',
       version: 1,

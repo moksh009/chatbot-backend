@@ -25,6 +25,9 @@ const {
   isGreetingLikeText,
   shouldAllowGreetingKeywordTrigger,
   isExplicitFlowResetText,
+  getTriggerConfigFromNode,
+  checkKeywordMatch,
+  intentTriggerMatches,
 } = require('../flow/triggerEngine');
 const {
   getCachedFlowGraph,
@@ -231,6 +234,59 @@ function buildWhatsAppFlowRefFilter(clientId, activeFlowId) {
   return { clientId, flowId: ref };
 }
 
+function isWhatsAppFlowNodeType(type) {
+  return type === 'whatsapp_flow' || type === 'flow' || type === 'FlowNode';
+}
+
+const FLOW_SUBMIT_HANDLES = ['submitted', 'a', 'bottom', 'output', ''];
+
+function findFlowEdge(flowEdges, sourceNodeId, handleCandidates) {
+  const normalized = handleCandidates.map((h) => normalizeHandleId(h).toLowerCase());
+  return flowEdges.find((e) => {
+    if (e.source !== sourceNodeId) return false;
+    const sid = normalizeHandleId(e.sourceHandle || '').toLowerCase();
+    if (!sid && normalized.includes('')) return true;
+    return normalized.includes(sid);
+  });
+}
+
+function buildFlowPrefillPayload(flowPrefillMappings, variableContext) {
+  if (!flowPrefillMappings || typeof flowPrefillMappings !== 'object') return {};
+  const out = {};
+  for (const [metaKey, registryKey] of Object.entries(flowPrefillMappings)) {
+    const field = String(registryKey || '').trim();
+    if (!field || !metaKey) continue;
+    const val = variableContext[field];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      out[String(metaKey).trim()] = val;
+    }
+  }
+  return out;
+}
+
+function applyFlowResponseMappings(flowData, mappings, capturedDataBase) {
+  const captured = { ...(capturedDataBase || {}) };
+  const leadSet = {};
+  if (!mappings || typeof mappings !== 'object') return { captured, leadSet };
+  for (const [metaKey, registryKey] of Object.entries(mappings)) {
+    const field = String(registryKey || '').trim();
+    if (!field) continue;
+    const raw = flowData[metaKey];
+    if (raw === undefined || raw === null) continue;
+    captured[field] = raw;
+    if (['email', 'name', 'city', 'requirement', 'phone'].includes(field.toLowerCase())) {
+      leadSet[field.toLowerCase()] = raw;
+    }
+  }
+  return { captured, leadSet };
+}
+
+function clearFlowWaitMetadata(metadata) {
+  const meta = { ...(metadata || {}) };
+  delete meta.flowWait;
+  return meta;
+}
+
 /**
  * Single nfm_reply handler — published graph via getFlowGraphForConversation on all webhook paths.
  */
@@ -240,32 +296,74 @@ async function handleNfmReply(parsedMessage, client, convo, lead, phone, io, cha
 
   try {
     const flowData = JSON.parse(flowResponse.response_json || '{}');
-    log.info(`[DualBrain] Flow response from ${phone}`, { keys: Object.keys(flowData) });
+    const flowId = String(flowResponse.flow_id || '').trim();
+    log.info(`[DualBrain] Flow response from ${phone}`, { keys: Object.keys(flowData), flowId });
 
     const prevLead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId })
       .select('capturedData')
       .lean();
-    const mergedCaptured = { ...(prevLead?.capturedData || {}), ...flowData };
-    const leadUpdates = { lastInteraction: new Date(), capturedData: mergedCaptured };
-    for (const [key, val] of Object.entries(flowData)) {
-      if (['email', 'name', 'city', 'requirement', 'phone'].includes(String(key).toLowerCase())) {
-        leadUpdates[key.toLowerCase()] = val;
+    const prevCaptured = prevLead?.capturedData || {};
+    const namespacedFlows = { ...(prevCaptured.flows || {}) };
+    if (flowId) {
+      namespacedFlows[flowId] = flowData;
+    }
+
+    let responseMappings = {};
+    let sourceNodeId = convo?.lastStepId;
+    const freshConvoEarly = convo?._id
+      ? await Conversation.findOne({ _id: convo._id, clientId: client.clientId })
+      : await Conversation.findOne({ phone, clientId: client.clientId });
+    sourceNodeId = freshConvoEarly?.lastStepId || sourceNodeId;
+
+    if (sourceNodeId && freshConvoEarly) {
+      const { nodes: flowNodes } = await getFlowGraphForConversation(client, freshConvoEarly);
+      const sourceNode = flowNodes.find((n) => n.id === sourceNodeId);
+      if (sourceNode?.data?.flowResponseMappings) {
+        responseMappings = sourceNode.data.flowResponseMappings;
       }
-      leadUpdates[`metadata.${key}`] = val;
+    }
+
+    const { captured: mappedFields, leadSet } = applyFlowResponseMappings(
+      flowData,
+      responseMappings,
+      {}
+    );
+    const mergedCaptured = {
+      ...prevCaptured,
+      ...mappedFields,
+      flows: namespacedFlows,
+    };
+
+    const leadUpdates = {
+      lastInteraction: new Date(),
+      capturedData: mergedCaptured,
+      ...leadSet,
+    };
+
+    const captureHistoryEntries = Object.entries(flowData).map(([field, value]) => ({
+      field,
+      value: String(value ?? ''),
+      capturedAt: new Date(),
+      flowNodeId: sourceNodeId || '',
+    }));
+
+    const leadUpdateDoc = {
+      $set: leadUpdates,
+      $addToSet: { tags: 'Flow Completed' },
+      $push: {
+        activityLog: {
+          action: 'whatsapp_flow_submitted',
+          details: `Submitted Meta Flow ID: ${flowId || 'unknown'}`,
+        },
+      },
+    };
+    if (captureHistoryEntries.length) {
+      leadUpdateDoc.$push.captureHistory = { $each: captureHistoryEntries };
     }
 
     const updatedLead = await AdLead.findOneAndUpdate(
       { phoneNumber: phone, clientId: client.clientId },
-      {
-        $set: leadUpdates,
-        $addToSet: { tags: 'Flow Completed' },
-        $push: {
-          activityLog: {
-            action: 'whatsapp_flow_submitted',
-            details: `Submitted Meta Flow ID: ${flowResponse.flow_id || 'unknown'}`,
-          },
-        },
-      },
+      leadUpdateDoc,
       { upsert: true, new: true }
     );
 
@@ -276,7 +374,7 @@ async function handleNfmReply(parsedMessage, client, convo, lead, phone, io, cha
     );
 
     if (io) {
-      io.to(`client_${client.clientId}`).emit('flow_completed', { phone, flowData });
+      io.to(`client_${client.clientId}`).emit('flow_completed', { phone, flowData, flowId });
     }
 
     try {
@@ -290,17 +388,21 @@ async function handleNfmReply(parsedMessage, client, convo, lead, phone, io, cha
       log.error('[Analytics] Flow completion error:', { error: statErr.message });
     }
 
-    const freshConvo = convo?._id
-      ? await Conversation.findOne({ _id: convo._id, clientId: client.clientId })
+    const freshConvo = freshConvoEarly
+      ? await Conversation.findOne({ _id: freshConvoEarly._id, clientId: client.clientId })
       : await Conversation.findOne({ phone, clientId: client.clientId });
+
+    if (freshConvo?._id) {
+      const clearedMeta = clearFlowWaitMetadata(freshConvo.metadata);
+      await Conversation.findByIdAndUpdate(freshConvo._id, {
+        $set: { metadata: clearedMeta },
+      });
+      freshConvo.metadata = clearedMeta;
+    }
 
     if (freshConvo?.lastStepId) {
       const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, freshConvo);
-      const autoEdge = flowEdges.find(
-        (e) =>
-          e.source === freshConvo.lastStepId &&
-          (!e.sourceHandle || e.sourceHandle === 'bottom' || e.sourceHandle === 'a')
-      );
+      const autoEdge = findFlowEdge(flowEdges, freshConvo.lastStepId, FLOW_SUBMIT_HANDLES);
       if (autoEdge && flowNodes.length) {
         log.info(`[FlowEngine] nfm_reply resume: ${freshConvo.lastStepId} → ${autoEdge.target}`);
         await executeNode(
@@ -2204,6 +2306,16 @@ async function runDualBrainEngine(parsedMessage, client) {
         );
       } catch (_) {}
 
+      if (varName === 'email' && capturedText) {
+        try {
+          await AdLead.findOneAndUpdate(
+            { phoneNumber: phone, clientId: client.clientId },
+            { $set: { email: capturedText } }
+          );
+          if (lead) lead.email = capturedText;
+        } catch (_) {}
+      }
+
       log.info(`✅ Captured "${capturedText}" → "${varName}". Resuming flow...`);
 
       // Resume from captureResumeNodeId
@@ -2318,6 +2430,38 @@ async function runDualBrainEngine(parsedMessage, client) {
       } catch (adErr) {
         log.error('Meta Ad routing error:', { error: adErr.message });
         // Non-fatal — fall through to normalflow
+      }
+    }
+
+    // Classify inbound text for intent_match entry triggers (before trigger engine)
+    if (
+      userTextRaw &&
+      userTextRaw.length > 1 &&
+      !parsedMessage.detectedIntentId &&
+      !parsedMessage.detectedIntentName
+    ) {
+      try {
+        const NlpEngineService = require('../../services/NlpEngineService');
+        const { CONFIDENCE_THRESHOLD } = require('../core/nlpConfig');
+        const IntentRule = require('../../models/IntentRule');
+        const nlp = await NlpEngineService.simulate(client.clientId, userTextRaw);
+        if (
+          nlp.intent &&
+          nlp.intent !== 'None' &&
+          typeof nlp.score === 'number' &&
+          nlp.score >= CONFIDENCE_THRESHOLD
+        ) {
+          parsedMessage.detectedIntentName = nlp.intent;
+          const rule = await IntentRule.findOne({
+            clientId: client.clientId,
+            intentName: nlp.intent,
+          })
+            .select('_id')
+            .lean();
+          if (rule) parsedMessage.detectedIntentId = String(rule._id);
+        }
+      } catch (nlpErr) {
+        log.warn(`[DualBrain] Intent classify skipped: ${nlpErr.message}`);
       }
     }
 
@@ -2946,6 +3090,15 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       }
       return false;
     });
+    if (!matchingEdge && (currentNode?.type === 'template' || currentNode?.type === 'TemplateNode')) {
+      const tplName = currentNode?.data?.templateName || currentNode?.data?.metaTemplateName;
+      const syncedTpl = (client.syncedMetaTemplates || []).find((t) => t.name === tplName);
+      const { deriveTemplateSourceHandle } = require('../flow/flowTemplateUtils');
+      const handle = deriveTemplateSourceHandle(syncedTpl, bid).toLowerCase();
+      matchingEdge = sourceEdges.find(
+        (e) => normalizeHandleId(e.sourceHandle || '').toLowerCase() === handle
+      );
+    }
     // DEBUG: Log button ID mismatch for diagnostics
     if (!matchingEdge) {
       const availableHandles = sourceEdges.map(e => normalizeHandleId(e.sourceHandle || '')).filter(Boolean);
@@ -2964,15 +3117,25 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     }
   }
 
-  // Second priority: typed text keyword/sourceHandle matches
+  // Second priority: typed text keyword/sourceHandle matches (incl. template quick-reply labels)
   if (!matchingEdge && userTextLower) {
-    matchingEdge = sourceEdges.find((e) => {
-      const sid = normalizeHandleId(e.sourceHandle || '').toLowerCase();
-      if (sid && (sid === userTextLower || userTextLower === sid)) return true;
-      if (e.trigger?.type === 'keyword') return userTextLower.includes(String(e.trigger.value || '').toLowerCase());
-      return false;
-    });
-    if (matchingEdge) edgeMatchMode = 'text_match';
+    if (currentNode?.type === 'template' || currentNode?.type === 'TemplateNode') {
+      const tplName = currentNode?.data?.templateName || currentNode?.data?.metaTemplateName;
+      const syncedTpl = (client.syncedMetaTemplates || []).find((t) => t.name === tplName);
+      const { deriveTemplateSourceHandle } = require('../flow/flowTemplateUtils');
+      const handle = deriveTemplateSourceHandle(syncedTpl, userTextLower);
+      matchingEdge = sourceEdges.find((e) => normalizeHandleId(e.sourceHandle || '').toLowerCase() === handle.toLowerCase());
+      if (matchingEdge) edgeMatchMode = 'template_button';
+    }
+    if (!matchingEdge) {
+      matchingEdge = sourceEdges.find((e) => {
+        const sid = normalizeHandleId(e.sourceHandle || '').toLowerCase();
+        if (sid && (sid === userTextLower || userTextLower === sid)) return true;
+        if (e.trigger?.type === 'keyword') return userTextLower.includes(String(e.trigger.value || '').toLowerCase());
+        return false;
+      });
+      if (matchingEdge) edgeMatchMode = 'text_match';
+    }
   }
 
   // Last priority: auto-forward edge only when there is no explicit user selection
@@ -3062,22 +3225,28 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // D) GLOBAL RESET / GREETING / AI INTENT
+  // D) GLOBAL RESET / GREETING / KEYWORD / INTENT ENTRY
   if (!incomingTrigger.buttonId) {
-      // 1. Check Keywords — ONLY if user actually typed something
       let matchingTrigger = null;
-      if (userTextLower && userTextLower.length > 0) {
-        matchingTrigger = flowNodes.find(n => {
+      if (userText && userText.length > 0) {
+        matchingTrigger = flowNodes.find((n) => {
           if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
-          // Support BOTH new format (keywords array) and legacy format (keyword string)
-          const keywordsArray = Array.isArray(n.data?.keywords)
-            ? n.data.keywords.map(k => String(k).toLowerCase().trim()).filter(Boolean)
-            : String(n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-          return keywordsArray.length > 0 && keywordsArray.includes(userTextLower);
+          const cfg = getTriggerConfigFromNode(n);
+          if (!cfg) return false;
+          if (cfg.type === 'keyword' || cfg.type === 'KEYWORD') {
+            const keywords = cfg.keywords || [];
+            if (!keywords.length) return false;
+            const matchMode = cfg.matchMode || 'contains';
+            return keywords.some((kw) => checkKeywordMatch(userText, kw, matchMode));
+          }
+          if (cfg.type === 'intent_match') {
+            return intentTriggerMatches(cfg, parsedMessage);
+          }
+          return false;
         });
       }
-      
-      // 2. AI Intent Detection Fallback (Priority 1B)
+
+      // Legacy AI intent description triggers (deprecated shape)
       if (!matchingTrigger && userText.length > 3) {
           const intentNodes = flowNodes.filter(n => (n.type === 'trigger' || n.type === 'TriggerNode') && n.data?.triggerType === 'intent' && n.data?.intentDescription);
 
@@ -3096,7 +3265,9 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
       if (matchingTrigger) {
           log.info(`Graph: Triggering node ${matchingTrigger.id}`);
-          return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+          const firstEdge = flowEdges.find((e) => e.source === matchingTrigger.id);
+          const entryTarget = firstEdge?.target || matchingTrigger.id;
+          return await executeNode(entryTarget, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
       
       // If none matched, check for explicit menu/start or stale-session greeting reset
@@ -3113,10 +3284,18 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       }
   }
 
-  // E) No currentStepId — Fresh Start
+  // E) No currentStepId — Fresh Start (first_message triggers only)
   if (!currentStepId) {
     const startNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
-    if (startNode) {
+    if (startNode && (startNode.type === 'trigger' || startNode.type === 'TriggerNode')) {
+      const cfg = getTriggerConfigFromNode(startNode);
+      if (cfg?.type === 'first_message' || cfg?.type === 'FIRST_MESSAGE') {
+        log.info(`Graph: Starting fresh from node ${startNode.id} (first_message)`);
+        const firstEdge = flowEdges.find((e) => e.source === startNode.id);
+        const entryTarget = firstEdge?.target || startNode.id;
+        return await executeNode(entryTarget, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+      }
+    } else if (startNode && startNode.type !== 'trigger' && startNode.type !== 'TriggerNode') {
       log.info(`Graph: Starting fresh from node ${startNode.id}`);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     }
@@ -3464,7 +3643,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check' && node.type !== 'warranty_lookup' && node.type !== 'catalog') {
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check' && node.type !== 'warranty_lookup' && node.type !== 'catalog' && !isWhatsAppFlowNodeType(node.type)) {
     await logFlowEvent({
       clientId: client.clientId,
       flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
@@ -3485,24 +3664,94 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     return false;
   }
 
+  if (isWhatsAppFlowNodeType(node.type)) {
+    if (!sent) {
+      const metaCode = parsedMessage?._flowSendError?.code;
+      await logFlowEvent({
+        clientId: client.clientId,
+        flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+        nodeId,
+        nodeType: node.type,
+        phone,
+        action: 'failure',
+        metadata: {
+          reason: 'flow_send_failed',
+          metaCode: metaCode || null,
+          latencyMs: Date.now() - execStartedAt,
+          channel,
+        },
+      });
+      const errorEdge = findFlowEdge(flowEdges, nodeId, ['error']);
+      if (errorEdge) {
+        const clearedMeta = clearFlowWaitMetadata(convo.metadata);
+        await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: clearedMeta } });
+        const freshConvo = await Conversation.findById(convo._id);
+        return await executeNode(
+          errorEdge.target,
+          flowNodes,
+          flowEdges,
+          client,
+          freshConvo || convo,
+          lead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+      }
+      if (!isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
+        await sendWhatsAppText(
+          client,
+          phone,
+          "This form is temporarily unavailable. Reply *menu* for options."
+        );
+      }
+      return true;
+    }
+
+    const timeoutHours = Math.min(72, Math.max(1, Number(node.data?.flowTimeoutHours) || 1));
+    const flowWait = {
+      nodeId,
+      flowId: String(node.data?.flowId || ''),
+      startedAt: new Date(),
+      timeoutHours,
+    };
+    if (!parsedMessage?.suppressConversationPersistence) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: {
+          lastStepId: nodeId,
+          lastInteraction: new Date(),
+          'metadata.flowWait': flowWait,
+        },
+      });
+    }
+  }
+
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
     const { condition, operator, value, variable } = node.data || {};
+    const ctx = await buildVariableContext(client, phone, convo, lead);
+    const { resolveLogicVariableKey } = require('../core/variableUtils');
 
-    // Resolve the left-hand value from multiple possible contexts
     let leftValue = '';
     if (variable) {
-      // Support dot-path: e.g. "lead.leadScore", "metadata.captured_email"
-      const parts = variable.split('.');
-      const ctx = { lead, convo, metadata: convo.metadata || {} };
-      leftValue = parts.reduce((obj, k) => (obj != null ? obj[k] : undefined), ctx);
-      if (leftValue === undefined) leftValue = (lead?.capturedData?.[variable] || convo?.metadata?.[variable]) ?? '';
+      const bareKey = resolveLogicVariableKey(variable);
+      if (bareKey.includes('.')) {
+        const parts = bareKey.split('.');
+        leftValue = parts.reduce((obj, k) => (obj != null ? obj[k] : undefined), ctx);
+      } else {
+        leftValue = ctx[bareKey];
+      }
+      if (leftValue === undefined) {
+        leftValue = (lead?.capturedData?.[bareKey] || convo?.metadata?.[bareKey]) ?? '';
+      }
     } else if (condition) {
-      if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
+      if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || ctx.cart_value || 0;
       else if (condition === 'has_phone') leftValue = !!phone;
     }
 
-    const compValue = value !== undefined ? value : (condition?.match(/[\d.]+/) || [0])[0];
+    const rawComp = value !== undefined ? value : (condition?.match(/[\d.]+/) || [0])[0];
+    const compValue = injectVariables(String(rawComp ?? ''), ctx);
     const strLeft = Array.isArray(leftValue) ? leftValue.join(',') : String(leftValue ?? '');
     const strRight = String(compValue ?? '');
     const toNum = (v) => {
@@ -3553,6 +3802,15 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         case 'starts_with':
           result = strLeft.toLowerCase().startsWith(strRight.toLowerCase());
           break;
+        case 'before':
+        case 'after': {
+          const lDate = Date.parse(strLeft);
+          const rDate = Date.parse(strRight);
+          if (Number.isFinite(lDate) && Number.isFinite(rDate)) {
+            result = op === 'before' ? lDate < rDate : lDate > rDate;
+          }
+          break;
+        }
         case 'ends_with':
           result = strLeft.toLowerCase().endsWith(strRight.toLowerCase());
           break;
@@ -4034,69 +4292,60 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // Phase 21: Admin Alert Node — Email + Dashboard notification (WhatsApp removed)
+  // Admin Alert Node — email-only (fixed platform template; recipients from Client settings)
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
     const { sanitizeNotifyChannels } = require('../core/notificationService');
-    const { topic, priority } = node.data || {};
     const channels = sanitizeNotifyChannels(node.data?.notifyChannels);
-    const rawTopic = topic || "Human support request";
-    const alertMsg = replaceVariables(String(rawTopic), client, lead, convo);
-    const rawBody = node.data?.messageBody || alertMsg;
-    const messageBody = injectVariablesLegacy(rawBody, { client, lead, convo }) || rawBody;
     const customerQuery =
       convo?.metadata?.user_last_response ||
       convo?.metadata?.last_input ||
       parsedMessage?.text?.body ||
       '';
+    const attentionReason = customerQuery || 'Human support request';
 
-    // 1. Mark conversation as needing attention
     await Conversation.findByIdAndUpdate(convo._id, buildReopenAttentionUpdate({
-      attentionReason: alertMsg,
+      attentionReason,
       lastInteraction: new Date(),
     }));
 
-    // 2. Dashboard notification via socket
     if (channels.includes('Dashboard') && io) {
       io.to(`client_${client.clientId}`).emit("admin_alert", {
         type: "escalation",
-        topic: alertMsg,
-        priority: priority || "high",
+        topic: attentionReason,
+        priority: node.data?.priority || "high",
         phone,
         conversationId: String(convo._id),
         leadName: lead?.name || "Customer",
-        messageBody,
+        messageBody: customerQuery,
         timestamp: new Date(),
       });
       io.to(`client_${client.clientId}`).emit("attention_required", {
         phone,
         conversationId: String(convo._id),
-        reason: `Admin Alert: ${alertMsg}`,
-        priority: priority || "high",
-        messageBody,
+        reason: `Admin Alert: ${attentionReason}`,
+        priority: node.data?.priority || "high",
+        messageBody: customerQuery,
       });
     }
 
-    // 3. Email — platform sender to all workspace + team alert contacts
-    if (channels.includes('Email')) {
-      try {
-        const NotificationService = require('../core/notificationService');
-        const extra = node.data?.alertEmailTo || node.data?.handoffEmailTo || '';
-        await NotificationService.sendAdminAlert(client, {
-          customerPhone: phone,
-          conversationId: convo._id,
-          topic: alertMsg,
-          triggerSource: messageBody,
-          channel: 'email',
-          customerQuery,
-          lead,
-          extraEmails: extra,
-        });
-      } catch (err) {
-        log.error(`AdminAlert email dispatch failed: ${err.message}`);
-      }
+    try {
+      const NotificationService = require('../core/notificationService');
+      const extra = node.data?.alertEmailTo || node.data?.handoffEmailTo || '';
+      await NotificationService.sendAdminAlert(client, {
+        customerPhone: phone,
+        conversationId: convo._id,
+        topic: 'Human support request',
+        triggerSource: customerQuery || 'Flow automation',
+        channel: 'email',
+        customerQuery,
+        lead,
+        extraEmails: extra,
+      });
+    } catch (err) {
+      log.error(`AdminAlert email dispatch failed: ${err.message}`);
     }
 
-    log.info(`AdminAlert triggered for ${phone}: ${alertMsg} via ${channels.join(', ')}`);
+    log.info(`AdminAlert triggered for ${phone}: email escalation`);
     
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
@@ -4972,12 +5221,15 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   } else if (node.type !== 'logic' && node.type !== 'restart' && node.type !== 'livechat') {
     const nodeData = node.data || {};
     const waitsForUserChoice =
+      isWhatsAppFlowNodeType(node.type) ||
       node.type === 'interactive' ||
       node.type === 'InteractiveNode' ||
       node.type === 'warranty_check' ||
       node.type === 'warranty_lookup' ||
       node.type === 'review' ||
       node.type === 'cod_prepaid' ||
+      ((node.type === 'template' || node.type === 'TemplateNode') &&
+        require('../flow/flowTemplateUtils').templateNodeHasQuickReplies(client, nodeData)) ||
       (Array.isArray(nodeData.buttonsList) && nodeData.buttonsList.length > 0) ||
       (Array.isArray(nodeData.sections) &&
         nodeData.sections.some((s) => (s.rows || []).length > 0)) ||
@@ -5095,15 +5347,28 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'flow':
     case 'FlowNode':
     case 'whatsapp_flow': {
-      return await sendWhatsAppFlow(
+      let prefillData = {};
+      try {
+        const ctx = await buildVariableContext(client, phone, convo, lead);
+        prefillData = buildFlowPrefillPayload(data.flowPrefillMappings, ctx);
+      } catch (prefillErr) {
+        log.warn('[sendWhatsAppFlow] prefill build failed:', { error: prefillErr.message });
+      }
+      const result = await sendWhatsAppFlow(
         client,
         phone,
         data.header,
         data.body || data.text,
         data.flowId,
         data.buttonLabel || data.flowButtonText || data.flowCta || 'Open Flow',
-        data.screen
+        data.screen,
+        { prefillData, nodeId: node.id, clientId: client.clientId }
       );
+      if (result && result.ok === false) {
+        parsedMessage._flowSendError = { code: result.code, message: result.message };
+        return false;
+      }
+      return result !== false;
     }
     case 'message':
     case 'MessageNode':
@@ -5114,14 +5379,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.handoffMessage || data.text || data.body || (type === 'livechat' ? '👋 Connecting you to our team…\nA support agent will be with you shortly.' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       const safeBody = String(body || '').trim();
-      if (!safeBody || safeBody === 'null' || safeBody === 'undefined') {
+      const { shouldSendMessageImage } = require('../flow/flowMessageMedia');
+      const imgRaw = (data.imageUrl || '').trim();
+      const imgOk = shouldSendMessageImage(data);
+
+      if ((!safeBody || safeBody === 'null' || safeBody === 'undefined') && !imgOk) {
         log.warn('[sendNodeContent] Empty message body after translation — sending safe fallback');
         await WhatsApp.sendText(client, phone, 'Thanks for your message — tap *menu* anytime to see options.');
         return true;
       }
+
       const clipped = safeBody.substring(0, 4096);
-      const imgRaw = (data.imageUrl || '').trim();
-      const imgOk = data.sendImage && imgRaw && /^https?:\/\//i.test(imgRaw);
       if (imgOk) {
         await WhatsApp.sendImage(client, phone, imgRaw, clipped.substring(0, 1024));
       } else {
@@ -5288,24 +5556,58 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         log.warn(`[Template] Node ${node?.id} has no templateName — skipping`);
         return false;
       }
-      
-      const rawVars = data.variables || data.templateVars;
-      let templateVars = [];
-      if (Array.isArray(rawVars)) {
-          templateVars = rawVars;
-      } else if (typeof rawVars === 'string') {
-          templateVars = rawVars.split(',').map(v => v.trim()).filter(Boolean);
-      }
-      
-      const headerImage = data.headerImageUrl || null;
-      
+
+      const syncedTpl = (client.syncedMetaTemplates || []).find((t) => t.name === templateName);
+      const hasMappings =
+        data.variableMappings &&
+        (Object.keys(data.variableMappings.body || {}).length > 0 ||
+          data.variableMappings.header ||
+          Object.keys(data.variableMappings.buttons || {}).length > 0);
+
       try {
-        await sendWhatsAppSmartTemplate(
-            client, 
-            phone, 
-            templateName, 
-            templateVars, 
-            headerImage, 
+        if (hasMappings && syncedTpl) {
+          const { buildSendContext, buildMetaTemplateComponents } = require('../../services/templateVariableResolver');
+          const ctx = await buildSendContext({ client, phone, convo, lead });
+          if (data.customVariableValues && typeof data.customVariableValues === 'object') {
+            ctx.customVariableValues = data.customVariableValues;
+            Object.entries(data.customVariableValues).forEach(([k, v]) => {
+              if (data.variableMappings?.body?.[String(k)] === 'customText') {
+                ctx[`param_${k}`] = v;
+              }
+            });
+          }
+          const headerImage =
+            data.headerImageUrl ||
+            (data.variableMappings?.header === 'first_product_image' ? ctx.first_product_image : null) ||
+            (data.variableMappings?.header === 'brand_logo_url' ? ctx.brand_logo_url : null) ||
+            null;
+          const mergedTpl = { ...syncedTpl, variableMappings: data.variableMappings };
+          const components = await buildMetaTemplateComponents(mergedTpl, ctx, { headerImageUrl: headerImage });
+          const WhatsApp = require('../meta/whatsapp');
+          await WhatsApp.sendTemplate(
+            client,
+            phone,
+            templateName,
+            data.languageCode || 'en',
+            components
+          );
+        } else {
+          const rawVars = data.variables || data.templateVars;
+          let templateVars = [];
+          if (Array.isArray(rawVars)) {
+            templateVars = rawVars;
+          } else if (typeof rawVars === 'string') {
+            templateVars = rawVars.split(',').map((v) => v.trim()).filter(Boolean);
+          }
+
+          const headerImage = data.headerImageUrl || null;
+
+          await sendWhatsAppSmartTemplate(
+            client,
+            phone,
+            templateName,
+            templateVars,
+            headerImage,
             data.languageCode || 'en',
             {
               source: 'flow',
@@ -5313,7 +5615,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
               flow_id: convo?.activeFlowId || convo?.metadata?.activeFlowId || null,
               flow_node_id: node?.id || null,
             }
-        );
+          );
+        }
       } catch (templateErr) {
         log.error(`[Template] META_REJECT: Template "${templateName}" failed for ${phone}: ${templateErr.message}`);
         try {
@@ -5325,11 +5628,21 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     }
 
     case 'email': {
-      const recipient = replaceVariables(lead?.email || data.recipientEmail || '', client, lead, convo);
-      if (!recipient || !(client.emailUser || client.emailFrom)) {
-        log.warn(`[Email] No recipient or email config — skipping email node`);
+      const recipient = replaceVariables(data.recipientEmail || lead?.email || '', client, lead, convo);
+      const { isWorkspaceEmailReady } = emailService;
+      if (!recipient) {
+        log.warn(`[Email] No recipient — skipping email node`);
         if (convo?._id) {
-          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: 'missing_email_config' };
+          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: 'missing_recipient' };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
+        return true;
+      }
+      if (!isWorkspaceEmailReady(client)) {
+        log.warn(`[Email] Gmail not connected — skipping email node`);
+        if (convo?._id) {
+          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: 'gmail_not_connected' };
           await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
           convo.metadata = updatedMetadata;
         }
@@ -5378,8 +5691,24 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           }
         }
 
-        subject = replaceVariables(subject, client, lead, convo);
-        emailBody = replaceVariables(emailBody, client, lead, convo);
+        let emailVarContext = null;
+        const tokenMappings = data.emailTokenMappings;
+        if (tokenMappings && typeof tokenMappings === 'object' && Object.keys(tokenMappings).length) {
+          const { buildVariableContext } = require('../core/variableInjector');
+          const baseCtx = await buildVariableContext(client, phone, convo, lead);
+          emailVarContext = { ...baseCtx };
+          for (const [templateToken, fieldKey] of Object.entries(tokenMappings)) {
+            if (!fieldKey) continue;
+            const tk = String(templateToken).trim().replace(/\s+/g, '_');
+            const fk = String(fieldKey).trim();
+            if (baseCtx[fk] != null && String(baseCtx[fk]).trim() !== '') {
+              emailVarContext[tk] = baseCtx[fk];
+            }
+          }
+        }
+
+        subject = replaceVariables(subject, client, lead, convo, emailVarContext);
+        emailBody = replaceVariables(emailBody, client, lead, convo, emailVarContext);
         await emailService.sendEmail(client, {
           to: recipient,
           subject,
@@ -5394,7 +5723,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           convo.metadata = updatedMetadata;
         }
       } catch (emailErr) {
-        log.error(`[Email] SMTP failure for ${recipient}: ${emailErr.message}`);
+        log.error(`[Email] Send failure for ${recipient}: ${emailErr.message}`);
         if (convo?._id) {
           const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: emailErr.message || 'smtp_error' };
           await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
@@ -5733,7 +6062,9 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           || client.platformVars?.checkoutUrl
           || (client.shopDomain ? `https://${String(client.shopDomain).replace(/^https?:\/\//, '')}` : ''),
         cart_recovery_link: link,
+        checkout_url: link,
         recovery_total: Number(total).toLocaleString("en-IN"),
+        cart_total: Number(total).toLocaleString("en-IN"),
         currency,
         item_count: String(convo?.pendingCart?.items?.length || 0),
         first_name: (lead?.name || "there").split(/\s+/)[0]
@@ -6609,16 +6940,16 @@ async function sendWhatsAppSmartTemplate(
   }
 }
 
-async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
+async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen, options = {}) {
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) {
     log.warn('sendWhatsAppFlow skipped: missing WhatsApp credentials', { clientId: client?.clientId });
-    return false;
+    return { ok: false, code: 'missing_credentials', message: 'WhatsApp not configured' };
   }
   if (!flowId) {
     log.warn('sendWhatsAppFlow skipped: missing Meta flow_id on node', { clientId: client?.clientId });
-    return false;
+    return { ok: false, code: 'missing_flow_id', message: 'Flow ID missing' };
   }
 
   try {
@@ -6633,6 +6964,12 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
         finalHeader = (await translateToUserLanguage(header, lang, client)).substring(0, 60);
         finalBody = (await translateToUserLanguage(body, lang, client)).substring(0, 1024);
         finalCta = (await translateToUserLanguage(flowCta, lang, client)).substring(0, 20);
+    }
+
+    const prefillData = options.prefillData && typeof options.prefillData === 'object' ? options.prefillData : {};
+    const flowActionPayload = { screen: screen || 'MAIN_SCREEN' };
+    if (Object.keys(prefillData).length > 0) {
+      flowActionPayload.data = JSON.stringify(prefillData);
     }
 
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
@@ -6652,7 +6989,7 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
             flow_id: flowId,
             flow_cta: finalCta || 'Get Started',
             flow_action: 'navigate',
-            flow_action_payload: { screen: screen || 'MAIN_SCREEN' }
+            flow_action_payload: flowActionPayload,
           }
         }
       }
@@ -6660,7 +6997,6 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
 
     await saveOutboundMessage(phone, client.clientId, 'interactive', `[WhatsApp Flow] ${finalHeader}`, res.data.messages[0].id);
 
-    // Increment Analytics
     try {
         const today = new Date().toISOString().split('T')[0];
         await DailyStat.findOneAndUpdate(
@@ -6669,11 +7005,92 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
             { upsert: true }
         );
     } catch (err) { log.error('[Analytics] Flow send error:', { error: err.message }); }
-    return true;
-  } catch (err) { 
-    log.error('sendFlow error:', { error: err.response?.data || err.message });
-    return false;
+    return { ok: true };
+  } catch (err) {
+    const metaErr = err.response?.data?.error || {};
+    const code = metaErr.code || metaErr.error_subcode || 'send_failed';
+    const message = metaErr.message || err.message;
+    log.error('sendFlow error:', { error: metaErr || err.message, flowId, clientId: client?.clientId });
+    try {
+      await logFlowEvent({
+        clientId: client.clientId,
+        flowId: options.flowRef || flowId,
+        nodeId: options.nodeId || null,
+        nodeType: 'whatsapp_flow',
+        phone,
+        action: 'failure',
+        metadata: { reason: 'flow_send_failed', metaCode: code, message },
+      });
+    } catch (_) {}
+    return { ok: false, code, message };
   }
+}
+
+/**
+ * Resume conversations where a WhatsApp Flow invite was sent but never submitted.
+ */
+async function processFlowAbandonTimeouts(io = null) {
+  const now = Date.now();
+  const candidates = await Conversation.find({
+    'metadata.flowWait.startedAt': { $exists: true },
+    status: { $nin: ['CLOSED', 'OPTED_OUT'] },
+  })
+    .limit(100)
+    .lean();
+
+  let processed = 0;
+  for (const convoLean of candidates) {
+    const fw = convoLean.metadata?.flowWait;
+    if (!fw?.startedAt || !fw.nodeId) continue;
+    const hours = Math.min(72, Math.max(1, Number(fw.timeoutHours) || 1));
+    const startedMs = new Date(fw.startedAt).getTime();
+    if (!Number.isFinite(startedMs) || now - startedMs < hours * 3600000) continue;
+
+    const client = await Client.findOne({ clientId: convoLean.clientId }).lean();
+    if (!client) continue;
+
+    const fullConvo = await Conversation.findById(convoLean._id);
+    if (!fullConvo) continue;
+
+    const lead = await AdLead.findOne({
+      phoneNumber: convoLean.phone,
+      clientId: convoLean.clientId,
+    });
+
+    const { nodes, edges } = await getFlowGraphForConversation(client, fullConvo);
+    const timeoutEdge = findFlowEdge(edges, fw.nodeId, ['timeout']);
+    const clearedMeta = clearFlowWaitMetadata(fullConvo.metadata);
+    await Conversation.findByIdAndUpdate(fullConvo._id, { $set: { metadata: clearedMeta } });
+
+    try {
+      await logFlowEvent({
+        clientId: client.clientId,
+        flowId: fullConvo.activeFlowId || fullConvo.metadata?.activeFlowId,
+        nodeId: fw.nodeId,
+        nodeType: 'whatsapp_flow',
+        phone: convoLean.phone,
+        action: 'timeout',
+        metadata: { reason: 'flow_abandon_timeout', timeoutHours: hours },
+      });
+    } catch (_) {}
+
+    if (timeoutEdge && nodes.length) {
+      await executeNode(
+        timeoutEdge.target,
+        nodes,
+        edges,
+        client,
+        fullConvo,
+        lead,
+        convoLean.phone,
+        io,
+        'whatsapp',
+        { suppressConversationPersistence: false }
+      );
+      processed += 1;
+    }
+  }
+  return processed;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7001,7 +7418,9 @@ async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBun
       Object.assign(ctx, {
         store_url: shortUrl || ctx.store_url,
         cart_recovery_link: shortUrl,
+        checkout_url: shortUrl,
         recovery_total: String(total),
+        cart_total: String(total),
         currency,
         item_count: String(items.length)
       });
@@ -7067,6 +7486,8 @@ module.exports = {
   executeAutomationFlow,
   executeNode,
   sendNodeContent,
+  sendWhatsAppFlow,
+  processFlowAbandonTimeouts,
   saveInboundMessage,
   saveOutboundMessage,
   handleWhatsAppCatalogOrder,

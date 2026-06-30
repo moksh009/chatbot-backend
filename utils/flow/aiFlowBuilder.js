@@ -29,7 +29,7 @@ const NODE_TYPES = {
   interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", text, buttonsList:[{id,title}] }' },
   image:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Image/media message.' },
   email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node. data: { subject, body }' },
-  whatsapp_flow:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Meta WhatsApp Flow form. data: { flowId, buttonLabel }' },
+  whatsapp_flow:  { handles: { in: ['top'], out: ['submitted', 'timeout', 'error'] }, desc: 'Meta WhatsApp Flow form. data: { flowId, buttonLabel, flowPrefillMappings, flowResponseMappings, flowTimeoutHours }' },
   capture_input:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Save reply. data: { question, variable }' },
   logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Branch. data: { variable, operator, value }' },
   delay:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Wait. data: { waitValue, waitUnit }' },

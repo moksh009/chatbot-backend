@@ -163,7 +163,7 @@ async function resolveAllAdminEmailRecipients(client = {}, extraCsv = '') {
 }
 
 function sanitizeNotifyChannels(channels) {
-  const list = Array.isArray(channels) ? channels : ['Dashboard'];
+  const list = Array.isArray(channels) ? channels : ['Email'];
   return list.filter((ch) => {
     const n = String(ch || '').toLowerCase();
     return n && n !== 'whatsapp' && n !== 'sms' && n !== 'both';

@@ -292,22 +292,32 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   }
 
   // ── PRIORITY 1.6: Check AI intent_match triggers ────────────────────────────
-  // Wrapped in try/catch — if NLP engine times out or crashes, skip gracefully
-  if (parsedMessage.detectedIntentId) {
+  if (parsedMessage.detectedIntentId || parsedMessage.detectedIntentName) {
     try {
       const intentFlow = flows.find((flow) => {
-        const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
-        if (!trigger || trigger.type !== "intent_match") return false;
-        // If intentId is blank on the node → matches any detected intent
-        return !trigger.intentId || trigger.intentId === parsedMessage.detectedIntentId;
+        const nodes =
+          flow.triggerNodes?.length > 0 ? flow.triggerNodes : getFlowNodes(flow);
+        return nodes.some((n) => {
+          const cfg = getTriggerConfigFromNode(n);
+          return cfg?.type === "intent_match" && intentTriggerMatches(cfg, parsedMessage);
+        });
       });
       if (intentFlow) {
+        const nodes =
+          intentFlow.triggerNodes?.length > 0
+            ? intentFlow.triggerNodes
+            : getFlowNodes(intentFlow);
+        const edges = getFlowEdges(intentFlow);
         timer.finish("intent_match");
-        return { flow: intentFlow, triggerType: "intent_match" };
+        return {
+          flow: intentFlow,
+          triggerType: "intent_match",
+          startNodeId: findFlowStartNode(nodes, edges),
+          flowId: intentFlow.flowId || String(intentFlow._id),
+        };
       }
     } catch (intentErr) {
       console.warn(`[TriggerEngine] Intent match skipped (NLP error): ${intentErr.message}`);
-      // Fall through to next priority tier
     }
   }
 
@@ -438,7 +448,19 @@ function getTriggerConfigFromNode(node) {
 
   const d = node.data || {};
 
-  if (d.trigger && d.trigger.type) return d.trigger;
+  if (d.trigger && d.trigger.type) {
+    if (d.trigger.type === "intent_match") {
+      return buildIntentMatchConfig({ ...d, ...d.trigger });
+    }
+    if (d.trigger.type === "keyword" || d.trigger.type === "KEYWORD") {
+      return {
+        ...d.trigger,
+        keywords: normalizeKeywordList(d.trigger, d),
+        matchMode: d.trigger.matchMode || d.trigger.matchType || d.matchType || d.matchMode || "contains",
+      };
+    }
+    return d.trigger;
+  }
 
   const rawType = (d.triggerType || "keyword").toLowerCase();
 
@@ -481,14 +503,15 @@ function getTriggerConfigFromNode(node) {
   }
 
   if (rawType === "intent_match") {
-    return { type: "intent_match", intentId: d.intentId || "", channel: d.channel || "both" };
+    return buildIntentMatchConfig(d);
   }
 
   let keywords = [];
-  if (Array.isArray(d.keywords)) {
-    keywords = d.keywords.map((k) => String(k).trim()).filter(Boolean);
-  } else if (typeof d.keywords === "string" && d.keywords.trim()) {
-    keywords = d.keywords.split(",").map((k) => k.trim()).filter(Boolean);
+  const kwSource = d.trigger?.keywords ?? d.keywords;
+  if (Array.isArray(kwSource)) {
+    keywords = kwSource.map((k) => String(k).trim()).filter(Boolean);
+  } else if (typeof kwSource === "string" && kwSource.trim()) {
+    keywords = kwSource.split(",").map((k) => k.trim()).filter(Boolean);
   } else if (typeof d.keyword === "string" && d.keyword.trim()) {
     keywords = d.keyword.split(",").map((k) => k.trim()).filter(Boolean);
   }
@@ -664,6 +687,70 @@ function getTriggerFromNodes(nodes) {
   return getTriggerConfigFromNode(triggerNode);
 }
 
+function normalizeKeywordList(triggerLike, flat) {
+  const kwSource = triggerLike?.keywords ?? flat?.keywords;
+  if (Array.isArray(kwSource)) {
+    return kwSource.map((k) => String(k).trim()).filter(Boolean);
+  }
+  if (typeof kwSource === "string" && kwSource.trim()) {
+    return kwSource.split(",").map((k) => k.trim()).filter(Boolean);
+  }
+  if (typeof flat?.keyword === "string" && flat.keyword.trim()) {
+    return flat.keyword.split(",").map((k) => k.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function buildIntentMatchConfig(d) {
+  const intentIds = Array.isArray(d.intentIds) && d.intentIds.length
+    ? d.intentIds.map(String).filter(Boolean)
+    : d.intentId
+      ? [String(d.intentId)]
+      : [];
+  const intentNames = Array.isArray(d.intentNames) && d.intentNames.length
+    ? d.intentNames.map(String).filter(Boolean)
+    : [];
+  return {
+    type: "intent_match",
+    intentId: intentIds[0] || "",
+    intentIds,
+    intentNames,
+    channel: d.channel || "both",
+  };
+}
+
+function intentTriggerMatches(trigger, parsedMessage) {
+  if (!trigger || String(trigger.type || "").toLowerCase() !== "intent_match") {
+    return false;
+  }
+
+  const ids = Array.isArray(trigger.intentIds) && trigger.intentIds.length
+    ? trigger.intentIds.map(String)
+    : trigger.intentId
+      ? [String(trigger.intentId)]
+      : [];
+  const names = Array.isArray(trigger.intentNames)
+    ? trigger.intentNames.map(String)
+    : [];
+
+  const detectedId = parsedMessage?.detectedIntentId
+    ? String(parsedMessage.detectedIntentId)
+    : "";
+  const detectedName = parsedMessage?.detectedIntentName
+    ? String(parsedMessage.detectedIntentName)
+    : "";
+
+  if (!detectedId && !detectedName) return false;
+
+  if (!ids.length && !names.length) return true;
+
+  if (detectedId && ids.includes(detectedId)) return true;
+  if (detectedName && names.includes(detectedName)) return true;
+  if (detectedName && ids.includes(detectedName)) return true;
+  if (detectedId && names.includes(detectedId)) return true;
+  return false;
+}
+
 function checkKeywordMatch(text, keyword, matchMode = "contains") {
   if (!text || !keyword) return false;
   const trimmedKeyword = keyword.trim();
@@ -751,6 +838,8 @@ module.exports = {
   loadSlimFlowsForClient,
   findKeywordTriggerEntry,
   checkKeywordMatch,
+  intentTriggerMatches,
+  buildIntentMatchConfig,
   getTriggerFromNodes,
   getTriggerConfigFromNode,
   findFlowStartNode,

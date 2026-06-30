@@ -32,6 +32,21 @@ function scheduleAutoResolutionCron() {
       log.info(`Auto-resolved ${resolvedCount} stale conversations`);
     })
   );
+
+  cron.schedule(
+    '15 * * * *',
+    wrapCron('WhatsApp Flow abandon timeouts', async () => {
+      try {
+        const { processFlowAbandonTimeouts } = require('../utils/commerce/dualBrainEngine');
+        const count = await processFlowAbandonTimeouts(global.io || null);
+        if (count > 0) {
+          log.info(`Flow abandon timeout resumed ${count} conversation(s)`);
+        }
+      } catch (err) {
+        log.error('Flow abandon cron error:', { error: err.message });
+      }
+    })
+  );
 }
 
 module.exports = scheduleAutoResolutionCron;

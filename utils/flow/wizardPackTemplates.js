@@ -6,7 +6,6 @@ const { STANDARD_TEMPLATES } = require("../../constants/standardTemplates");
 
 /** Wizard Messages pack slot ids (template-catalog.json, pack: wizard). */
 const WIZARD_SLOT_IDS = [
-  "admin_human_alert",
   "om_order_confirm",
   "om_cod_confirm",
   "om_shipped_flow",
@@ -101,8 +100,6 @@ function attachSlotMetadata(tpl, slot) {
 function shouldIncludeSlot(slotId, features = {}, adminAlertPreferences = "both") {
   const f = features || {};
   switch (slotId) {
-    case "admin_human_alert":
-      return adminAlertPreferences !== "email";
     case "om_order_confirm":
       return true;
     case "om_cod_confirm":

@@ -9,6 +9,7 @@ const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 const { clearClientCache } = require('../middleware/apiCache');
 const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
 const { emitDual } = require('../utils/core/socketEmit');
+const { normalizeFlowAutomationPlatform } = require('../constants/flowAutomationPlatform');
 const log = require('../utils/core/logger')('FlowPublish');
 
 async function publishFlowForClient({
@@ -150,7 +151,7 @@ async function syncClientFlowGraphStores(client, flow, opts = {}) {
     ...(vfIdx >= 0 ? vf[vfIdx] : {}),
     id: flow.flowId,
     name: flow.name || (vfIdx >= 0 ? vf[vfIdx].name : 'Published Flow'),
-    platform: flow.platform || 'whatsapp',
+    platform: normalizeFlowAutomationPlatform(flow.platform),
     folderId: flow.folderId || (vfIdx >= 0 ? vf[vfIdx].folderId : '') || '',
     isActive: true,
     nodes: draftNodes,

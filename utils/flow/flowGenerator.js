@@ -767,6 +767,7 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
         label: "Welcome (brand image)",
         text: welcomeCaption || `Hi {{first_name}} 👋 Welcome to {{brand_name}}.`,
         imageUrl: safeWelcomeImage,
+        sendImage: true,
         heatmapCount: 0,
       },
     });
@@ -1410,7 +1411,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Cancel request — admin",
         priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "Cancellation request — {{order_number}}",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested cancellation for *{{order_number}}*.\nReason: {{cancel_reason|Not provided}}\nStatus: {{order_status|unknown}}",
@@ -1476,7 +1477,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Address change?",
         variable: "modification_type",
-        operator: "eq",
+        operator: "equals",
         value: "mod_address",
         heatmapCount: 0,
       },
@@ -1512,7 +1513,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Modify request — admin",
         priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "Modification request — {{order_number}} ({{modify_type}})",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested a *modification* on *{{order_number}}*.\nType: {{modify_type|Not specified}}\nDetails: {{modify_details|Not provided}}",
@@ -1587,7 +1588,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
     data: {
       label: "Order already shipped?",
       variable: "is_shipped",
-      operator: "eq",
+      operator: "equals",
       value: "true",
       heatmapCount: 0,
     },
@@ -1641,7 +1642,7 @@ function buildAiHelpDeskBranch(ctx, IDS) {
       data: {
         label: "Needs human?",
         variable: "ai_needs_human",
-        operator: "eq",
+        operator: "equals",
         value: "true",
         heatmapCount: 0,
       },
@@ -1808,7 +1809,7 @@ function buildReturnsBranch(ctx, IDS, content) {
       data: {
         label: "Return admin alert",
         priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "Return request — {{brand_name}}",
         messageBody: "Customer {{customer_name|Unknown}} ({{phone}}) started a return for *{{order_number}}*.",
         heatmapCount: 0
@@ -2043,7 +2044,7 @@ function buildInstallSupportBranch(ctx, IDS, content) {
       data: {
         label: "Help request alert",
         priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "Order help — {{order_number}}",
         customMessage:
           "Customer ({{phone}}) needs help with order *{{order_number}}*.\nIssue: {{help_issue_type|General}}\nDetails: {{help_issue_detail|—}}",
@@ -2164,7 +2165,7 @@ function buildSupportBranch(ctx, IDS, content) {
           "Connecting you with our team on WhatsApp. Please stay on this chat — an agent will reply shortly.",
         flowTerminal: true,
         suppressAIFallbackLink: true,
-        notifyChannels: F.enableAdminAlerts ? ["Dashboard"] : ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         heatmapCount: 0,
       } }
   );
@@ -2178,7 +2179,7 @@ function buildSupportBranch(ctx, IDS, content) {
       data: {
         label: "Admin Alert",
         priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "Agent request — {{brand_name}}",
         customMessage:
           "Customer {{customer_name|Unknown}} ({{phone}}) requested an agent.\n\nIssue: {{agent_issue_description|No details provided}}",
@@ -2255,6 +2256,7 @@ function buildAbandonedCart(ctx, IDS, content, opts = {}) {
     };
     if (i === 0) {
       msgData.imageUrl = '{{first_product_image}}';
+      msgData.sendImage = true;
     }
     nodes.push(
       { id: dId, type: "delay", position: autoPos(i * 2, 4),
@@ -2285,7 +2287,7 @@ function buildB2BBranch(ctx, IDS) {
       data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
     { id: IDS.b2b_alert, type: "admin_alert", position: autoPos(3, 9),
       data: { label: "B2B Alert", priority: "high",
-        notifyChannels: ["Email", "Dashboard"],
+        notifyChannels: ["Email"],
         topic: "B2B Lead — {{brand_name}}",
         messageBody: "New wholesale inquiry from {{phone}}: {{b2b_requirement}}",
         heatmapCount: 0 } },

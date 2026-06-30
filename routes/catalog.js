@@ -178,6 +178,27 @@ router.post("/:clientId/patch-flow-mpm", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
+    const inlineNodes = Array.isArray(req.body?.nodes) ? req.body.nodes : null;
+    if (inlineNodes?.length) {
+      const products = await ShopifyProduct.find({ clientId, inStock: true })
+        .select("shopifyVariantId title variantTitle productType category vendor collectionIds collectionTitles tags price inStock")
+        .lean();
+      const { buildPatchesForNodes, resolveMpmTemplateNameForClient } = require("../flow/flowMpmPatch");
+      const mpmName = resolveMpmTemplateNameForClient(client);
+      const patches = buildPatchesForNodes(inlineNodes, products, mpmName);
+      const patchedNodes = inlineNodes.map((n) => {
+        const patch = patches[n.id];
+        if (!patch) return n;
+        return { ...n, data: { ...n.data, ...patch } };
+      });
+      return res.json({
+        success: true,
+        nodes: patchedNodes,
+        mpmPatched: patchedNodes.filter((n) => patches[n.id]?.productIds).length,
+        mpmNodesTotal: inlineNodes.filter((n) => n.type === "catalog").length,
+      });
+    }
+
     const productCount = await ShopifyProduct.countDocuments({ clientId });
     if (!productCount) {
       const catalogId = resolveCatalogId(client);

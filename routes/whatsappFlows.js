@@ -8,18 +8,53 @@ const axios = require('axios');
 const log = require('../utils/core/logger')('WhatsAppFlows');
 const { checkLimit } = require('../utils/core/planLimits');
 const { apiCache } = require('../middleware/apiCache');
+const {
+  resolveWhatsAppCredentials,
+  isWhatsAppOutboundReady,
+  WHATSAPP_CREDENTIAL_SELECT,
+} = require('../utils/meta/clientWhatsAppCreds');
 
 function formatFlowForClient(doc) {
     const flowId = String(doc.flowId || doc.id || '');
+    const status = String(doc.status || 'DRAFT').toUpperCase();
     return {
         flowId,
         id: flowId,
         name: doc.name || 'Untitled flow',
-        status: String(doc.status || 'DRAFT').toUpperCase(),
+        status,
+        isPublished: status === 'PUBLISHED',
         categories: Array.isArray(doc.categories) ? doc.categories : [],
         validationErrors: doc.validationErrors || [],
         lastSyncedAt: doc.lastSyncedAt || null,
     };
+}
+
+function isMetaOAuthError(err) {
+    const code = Number(err?.response?.data?.error?.code);
+    return code === 190 || code === 102 || code === 10;
+}
+
+/**
+ * Load decrypted WhatsApp Graph credentials (same precedence as outbound sends).
+ */
+async function loadWhatsAppGraphCredentials(clientId) {
+    const client = await Client.findOne({ clientId }).select(WHATSAPP_CREDENTIAL_SELECT).lean();
+    if (!client || !isWhatsAppOutboundReady(client)) {
+        const err = new Error('WhatsApp WABA / token not configured. Connect WhatsApp in Settings.');
+        err.code = 'WA_NOT_CONFIGURED';
+        throw err;
+    }
+    const { token, wabaId } = resolveWhatsAppCredentials(client);
+    return { client, token, wabaId };
+}
+
+async function fetchMetaFlowsFromGraph(wabaId, token) {
+    const response = await axios.get(`https://graph.facebook.com/v21.0/${wabaId}/flows`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { fields: 'id,name,status,categories,validation_errors', limit: 100 },
+        timeout: 15000,
+    });
+    return response.data?.data || [];
 }
 
 /**
@@ -54,37 +89,32 @@ router.post('/sync', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
     try {
-        const client = await Client.findOne({ clientId });
-        if (!client || !client.whatsappToken || !client.wabaId) {
-            return res.status(403).json({ error: 'WhatsApp WABA / Token not configured.' });
-        }
-        
-        // --- Phase 23: Track 8 - Billing Enforcement (WA Flows) ---
-        const limitCheck = await checkLimit(client._id, 'waflows');
+        const { client, token, wabaId } = await loadWhatsAppGraphCredentials(clientId);
+
+        const limitCheck = await checkLimit(client._id);
         if (!limitCheck.allowed) {
             return res.status(403).json({ success: false, message: limitCheck.reason });
         }
 
-        const response = await axios.get(`https://graph.facebook.com/v21.0/${client.wabaId}/flows`, {
-            params: { access_token: client.whatsappToken, fields: 'id,name,status,categories,validation_errors' }
-        });
-
-        const metaFlows = response.data?.data || [];
+        const metaFlows = await fetchMetaFlowsFromGraph(wabaId, token);
         const syncedFlows = [];
 
         for (const meta of metaFlows) {
+            const flowId = String(meta.id || '');
+            if (!flowId) continue;
             const flow = await WhatsAppFlow.findOneAndUpdate(
-                { flowId: meta.id, clientId },
+                { flowId, clientId },
                 {
                     $set: {
-                        name: meta.name,
-                        status: meta.status,
-                        categories: meta.categories,
-                        validationErrors: meta.validation_errors,
-                        lastSyncedAt: new Date()
-                    }
+                        name: meta.name || 'Untitled flow',
+                        status: meta.status || 'DRAFT',
+                        categories: Array.isArray(meta.categories) ? meta.categories : [],
+                        validationErrors: Array.isArray(meta.validation_errors) ? meta.validation_errors : [],
+                        lastSyncedAt: new Date(),
+                    },
+                    $setOnInsert: { clientId, flowId, platform: 'whatsapp' },
                 },
-                { upsert: true, new: true }
+                { upsert: true, new: true, runValidators: true }
             );
             syncedFlows.push(flow);
         }
@@ -97,8 +127,20 @@ router.post('/sync', protect, async (req, res) => {
 
         res.json({ success: true, count: formatted.length, flows: formatted });
     } catch (err) {
-        log.error('Sync Error:', err.response?.data || err.message);
-        res.status(500).json({ error: 'Failed to sync flows from Meta.' });
+        if (err.code === 'WA_NOT_CONFIGURED') {
+            return res.status(403).json({ error: err.message, isIntegrationAuthError: true });
+        }
+        const metaErr = err.response?.data?.error;
+        log.error('Sync Error:', metaErr || err.message);
+        const detail = metaErr?.message || err.message;
+        const authError = isMetaOAuthError(err);
+        res.status(authError ? 403 : 500).json({
+            error: authError
+                ? 'WhatsApp token rejected by Meta. Reconnect WhatsApp in Settings → Connections.'
+                : 'Failed to sync flows from Meta.',
+            detail,
+            isIntegrationAuthError: authError,
+        });
     }
 });
 
@@ -125,7 +167,10 @@ router.post('/send', protect, async (req, res) => {
 
         const { sendWhatsAppFlow } = require('../utils/commerce/dualBrainEngine');
         
-        await sendWhatsAppFlow(client, phone, header, body, flowId, cta, screen);
+        const result = await sendWhatsAppFlow(client, phone, header, body, flowId, cta, screen);
+        if (result && result.ok === false) {
+            return res.status(400).json({ error: result.message || 'Failed to send flow.', code: result.code });
+        }
         res.json({ success: true, message: 'Flow sent successfully.' });
     } catch (err) {
         log.error('Send Flow Error:', err.message);

@@ -21,7 +21,9 @@ function maybeDecryptSecret(value) {
   if (!s) return "";
   if (looksLikeAppEncryptedToken(s)) {
     const d = decrypt(s);
-    return d && !looksLikeAppEncryptedToken(d) ? d : d || s;
+    // Never pass iv:ciphertext blobs to Meta — treat failed decrypt as absent so callers fall back.
+    if (d && !looksLikeAppEncryptedToken(d)) return d;
+    return "";
   }
   return s;
 }

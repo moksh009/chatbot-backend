@@ -242,6 +242,16 @@ async function buildVariableContext(client, phone, convo, lead) {
     ...(leadLean?.capturedData || {}),
     ...metaForMerge,
   };
+  const capturedFlows = leadLean?.capturedData?.flows;
+  if (capturedFlows && typeof capturedFlows === 'object' && !Array.isArray(capturedFlows)) {
+    merged.flows = capturedFlows;
+    for (const [fid, fdata] of Object.entries(capturedFlows)) {
+      if (!fdata || typeof fdata !== 'object') continue;
+      for (const [k, v] of Object.entries(fdata)) {
+        merged[`flows.${fid}.${k}`] = v;
+      }
+    }
+  }
   if (profileName) {
     merged.customer_name = profileName;
     merged.first_name = profileName.split(/\s+/)[0] || merged.first_name;

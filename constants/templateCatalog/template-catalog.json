@@ -58,14 +58,6 @@
       "templateNames": ["warranty_certificate"],
       "pack": "gate",
       "configureRoute": "/audience-hub?tab=warranty"
-    },
-    {
-      "id": "admin_alert",
-      "title": "Admin handoff alert",
-      "description": "WhatsApp ping to your team when a shopper asks for a human.",
-      "templateNames": ["admin_human_alert"],
-      "pack": "gate",
-      "configureRoute": "/conversations"
     }
   ],
   "ecoStandardNames": [
@@ -286,26 +278,6 @@
           "prebuiltKey": "abandoned_cart_r3_v1",
           "autoTrigger": "abandoned_cart",
           "step": 3
-        }
-      ]
-    },
-    {
-      "id": "admin_alerts",
-      "label": "Admin & team alerts",
-      "description": "Internal WhatsApp alerts to your team — not sent to shoppers.",
-      "slots": [
-        {
-          "id": "admin_human_alert",
-          "title": "Admin handoff alert",
-          "description": "WhatsApp alert to your team when a shopper needs a human — includes customer name, phone, chat summary, and a button to open Live Chat.",
-          "canonicalMetaName": "admin_human_alert",
-          "metaNames": ["admin_human_alert", "admin_handoff"],
-          "usedIn": ["Live chat", "Flow Builder", "AI Setup"],
-          "configureRoute": "/conversations",
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "admin_human_alert",
-          "autoTrigger": null
         }
       ]
     },
