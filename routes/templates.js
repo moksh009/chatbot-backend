@@ -144,23 +144,26 @@ router.get('/sync', protect, async (req, res) => {
             );
             invalidateTemplateListMemCache(clientId);
 
-            try {
-              await reconcileSyncedTemplatesWithCatalog(clientId, templates);
-              await pollPendingMetaTemplatesForClient(clientId);
-            } catch (lifeErr) {
-              console.warn('[Template API] Post-sync lifecycle:', lifeErr.message);
-            }
+            // Respond immediately — post-sync lifecycle ops run in background
+            res.json({ success: true, data: templates, syncedAt: new Date().toISOString() });
 
-            try {
+            // Fire-and-forget: reconciliation, polling, and image hydration do not block client
+            setImmediate(async () => {
+              try {
+                await reconcileSyncedTemplatesWithCatalog(clientId, templates);
+                await pollPendingMetaTemplatesForClient(clientId);
+              } catch (lifeErr) {
+                console.warn('[Template API] Post-sync lifecycle:', lifeErr.message);
+              }
+              try {
                 const fresh = await Client.findOne({ clientId }).lean();
                 if (fresh) {
-                    await hydrateApprovedProductTemplatesForClient(fresh, { force: false, maxAgeMs: 7 * 24 * 60 * 60 * 1000 });
+                  await hydrateApprovedProductTemplatesForClient(fresh, { force: false, maxAgeMs: 7 * 24 * 60 * 60 * 1000 });
                 }
-            } catch (hErr) {
+              } catch (hErr) {
                 console.warn('[Template API] Post-sync product image hydrate:', hErr.message);
-            }
-
-            res.json({ success: true, data: templates });
+              }
+            });
         } catch (metaErr) {
             const status = metaErr.response?.status;
             const isClientError = status >= 400 && status < 500;

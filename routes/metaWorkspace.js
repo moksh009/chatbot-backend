@@ -45,16 +45,33 @@ router.get('/:clientId/shell', protect, verifyClientAccess, loadClientConfig, ap
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const sections = req.query.sections || 'templates,health';
 
-    const payload = await buildMetaWorkspaceShell(clientId, {
-      user: req.user,
-      clientConfig: req.clientConfig,
-      tab,
-      page,
-      sections,
-    });
+    const SHELL_TIMEOUT_MS = 22000;
+    const payload = await Promise.race([
+      buildMetaWorkspaceShell(clientId, {
+        user: req.user,
+        clientConfig: req.clientConfig,
+        tab,
+        page,
+        sections,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(Object.assign(new Error('shell_timeout'), { code: 'SHELL_TIMEOUT' })), SHELL_TIMEOUT_MS)
+      ),
+    ]);
 
     return res.json({ success: true, clientId, ...payload });
   } catch (err) {
+    if (err.code === 'SHELL_TIMEOUT') {
+      console.warn('[meta/workspace/shell] Timed out — returning empty shell');
+      return res.json({
+        success: true,
+        clientId: req.params.clientId,
+        whatsappLive: false,
+        templates: {},
+        health: null,
+        meta: { partial: true, tab: req.query.tab || 'library', timedOut: true },
+      });
+    }
     console.error('[meta/workspace/shell]', err);
     return res.status(500).json({ success: false, message: err.message });
   }

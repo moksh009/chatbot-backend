@@ -113,6 +113,10 @@ async function buildMetaWorkspaceShell(clientId, options = {}) {
   const wantHealth = sectionsRaw.includes('health');
 
   const waConnected = await isWhatsAppConnected(clientId);
+  const [slotsResult, readinessResult] = await Promise.allSettled([
+    buildSlotsSection(clientId),
+    buildReadinessSection(clientId),
+  ]);
   const emptyTemplates = {
     list: { success: true, data: [], syncedAt: null },
     libraryPage: {
@@ -121,8 +125,8 @@ async function buildMetaWorkspaceShell(clientId, options = {}) {
       pagination: { page: 1, limit: 100, total: 0, totalPages: 1 },
       availableUsageTags: [],
     },
-    slots: (await buildSlotsSection(clientId)),
-    readiness: (await buildReadinessSection(clientId)),
+    slots: slotsResult.status === 'fulfilled' ? slotsResult.value : { success: false, data: null },
+    readiness: readinessResult.status === 'fulfilled' ? readinessResult.value : { success: false, data: null },
   };
 
   if (!waConnected) {
@@ -152,7 +156,16 @@ async function buildMetaWorkspaceShell(clientId, options = {}) {
 
   if (wantHealth) {
     taskKeys.push('health');
-    tasks.push(buildMetaHubHealth(clientId, clientConfig));
+    // Cap health check at 6 s — it calls live Shopify webhook API which can be slow.
+    const HEALTH_TIMEOUT_MS = 6000;
+    tasks.push(
+      Promise.race([
+        buildMetaHubHealth(clientId, clientConfig),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('health_section_timeout')), HEALTH_TIMEOUT_MS)
+        ),
+      ])
+    );
   }
 
   const results = await Promise.allSettled(tasks);

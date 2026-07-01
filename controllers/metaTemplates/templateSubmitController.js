@@ -191,6 +191,7 @@ async function submitTemplateToMeta(req, res) {
       buttons = [],
       existingTemplateId = null,
       variableSamples = null,
+      variableMappings = null,
     } = req.body;
 
     if (!tenantId || tenantId !== clientId) {
@@ -433,6 +434,10 @@ async function submitTemplateToMeta(req, res) {
         phone_number: b.phoneNumber || null,
       })),
       source: 'manual',
+      // Variable data bindings — maps {{N}} position to registry field name for auto-fill at send time
+      ...(variableMappings && typeof variableMappings === 'object' && Object.keys(variableMappings).length
+        ? { variableMappings }
+        : {}),
     };
 
     let metaResponse;

@@ -49,6 +49,7 @@ async function saveDraft(req, res) {
       bodySamples = [],
       buttons = [],
       variableSamples = null,
+      variableMappings = null,
       upsertByName = false,
       templateId = null,
     } = req.body;
@@ -121,6 +122,10 @@ async function saveDraft(req, res) {
       submissionStatus: 'draft',
       source: 'manual',
       metaApiError: null,
+      // Variable data bindings — maps {{N}} position → registry field name
+      ...(variableMappings && typeof variableMappings === 'object' && Object.keys(variableMappings).length
+        ? { variableMappings }
+        : {}),
     };
 
     if (templateId && mongoose.Types.ObjectId.isValid(templateId)) {
@@ -414,6 +419,7 @@ async function patchTemplate(req, res) {
         bodySamples = doc.formData?.bodySamples,
         buttons = doc.formData?.buttons,
         variableSamples = null,
+        variableMappings: updatedVariableMappings = null,
       } = updates;
 
       const formData = {
@@ -480,9 +486,12 @@ async function patchTemplate(req, res) {
           url: b.url || null,
           phone_number: b.phoneNumber || null,
         })),
+        ...(updatedVariableMappings && typeof updatedVariableMappings === 'object' && Object.keys(updatedVariableMappings).length
+          ? { variableMappings: updatedVariableMappings }
+          : {}),
       };
     } else {
-      const allowed = ['internalName', 'name', 'category', 'language', 'usageTags', 'formData', 'body', 'footerText', 'headerType', 'headerValue', 'buttons'];
+      const allowed = ['internalName', 'name', 'category', 'language', 'usageTags', 'formData', 'body', 'footerText', 'headerType', 'headerValue', 'buttons', 'variableMappings'];
       for (const k of allowed) {
         if (updates[k] !== undefined) $set[k] = updates[k];
       }
