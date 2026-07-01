@@ -5,6 +5,25 @@ const JourneyRevenueAttribution = require('../../models/JourneyRevenueAttributio
 
 const MIN_SAMPLE_SIZE = 10;
 
+// ---------------------------------------------------------------------------
+// Canonical step-counting helpers — single source of truth for all analytics
+// surfaces (getBlueprintStats, getStepFunnel, emitSequenceProgress, drawer).
+// Rule: sent and failed are MUTUALLY EXCLUSIVE.
+// A step that was sent (sentAt set) but later received a Meta 'failed' webhook
+// will have status:'failed' AND sentAt populated.  Under the old rule it
+// counted in BOTH buckets.  These helpers fix that.
+// ---------------------------------------------------------------------------
+
+/** True if the step was successfully dispatched and has NOT since been failed. */
+function isStepSent(step) {
+  return (step.status === 'sent' || !!step.sentAt) && step.status !== 'failed';
+}
+
+/** True if the step has reached a terminal failed state. */
+function isStepFailed(step) {
+  return step.status === 'failed';
+}
+
 function parsePeriod(period = '7d') {
   const now = new Date();
   const p = String(period || '7d').toLowerCase();
@@ -29,10 +48,8 @@ function countEngagement(steps = []) {
   let clicked = 0;
   let failed = 0;
   for (const step of steps) {
-    // Count as sent if status='sent' OR sentAt is set (covers steps whose status
-    // got stuck in 'processing' due to a transition race but whose message was delivered).
-    if (step.status === 'sent' || step.sentAt) sent += 1;
-    if (step.status === 'failed') failed += 1;
+    if (isStepSent(step)) sent += 1;
+    if (isStepFailed(step)) failed += 1;
     if (step.deliveredAt) delivered += 1;
     if (step.readAt) read += 1;
     if (step.clickedAt) clicked += 1;
@@ -142,19 +159,31 @@ async function getBlueprintStats(clientId, sourceFlowId, period = '7d') {
     sourceFlowId,
     ...periodMatch('attributedAt', from, to),
   };
+  // Revenue split: confirmed (click-driven) vs probable (send-only).
   const revRows = await JourneyRevenueAttribution.aggregate([
     { $match: revMatch },
     {
       $group: {
-        _id: null,
+        _id: { $cond: [{ $eq: ['$clickDriven', true] }, 'confirmed', 'probable'] },
         revenueInr: { $sum: '$amount' },
         attributedOrders: { $sum: 1 },
       },
     },
   ]);
-  const revRow = revRows[0] || {};
-  const revenueInr = Number(revRow.revenueInr || 0);
-  const attributedOrders = Number(revRow.attributedOrders || 0);
+
+  let revenueInr = 0;
+  let confirmedRevenueInr = 0;
+  let probableRevenueInr = 0;
+  let attributedOrders = 0;
+  for (const row of revRows) {
+    const rev = Number(row.revenueInr || 0);
+    const orders = Number(row.attributedOrders || 0);
+    revenueInr += rev;
+    attributedOrders += orders;
+    if (row._id === 'confirmed') confirmedRevenueInr = rev;
+    else probableRevenueInr = rev;
+  }
+
   const uniqueRecipients = uniqueLeadIds.size;
 
   const lowVolume = engagement.sent < MIN_SAMPLE_SIZE;
@@ -166,6 +195,8 @@ async function getBlueprintStats(clientId, sourceFlowId, period = '7d') {
     sourceFlowId,
     uniqueRecipients,
     revenueInr,
+    confirmedRevenueInr,
+    probableRevenueInr,
     openRate,
     clickRate,
     orderRate,
@@ -191,39 +222,70 @@ async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
   };
 
   const sequences = await FollowUpSequence.find(enrollMatch).select('steps').lean();
-  const funnelMap = new Map();
+
+  // Two maps: indexed by stepIndex (for ordering) and by graphNodeId (for canvas mapping)
+  const funnelByIndex = new Map();
+  const funnelByNodeId = new Map();
 
   for (const seq of sequences) {
     (seq.steps || []).forEach((step, stepIndex) => {
-      if (!funnelMap.has(stepIndex)) {
-        funnelMap.set(stepIndex, {
+      const st = String(step.status || 'pending');
+      const isSent = isStepSent(step);
+      const isFailed = isStepFailed(step);
+      const isSkipped = st === 'skipped';
+      const isPending = ['pending', 'queued', 'processing', 'retrying'].includes(st);
+
+      const nodeId = String(step.graphNodeId || '');
+
+      // Update by-index map (used by drawer funnel table)
+      if (!funnelByIndex.has(stepIndex)) {
+        funnelByIndex.set(stepIndex, {
           stepIndex,
+          graphNodeId: nodeId,
           type: step.type || 'whatsapp',
           templateName: step.templateName || '',
-          sent: 0,
-          delivered: 0,
-          read: 0,
-          clicked: 0,
-          failed: 0,
-          skipped: 0,
-          pending: 0,
+          sent: 0, delivered: 0, read: 0, clicked: 0,
+          failed: 0, skipped: 0, pending: 0,
         });
       }
-      const row = funnelMap.get(stepIndex);
-      const st = String(step.status || 'pending');
-      if (st === 'sent' || step.sentAt) row.sent += 1;
-      else if (st === 'failed') row.failed += 1;
-      else if (st === 'skipped') row.skipped += 1;
-      else if (['pending', 'queued', 'processing', 'retrying'].includes(st)) row.pending += 1;
+      const row = funnelByIndex.get(stepIndex);
+      if (!row.graphNodeId && nodeId) row.graphNodeId = nodeId;
+      if (isSent) row.sent += 1;
+      if (isFailed) row.failed += 1;
+      if (isSkipped) row.skipped += 1;
+      if (isPending) row.pending += 1;
       if (step.deliveredAt) row.delivered += 1;
       if (step.readAt) row.read += 1;
       if (step.clickedAt) row.clicked += 1;
+
+      // Update by-nodeId map (used by canvas overlay for stable node-level stats)
+      if (nodeId) {
+        if (!funnelByNodeId.has(nodeId)) {
+          funnelByNodeId.set(nodeId, {
+            graphNodeId: nodeId,
+            stepIndex,
+            type: step.type || 'whatsapp',
+            templateName: step.templateName || '',
+            sent: 0, delivered: 0, read: 0, clicked: 0,
+            failed: 0, skipped: 0, pending: 0,
+          });
+        }
+        const nRow = funnelByNodeId.get(nodeId);
+        if (isSent) nRow.sent += 1;
+        if (isFailed) nRow.failed += 1;
+        if (isSkipped) nRow.skipped += 1;
+        if (isPending) nRow.pending += 1;
+        if (step.deliveredAt) nRow.delivered += 1;
+        if (step.readAt) nRow.read += 1;
+        if (step.clickedAt) nRow.clicked += 1;
+      }
     });
   }
 
   return {
     sourceFlowId,
-    steps: [...funnelMap.values()].sort((a, b) => a.stepIndex - b.stepIndex),
+    steps: [...funnelByIndex.values()].sort((a, b) => a.stepIndex - b.stepIndex),
+    byNodeId: Object.fromEntries(funnelByNodeId),
     period: { from, to, label },
   };
 }
@@ -247,4 +309,6 @@ module.exports = {
   getBlueprintStatsMap,
   parsePeriod,
   MIN_SAMPLE_SIZE,
+  isStepSent,
+  isStepFailed,
 };

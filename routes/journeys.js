@@ -342,15 +342,26 @@ router.get('/:clientId/:flowId/stats', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId))
-      .select('flowId')
+      .select('flowId journeyTrigger playbookKey name')
       .lean();
     if (!flow) {
       return res.status(404).json({ success: false, message: 'Journey not found' });
     }
     const period = req.query.period || '7d';
     const { getBlueprintStats } = require('../services/journeyBuilder/journeyStatsService');
+    const { isNonRevenue } = require('../utils/commerce/journeyAttributionHelper');
     const stats = await getBlueprintStats(clientId, flow.flowId, period);
-    res.json({ success: true, stats });
+    const nonRevenue = isNonRevenue(flow.playbookKey || flow.journeyTrigger || '', flow.flowId);
+    res.json({
+      success: true,
+      stats: {
+        ...stats,
+        revenueEligible: !nonRevenue,
+        revenueNote: nonRevenue
+          ? 'Confirmation journey — revenue is organic and not attributed to this journey'
+          : null,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -675,6 +686,94 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
       journey: serializeBlueprint(flow.toObject()),
       compiledStepCount: steps.length,
       warnings,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/journeys/:clientId/:flowId/enroll/preflight
+// Dry-run: returns per-channel eligibility for the provided lead list WITHOUT
+// creating any sequences or sending any messages.
+// Response: { total, waEligible, emailEligible, noPhone, noEmail, noContact, wouldSkip }
+router.post('/:clientId/:flowId/enroll/preflight', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const flowId = req.params.flowId;
+    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, flowId))
+      .select('status isActive publishedNodes publishedEdges nodes edges')
+      .lean();
+    if (!flow) {
+      return res.status(404).json({ success: false, message: 'Journey not found' });
+    }
+
+    const { leads } = req.body || {};
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ success: false, message: 'No leads provided' });
+    }
+
+    const nodes = flow.publishedNodes?.length ? flow.publishedNodes : flow.nodes || [];
+    const edges = flow.publishedEdges?.length ? flow.publishedEdges : flow.edges || [];
+    const { steps } = compileGraphToSteps({ nodes, edges });
+
+    const hasWaSteps = steps.some((s) => String(s.type || 'whatsapp').toLowerCase() !== 'email');
+    const hasEmailSteps = steps.some((s) => String(s.type).toLowerCase() === 'email');
+
+    const AdLead = require('../models/AdLead');
+    const leadIds = leads.map((l) => l.leadId).filter(Boolean);
+    const leadDocs = leadIds.length
+      ? await AdLead.find({ _id: { $in: leadIds }, clientId })
+          .select('phoneNumber email channelConsent optStatus')
+          .lean()
+      : [];
+
+    const leadMap = new Map(leadDocs.map((l) => [String(l._id), l]));
+
+    let waEligible = 0;
+    let emailEligible = 0;
+    let noPhone = 0;
+    let noEmail = 0;
+    let noContact = 0;
+
+    for (const leadInput of leads) {
+      const leadDoc = leadMap.get(String(leadInput.leadId || ''));
+      const phone = leadDoc?.phoneNumber || leadInput.phone || '';
+      const email = leadDoc?.email || leadInput.email || '';
+      const hasPhone = !!(phone && phone.length > 5);
+      const hasEmail = !!(email && email.includes('@'));
+
+      if (!hasPhone && !hasEmail) {
+        noContact += 1;
+        continue;
+      }
+      if (hasWaSteps) {
+        if (hasPhone) waEligible += 1;
+        else noPhone += 1;
+      }
+      if (hasEmailSteps) {
+        if (hasEmail) emailEligible += 1;
+        else noEmail += 1;
+      }
+    }
+
+    const total = leads.length;
+    const wouldSkip = noContact + (hasWaSteps ? noPhone : 0) + (hasEmailSteps ? noEmail : 0);
+
+    return res.json({
+      success: true,
+      total,
+      waEligible: hasWaSteps ? waEligible : null,
+      emailEligible: hasEmailSteps ? emailEligible : null,
+      noPhone: hasWaSteps ? noPhone : null,
+      noEmail: hasEmailSteps ? noEmail : null,
+      noContact,
+      wouldSkip,
+      hasWaSteps,
+      hasEmailSteps,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

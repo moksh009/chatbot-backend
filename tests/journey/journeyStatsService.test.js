@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const {
   parsePeriod,
   MIN_SAMPLE_SIZE,
+  isStepSent,
+  isStepFailed,
 } = require('../../services/journeyBuilder/journeyStatsService');
 
 describe('journeyStatsService', () => {
@@ -28,6 +30,46 @@ describe('journeyStatsService', () => {
     it('is 10 per honest metrics contract', () => {
       assert.equal(MIN_SAMPLE_SIZE, 10);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: sent/failed mutual exclusivity (FSM fix)
+// A step that was sent (sentAt set) but later moved to failed by a Meta webhook
+// must count in FAILED only — not in both sent AND failed.
+// ---------------------------------------------------------------------------
+describe('isStepSent / isStepFailed — mutual exclusivity', () => {
+  it('normal sent step counts as sent, not failed', () => {
+    const step = { status: 'sent', sentAt: new Date() };
+    assert.equal(isStepSent(step), true);
+    assert.equal(isStepFailed(step), false);
+  });
+
+  it('failed step with sentAt counts as failed ONLY — not double-counted as sent', () => {
+    // This is the double-counting bug scenario:
+    // step was sent (sentAt populated), later Meta webhook moved status to 'failed'
+    const step = { status: 'failed', sentAt: new Date(), failedAt: new Date() };
+    assert.equal(isStepSent(step), false, 'failed step must NOT count in sent');
+    assert.equal(isStepFailed(step), true, 'failed step must count in failed');
+  });
+
+  it('failed step without sentAt still counts as failed', () => {
+    const step = { status: 'failed', sentAt: null, failureReason: 'template_not_approved' };
+    assert.equal(isStepSent(step), false);
+    assert.equal(isStepFailed(step), true);
+  });
+
+  it('pending step counts in neither bucket', () => {
+    const step = { status: 'pending', sentAt: null };
+    assert.equal(isStepSent(step), false);
+    assert.equal(isStepFailed(step), false);
+  });
+
+  it('step with sentAt but status not sent or failed — counts as sent', () => {
+    // e.g. transition race left status=processing but message was delivered
+    const step = { status: 'processing', sentAt: new Date() };
+    assert.equal(isStepSent(step), true);
+    assert.equal(isStepFailed(step), false);
   });
 });
 

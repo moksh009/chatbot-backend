@@ -26,6 +26,13 @@ const JourneyRevenueAttributionSchema = new mongoose.Schema(
     channel: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
     journeyType: { type: String, default: '' },
     source: { type: String, default: 'shopify_webhook' },
+    // clickDriven: true when there is evidence the customer tapped a tracked link
+    // before purchasing (stronger attribution signal).  false = probable (message
+    // was sent/delivered within the window but no click was recorded).
+    clickDriven: { type: Boolean, default: false },
+    // attributionWindowDays: per-journey override for the attribution window.
+    // Default 30 days (= 720 hours). Set via WhatsAppFlow.journeyPolicies.attributionWindowDays.
+    attributionWindowDays: { type: Number, default: 30 },
   },
   { timestamps: true }
 );

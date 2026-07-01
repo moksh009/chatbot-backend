@@ -8,10 +8,19 @@ const {
   getStepFunnel,
   parsePeriod,
   MIN_SAMPLE_SIZE,
+  isStepSent,
+  isStepFailed,
 } = require('./journeyStatsService');
 
 const TRACKING_NOTE =
-  'WhatsApp opens use Meta read receipts. Email opens use a tracking pixel; clicks use wrapped links. Revenue is last-touch within 7 days of a journey send.';
+  'WhatsApp "Read" uses Meta read receipts — recipients control this in their WhatsApp privacy settings; ' +
+  '0% read does not mean broken tracking. ' +
+  'Email "Opened" uses a tracking pixel; Apple Mail Privacy Protection pre-fetches pixels before the ' +
+  'recipient reads, inflating open rates for ~59% of Apple Mail users (2026). ' +
+  'Treat email click rate (not open rate) as the reliable engagement signal. ' +
+  'WhatsApp URL button clicks require a dynamic URL button template — static URL buttons cannot be tracked (Meta platform limitation). ' +
+  'Revenue is last-touch within 30 days for cart recovery and marketing journeys. ' +
+  'Order confirmation journeys do not receive revenue attribution.';
 
 function maskPhone(phone) {
   const d = String(phone || '').replace(/\D/g, '');
@@ -49,6 +58,7 @@ function mapStepEngagement(step = {}, stepIndex = 0) {
 
   return {
     stepIndex,
+    graphNodeId: step.graphNodeId || '',
     channel,
     type: step.type || channel,
     templateName: step.templateName || '',
@@ -58,6 +68,8 @@ function mapStepEngagement(step = {}, stepIndex = 0) {
     deliveredAt: step.deliveredAt || null,
     readAt: step.readAt || null,
     clickedAt: step.clickedAt || null,
+    failedAt: step.failedAt || null,
+    failureReason: step.failureReason || step.skipReason || null,
     clickType: step.clickType || null,
     outcome,
   };
@@ -65,23 +77,30 @@ function mapStepEngagement(step = {}, stepIndex = 0) {
 
 function summarizeRecipientEngagement(steps = [], orders = []) {
   const mapped = (steps || []).map((s, i) => mapStepEngagement(s, i));
-  const sent = mapped.filter((s) => s.outcome !== 'pending' && s.outcome !== 'skipped').length;
-  const opened = mapped.filter((s) => s.readAt).length;
-  const clicked = mapped.filter((s) => s.clickedAt).length;
-  const failed = mapped.filter((s) => s.outcome === 'failed').length;
+
+  // Use shared helpers from journeyStatsService — single source of truth
+  const sent = mapped.filter((s) => isStepSent(s)).length;
+  const opened = mapped.filter((s) => !!s.readAt).length;
+  const clicked = mapped.filter((s) => !!s.clickedAt).length;
+  const failed = mapped.filter((s) => isStepFailed(s) || s.outcome === 'failed').length;
+  const skipped = mapped.filter((s) => s.outcome === 'skipped').length;
   const revenueInr = orders.reduce((sum, o) => sum + Number(o.amount || 0), 0);
 
+  // bestOutcome: failed takes priority so enrollment clearly shows as failed if any step did
   let bestOutcome = 'enrolled';
   if (orders.length) bestOutcome = 'purchased';
   else if (clicked > 0) bestOutcome = 'clicked';
   else if (opened > 0) bestOutcome = 'opened';
-  else if (sent > 0) bestOutcome = 'sent';
+  else if (sent > 0 && failed === 0) bestOutcome = 'sent';
+  else if (failed > 0 && sent === 0) bestOutcome = 'failed';
+  else if (sent > 0) bestOutcome = 'partial'; // some sent, some failed
 
   return {
     sent,
     opened,
     clicked,
     failed,
+    skipped,
     revenueInr,
     attributedOrders: orders.length,
     bestOutcome,
@@ -220,6 +239,7 @@ async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
     period: { from, to, label },
     summary: buildSummaryFromStats(stats),
     funnel: funnel.steps || [],
+    funnelByNodeId: funnel.byNodeId || {},
     recipients,
     pagination: {
       page,

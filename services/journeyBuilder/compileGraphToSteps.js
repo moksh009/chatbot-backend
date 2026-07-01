@@ -3,6 +3,7 @@
 const moment = require('moment');
 const { JOURNEY_NODE_TYPES, isKnownJourneyNodeType } = require('./journeyNodeContract');
 const { branchRuleToGates } = require('./branchRuleGates');
+const { buildWaClickTrackUrl } = require('../../utils/wa/waClickTrackingService');
 
 function nodeTypeOf(node) {
   return String(node?.type || node?.data?.nodeType || '').trim();
@@ -87,6 +88,8 @@ function buildSendStep(node, type, ctx) {
     interactionMode: 'none',
     expectedActions: [],
     context: null,
+    // Stable link back to the canvas node — used by funnel API for per-node stats
+    graphNodeId: String(node.id || ''),
   };
 
   if (stepType === 'whatsapp') {
@@ -119,6 +122,12 @@ function buildSendStep(node, type, ctx) {
     const custom = d.customVariableValues || d.customValues;
     if (custom && typeof custom === 'object' && Object.keys(custom).length) {
       step.customVariableValues = { ...custom };
+    }
+    // Flag steps that use a URL button so the send worker can inject a tracked URL.
+    // Only dynamic URL buttons can be tracked (Meta static URL buttons generate no webhook).
+    if (d.hasUrlButton === true || d.urlButtonDestination) {
+      step.hasUrlButton = true;
+      if (d.urlButtonDestination) step.urlButtonDestination = String(d.urlButtonDestination);
     }
     if (!step.templateName) {
       ctx.warnings.push('WhatsApp send node missing template');

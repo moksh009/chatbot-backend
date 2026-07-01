@@ -180,6 +180,25 @@ async function processStatuses(statuses) {
         }
       }
 
+      // Journey step status backfill — runs for delivered, read, AND failed
+      // Must run before cart recovery block so both pipelines get the update
+      if (status === 'delivered' || status === 'read' || status === 'failed') {
+        try {
+          const { updateJourneyStepStatus } = require('../utils/commerce/journeyAttributionHelper');
+          const Message = require('../models/Message');
+          const liveMsg = await Message.findOne({ messageId }).select('clientId').lean();
+          await updateJourneyStepStatus({
+            clientId: liveMsg?.clientId || null,
+            messageId,
+            status,
+            timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
+            failureReason: status === 'failed' ? (errors?.[0]?.message || 'meta_error') : undefined,
+          });
+        } catch (_) {
+          /* non-fatal */
+        }
+      }
+
       // Cart recovery delivery/read — lookup by messageId on CartRecoveryAttempt
       // (cron sends via envelope; Message doc may not exist with this messageId)
       if (status === 'delivered' || status === 'read') {
@@ -205,17 +224,6 @@ async function processStatuses(statuses) {
               status,
               timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
             });
-          }
-          try {
-            const { updateJourneyStepStatus } = require('../utils/commerce/journeyAttributionHelper');
-            await updateJourneyStepStatus({
-              clientId: cartClientId || liveMsg?.clientId || null,
-              messageId,
-              status,
-              timestamp: statusObj.timestamp ? new Date(Number(statusObj.timestamp) * 1000) : new Date(),
-            });
-          } catch (_) {
-            /* non-fatal */
           }
           try {
             const { updateTemplateSendLogStatus } = require('../utils/commerce/templateSendLogStatus');

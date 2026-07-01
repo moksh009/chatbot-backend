@@ -81,6 +81,10 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     /** Phase 4 — email envelope for open/click tracking */
     envelopeId: { type: mongoose.Schema.Types.ObjectId, default: null },
     channel: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    /** Phase 5 — stable link back to the canvas node that produced this step */
+    graphNodeId: { type: String, default: '' },
+    /** Phase 5 — set by Meta webhook when status === 'failed' */
+    failedAt: { type: Date, default: null },
     /** Journey variable resolution — persisted so worker can read mappings after save */
     variableMappings:     { type: mongoose.Schema.Types.Mixed, default: null },
     variableMapping:      { type: mongoose.Schema.Types.Mixed, default: null },

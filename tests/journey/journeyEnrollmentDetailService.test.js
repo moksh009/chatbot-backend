@@ -79,6 +79,58 @@ describe('journeyEnrollmentDetailService', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Regression: branched journey — sent/failed counts must be identical across
+// the stats API (getStepFunnel byNodeId) and the detail API (summary.failed).
+// This is a pure unit-level check using the shared counting helpers.
+// ---------------------------------------------------------------------------
+describe('branched journey — counting parity regression', () => {
+  const { isStepSent, isStepFailed } = require('../../services/journeyBuilder/journeyStatsService');
+
+  /**
+   * Simulate two enrollments through a branched journey (CONDITIONAL_SPLIT).
+   * Lead A takes the "Yes" branch (step 0), step succeeds.
+   * Lead B takes the "No" branch (step 0 also), step fails with sentAt set
+   *   (sent successfully, then Meta reports failure later).
+   */
+  function makeStepWithNodeId(graphNodeId, status, sentAt = null, failedAt = null) {
+    return { graphNodeId, status, sentAt, failedAt, deliveredAt: null, readAt: null, clickedAt: null };
+  }
+
+  const NODE_SEND = 'node-send-0';
+  const seqA = [makeStepWithNodeId(NODE_SEND, 'sent', new Date())];
+  const seqB = [makeStepWithNodeId(NODE_SEND, 'failed', new Date(), new Date())];
+
+  it('isStepSent gives consistent result across both paths', () => {
+    assert.equal(isStepSent(seqA[0]), true,  'lead A step: should be sent');
+    assert.equal(isStepSent(seqB[0]), false, 'lead B step: failed-after-sent must NOT be sent');
+  });
+
+  it('isStepFailed gives consistent result', () => {
+    assert.equal(isStepFailed(seqA[0]), false, 'lead A: not failed');
+    assert.equal(isStepFailed(seqB[0]), true,  'lead B: failed');
+  });
+
+  it('aggregate counts from both enrollments match expected values (no double-counting)', () => {
+    const allSteps = [...seqA, ...seqB];
+    const sent   = allSteps.filter(isStepSent).length;
+    const failed = allSteps.filter(isStepFailed).length;
+    // sent+failed must equal 2 (total actionable), not 3 (which would be double-counted)
+    assert.equal(sent,          1, 'exactly 1 sent');
+    assert.equal(failed,        1, 'exactly 1 failed');
+    assert.equal(sent + failed, 2, 'sent + failed === total steps (no double-counting)');
+  });
+
+  it('funnelByNodeId entries match per-node sums', () => {
+    const allSteps = [...seqA, ...seqB];
+    const nodeSent   = allSteps.filter((s) => s.graphNodeId === NODE_SEND && isStepSent(s)).length;
+    const nodeFailed = allSteps.filter((s) => s.graphNodeId === NODE_SEND && isStepFailed(s)).length;
+    assert.equal(nodeSent,          1);
+    assert.equal(nodeFailed,        1);
+    assert.equal(nodeSent + nodeFailed, 2, 'no double-counting at node level either');
+  });
+});
+
 describe('journeyAttributionHelper extensions', () => {
   const {
     updateJourneyStepClick,

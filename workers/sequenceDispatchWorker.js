@@ -22,22 +22,26 @@ const { journeyLog, journeyLogWarn, journeyLogError } = require('../utils/journe
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { emitToClient } = require('../utils/core/socket');
+const { isStepSent, isStepFailed } = require('../services/journeyBuilder/journeyStatsService');
 
 async function emitSequenceProgress(clientId, sequenceId) {
   try {
     const fresh = await FollowUpSequence.findById(sequenceId).select('status steps').lean();
     if (!fresh) return;
     const steps = fresh.steps || [];
-    const sent = steps.filter((s) => s.status === 'sent').length;
-    const failed = steps.filter((s) => s.status === 'failed').length;
+    // Use shared helpers — same mutual-exclusivity rule as stats API
+    const sent = steps.filter(isStepSent).length;
+    const failed = steps.filter(isStepFailed).length;
     const skipped = steps.filter((s) => s.status === 'skipped').length;
     const pending = steps.filter((s) =>
       ['pending', 'queued', 'processing', 'retrying'].includes(s.status)
     ).length;
+    const delivered = steps.filter((s) => !!s.deliveredAt).length;
+    const read = steps.filter((s) => !!s.readAt).length;
     emitToClient(clientId, 'sequence:progress', {
       sequenceId: String(sequenceId),
       status: fresh.status,
-      counts: { sent, failed, skipped, pending, total: steps.length },
+      counts: { sent, failed, skipped, pending, delivered, read, total: steps.length },
     });
   } catch {
     /* optional realtime */
@@ -432,6 +436,8 @@ async function processSequenceDispatchJob(job) {
       };
       if (result?.messageId) sentPatch.messageId = String(result.messageId);
       if (result?.envelopeId) sentPatch.envelopeId = result.envelopeId;
+      // For email, SMTP accept = proxy delivered baseline (real opens backfill via tracking pixel)
+      if (stepChannel === 'email') sentPatch.deliveredAt = sentAt;
 
       try {
         await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', sentPatch);

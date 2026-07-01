@@ -346,7 +346,8 @@ const winningProductsRoutes = require('./routes/winningProducts');
 app.use('/api/winning-products', winningProductsRoutes);
 app.use('/api/hub-health', require('./routes/hubHealth'));
 app.use('/api/email-hub', require('./routes/emailHub'));
-app.use('/api/email', require('./routes/emailTracking')); // tracking routes
+app.use('/api/email', require('./routes/emailTracking'));
+app.use('/api/wa', require('./routes/waTracking')); // tracking routes
 app.use('/api/merchant-playbook', require('./routes/merchantPlaybook'));
 const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);

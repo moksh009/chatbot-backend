@@ -3,6 +3,7 @@
 const Order = require('../../models/Order');
 const { buildSendContext, buildMetaTemplateComponents } = require('../templateVariableResolver');
 const { buildMappedBodyComponent } = require('../../utils/meta/templateParams');
+const { buildWaClickTrackUrl } = require('../../utils/wa/waClickTrackingService');
 
 function orderDocToSendPayload(doc) {
   if (!doc) return null;
@@ -66,6 +67,31 @@ function inferDefaultVariableMapping(components = []) {
     mapping[idx] = idx === '1' ? 'name' : 'customText';
   }
   return mapping;
+}
+
+/**
+ * If the step has a URL button flagged for tracking, inject the tracked redirect
+ * URL into the components array (replaces the last cta_url button component).
+ * Only applies to dynamic URL buttons (variable in button URL).
+ */
+function injectWaClickTrackingUrl(components, step, clientId, seqId) {
+  if (!step.hasUrlButton) return components;
+  const destination = step.urlButtonDestination;
+  if (!destination) return components;
+
+  const trackedUrl = buildWaClickTrackUrl(
+    String(seqId),
+    Number(step.stepIndex || 0),
+    clientId,
+    destination
+  );
+
+  // Replace the URL in any cta_url button component
+  return (components || []).map((comp) => {
+    if (String(comp.type || '').toUpperCase() !== 'BUTTON') return comp;
+    if (String(comp.sub_type || '').toUpperCase() !== 'URL') return comp;
+    return { ...comp, parameters: [{ type: 'text', text: trackedUrl }] };
+  });
 }
 
 /**
@@ -139,7 +165,8 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
         ? context.brand_logo_url || context.first_product_image
         : context.first_product_image;
 
-    const components = await buildMetaTemplateComponents(metaPayload, context, { headerImageUrl });
+    let components = await buildMetaTemplateComponents(metaPayload, context, { headerImageUrl });
+    components = injectWaClickTrackingUrl(components, step, clientId, seq?._id);
     return {
       templateName,
       templateLanguage: tpl?.language || step.templateLanguage || 'en',
@@ -165,10 +192,12 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
     client,
   });
 
+  let simpleComponents = mappedBody ? [mappedBody] : [];
+  simpleComponents = injectWaClickTrackingUrl(simpleComponents, step, clientId, seq?._id);
   return {
     templateName,
     templateLanguage: tpl?.language || step.templateLanguage || 'en',
-    components: mappedBody ? [mappedBody] : [],
+    components: simpleComponents,
   };
 }
 
