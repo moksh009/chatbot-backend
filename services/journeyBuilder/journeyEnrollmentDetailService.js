@@ -34,7 +34,10 @@ function safeRate(num, den) {
 }
 
 function mapStepEngagement(step = {}, stepIndex = 0) {
-  const channel = step.channel || step.type || 'whatsapp';
+  // step.type is always set correctly by compileGraphToSteps.
+  // step.channel defaulted to 'whatsapp' in the old schema even for email steps,
+  // so prefer step.type to avoid showing email steps as WhatsApp.
+  const channel = step.type || step.channel || 'whatsapp';
   let outcome = 'pending';
   if (step.status === 'failed') outcome = 'failed';
   else if (step.status === 'skipped') outcome = 'skipped';

@@ -301,6 +301,7 @@ async function sendEnvelope(input = {}) {
 
     return buildResult('sent', {
       messageId: dispatchResult?.messageId || null,
+      envelopeId: preCreatedEnvelopeId || null,
       consentSnapshot: consent.consentSnapshot || null,
       idempotencyKey: idemKey,
       windowBucket: bucket,

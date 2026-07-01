@@ -29,7 +29,9 @@ function countEngagement(steps = []) {
   let clicked = 0;
   let failed = 0;
   for (const step of steps) {
-    if (step.status === 'sent') sent += 1;
+    // Count as sent if status='sent' OR sentAt is set (covers steps whose status
+    // got stuck in 'processing' due to a transition race but whose message was delivered).
+    if (step.status === 'sent' || step.sentAt) sent += 1;
     if (step.status === 'failed') failed += 1;
     if (step.deliveredAt) delivered += 1;
     if (step.readAt) read += 1;
@@ -209,7 +211,7 @@ async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
       }
       const row = funnelMap.get(stepIndex);
       const st = String(step.status || 'pending');
-      if (st === 'sent') row.sent += 1;
+      if (st === 'sent' || step.sentAt) row.sent += 1;
       else if (st === 'failed') row.failed += 1;
       else if (st === 'skipped') row.skipped += 1;
       else if (['pending', 'queued', 'processing', 'retrying'].includes(st)) row.pending += 1;

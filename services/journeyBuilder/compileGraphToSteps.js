@@ -76,8 +76,10 @@ function buildSendStep(node, type, ctx) {
     ctx.currentSendAt = ctx.currentSendAt.clone().add(delayValue, delayUnit);
   }
 
+  const stepType = type === JOURNEY_NODE_TYPES.SEND_EMAIL ? 'email' : 'whatsapp';
   const step = {
-    type: type === JOURNEY_NODE_TYPES.SEND_EMAIL ? 'email' : 'whatsapp',
+    type: stepType,
+    channel: stepType,
     delayValue,
     delayUnit,
     sendAt: ctx.currentSendAt.toDate(),
@@ -87,7 +89,7 @@ function buildSendStep(node, type, ctx) {
     context: null,
   };
 
-  if (step.type === 'whatsapp') {
+  if (stepType === 'whatsapp') {
     step.templateName = String(d.templateName || '').trim();
     step.templateId = d.templateId || '';
     const vmRaw = d.variableMappings && typeof d.variableMappings === 'object' ? d.variableMappings : {};

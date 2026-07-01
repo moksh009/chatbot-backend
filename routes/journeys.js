@@ -727,9 +727,13 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
     }
 
     const client = await Client.findOne({ clientId })
-      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected whatsappToken phoneNumberId wabaId whatsapp commerce.shopify')
+      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected')
       .lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const clientForWaCheck = await Client.findOne({ clientId })
+      .select(require('../utils/meta/clientWhatsAppCreds').WHATSAPP_CREDENTIAL_SELECT)
+      .lean();
 
     const hasEmailSteps = steps.some((s) => String(s.type).toLowerCase() === 'email');
     const hasWaSteps = steps.some((s) => String(s.type || 'whatsapp').toLowerCase() !== 'email');
@@ -747,7 +751,7 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
 
     if (hasWaSteps) {
       const { isWhatsAppOutboundReady } = require('../utils/meta/clientWhatsAppCreds');
-      if (!isWhatsAppOutboundReady(client)) {
+      if (!isWhatsAppOutboundReady(clientForWaCheck)) {
         journeyLogWarn('enroll', 'blocked — WhatsApp not ready', { clientId, flowId });
         return res.status(400).json({
           success: false,

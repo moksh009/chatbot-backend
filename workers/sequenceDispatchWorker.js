@@ -423,8 +423,9 @@ async function processSequenceDispatchJob(job) {
     const outcome = classifyEnvelopeOutcome(result, (step.attempts || 0) + 1);
 
     if (outcome.action === 'sent') {
+      const sentAt = new Date();
       const sentPatch = {
-        sentAt: new Date(),
+        sentAt,
         lockedBy: null,
         lockedAt: null,
         channel: stepChannel,
@@ -432,7 +433,34 @@ async function processSequenceDispatchJob(job) {
       if (result?.messageId) sentPatch.messageId = String(result.messageId);
       if (result?.envelopeId) sentPatch.envelopeId = result.envelopeId;
 
-      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', sentPatch);
+      try {
+        await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', sentPatch);
+      } catch (transErr) {
+        if (transErr.code === 'transition_conflict') {
+          // Message was delivered but the step state moved under us (race).
+          // Force-write sentAt + status so analytics don't show zero and email
+          // step 2 still gets enqueued via finalizeStepAndContinue below.
+          const forceSet = { [`steps.${stepIdx}.status`]: 'sent' };
+          for (const [k, v] of Object.entries(sentPatch)) {
+            forceSet[`steps.${stepIdx}.${k}`] = v;
+          }
+          await FollowUpSequence.findOneAndUpdate(
+            {
+              _id: sequenceId,
+              [`steps.${stepIdx}.status`]: { $nin: ['cancelled', 'failed', 'skipped'] },
+            },
+            { $set: forceSet }
+          );
+          journeyLog('send', `${stepChannel} step sent (force-write after transition conflict)`, {
+            ...dispatchMeta,
+            channel: stepChannel,
+            messageId: result?.messageId || null,
+          });
+        } else {
+          throw transErr;
+        }
+      }
+
       journeyLog('send', `${stepChannel} step sent`, {
         ...dispatchMeta,
         channel: stepChannel,

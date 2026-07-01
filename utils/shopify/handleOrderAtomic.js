@@ -270,36 +270,63 @@ async function handleOrderAtomic(client, data, cleanPhone) {
         ]),
       ];
 
-      lead = await AdLead.findOneAndUpdate(
-        leadFilter,
-        {
-          $set: {
-            isOrderPlaced: true,
-            cartStatus: recoveredViaWhatsApp ? 'recovered' : 'purchased',
-            lastPurchaseDate: orderDate,
-            lastOrderAt: orderDate,
-            lastOrderId,
-            source: 'shopify',
-            isRtoRisk: false,
-            recoveredAt: orderDate,
-            abandonedCartRecoveredAt: orderDate,
-            recoveredOrderId: String(data.id || data.name || ''),
-            recoveredViaWhatsApp,
-            tags: nextTags,
-            ...(recoveredByStep != null ? { recoveredByStep } : {}),
-            ...orderOptInFields,
-            ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
-            ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
-            ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
-          },
-          $inc: {
-            ordersCount: 1,
-            totalSpent: orderValue,
-            lifetimeValue: orderValue,
-          },
+      const orderUpdateBody = {
+        $set: {
+          isOrderPlaced: true,
+          cartStatus: recoveredViaWhatsApp ? 'recovered' : 'purchased',
+          lastPurchaseDate: orderDate,
+          lastOrderAt: orderDate,
+          lastOrderId,
+          source: 'shopify',
+          isRtoRisk: false,
+          recoveredAt: orderDate,
+          abandonedCartRecoveredAt: orderDate,
+          recoveredOrderId: String(data.id || data.name || ''),
+          recoveredViaWhatsApp,
+          tags: nextTags,
+          ...(recoveredByStep != null ? { recoveredByStep } : {}),
+          ...orderOptInFields,
+          ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
+          ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
+          ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
         },
-        { new: true, session, upsert: !existingLead, setDefaultsOnInsert: true }
-      );
+        $inc: {
+          ordersCount: 1,
+          totalSpent: orderValue,
+          lifetimeValue: orderValue,
+        },
+      };
+
+      const shouldUpsert = !existingLead;
+      try {
+        lead = await AdLead.findOneAndUpdate(
+          leadFilter,
+          orderUpdateBody,
+          { new: true, session, upsert: shouldUpsert, setDefaultsOnInsert: true }
+        );
+      } catch (upsertErr) {
+        const isDupKey =
+          upsertErr?.code === 11000 ||
+          String(upsertErr?.message || '').includes('E11000') ||
+          upsertErr?.name === 'MongoServerError';
+        if (isDupKey && shouldUpsert) {
+          // Lead exists under a different phone format — find it and update without upsert
+          const suffix = cleanPhone ? String(cleanPhone).replace(/\D/g, '').slice(-10) : '';
+          const fallbackFilter = suffix
+            ? { clientId: client.clientId, phoneNumber: { $regex: new RegExp(`${suffix}$`) } }
+            : null;
+          if (fallbackFilter) {
+            lead = await AdLead.findOneAndUpdate(
+              fallbackFilter,
+              orderUpdateBody,
+              { new: true, session, upsert: false }
+            );
+          }
+          if (!lead) throw upsertErr;
+        } else {
+          throw upsertErr;
+        }
+      }
 
       cancelled = await applyMongoCancellations(
         {

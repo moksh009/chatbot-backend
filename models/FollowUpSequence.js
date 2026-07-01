@@ -81,6 +81,10 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     /** Phase 4 — email envelope for open/click tracking */
     envelopeId: { type: mongoose.Schema.Types.ObjectId, default: null },
     channel: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    /** Journey variable resolution — persisted so worker can read mappings after save */
+    variableMappings:     { type: mongoose.Schema.Types.Mixed, default: null },
+    variableMapping:      { type: mongoose.Schema.Types.Mixed, default: null },
+    customVariableValues: { type: mongoose.Schema.Types.Mixed, default: null },
     deliveredAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
     clickedAt: { type: Date, default: null },
