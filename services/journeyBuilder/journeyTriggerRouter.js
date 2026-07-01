@@ -330,6 +330,8 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
       leadId,
       orderPayload: isOrderTrigger ? payload : null,
       triggerType,
+      enrollmentSource: 'auto',
+      sourceOrderId: orderId || null,
     });
     if (!policyCheck.allowed) {
       skipped.push(`${flowId}:${policyCheck.reason || 'policy_blocked'}`);

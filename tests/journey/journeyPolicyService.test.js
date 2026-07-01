@@ -39,3 +39,15 @@ test('checkMinOrderValue ignored for cart triggers', () => {
   });
   assert.equal(ok.allowed, true);
 });
+
+test('max enrollments policy does not apply to order_placed triggers', async () => {
+  const { checkMaxEnrollments } = require('../../services/journeyBuilder/journeyPolicyService');
+  const ok = await checkMaxEnrollments({
+    clientId: 'delitech_smarthomes',
+    flowId: 'journey_test',
+    leadId: '507f1f77bcf86cd799439011',
+    policies: { maxEnrollmentsPerLead: 1 },
+    triggerType: 'order_placed',
+  });
+  assert.equal(ok.allowed, true);
+});

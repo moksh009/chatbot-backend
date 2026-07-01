@@ -33,7 +33,35 @@ function repeatSinceDate(repeat) {
   return since;
 }
 
-async function checkRepeatWindow({ clientId, flowId, leadId, policies }) {
+async function checkRepeatWindow({
+  clientId,
+  flowId,
+  leadId,
+  policies,
+  triggerType = null,
+  sourceOrderId = null,
+}) {
+  // Order webhooks dedupe per order via OrderStatusSent — repeat window is per-customer
+  // and would incorrectly block a returning buyer's second order.
+  if (triggerType && ORDER_TRIGGER_TYPES.has(triggerType)) {
+    if (sourceOrderId) {
+      const oid = toObjectId(leadId);
+      if (oid) {
+        const sameOrder = await FollowUpSequence.findOne({
+          clientId,
+          leadId: oid,
+          sourceFlowId: String(flowId),
+          sourceOrderId: String(sourceOrderId),
+          status: { $in: ['active', 'completed'] },
+        })
+          .select('_id')
+          .lean();
+        if (sameOrder) return { allowed: false, reason: 'repeat_window' };
+      }
+    }
+    return { allowed: true };
+  }
+
   const repeat = policies?.repeatPerCustomer || 'never';
   const oid = toObjectId(leadId);
   if (!oid) return { allowed: true };
@@ -64,7 +92,12 @@ async function checkRepeatWindow({ clientId, flowId, leadId, policies }) {
   return { allowed: true };
 }
 
-async function checkMaxEnrollments({ clientId, flowId, leadId, policies }) {
+async function checkMaxEnrollments({ clientId, flowId, leadId, policies, triggerType = null }) {
+  // Per-order journeys may legitimately enroll the same contact many times (one per order).
+  if (triggerType && ORDER_TRIGGER_TYPES.has(triggerType)) {
+    return { allowed: true };
+  }
+
   const max = policies?.maxEnrollmentsPerLead;
   if (max == null || !Number.isFinite(Number(max)) || Number(max) <= 0) {
     return { allowed: true };
@@ -137,6 +170,8 @@ async function checkJourneyEnrollmentAllowed({
   leadId,
   orderPayload = null,
   triggerType = null,
+  enrollmentSource = 'auto',
+  sourceOrderId = null,
 }) {
   if (!clientId || !flow || !leadId) {
     return { allowed: false, reason: 'missing_args' };
@@ -145,14 +180,35 @@ async function checkJourneyEnrollmentAllowed({
   const flowId = String(flow.flowId || flow._id || '');
   const policies = flow.journeyPolicies || {};
   const trigType = triggerType || flow?.journeyTrigger?.type || null;
+  const orderKey =
+    sourceOrderId
+    || (orderPayload ? String(orderPayload?.name || orderPayload?.id || orderPayload?.orderId || '') : '');
 
   const minCheck = checkMinOrderValue({ policies, orderPayload, triggerType: trigType });
   if (!minCheck.allowed) return minCheck;
 
-  const repeatCheck = await checkRepeatWindow({ clientId, flowId, leadId, policies });
+  // Merchant manual enroll is an explicit override — consent preflight still applies upstream.
+  if (enrollmentSource === 'manual') {
+    return { allowed: true };
+  }
+
+  const repeatCheck = await checkRepeatWindow({
+    clientId,
+    flowId,
+    leadId,
+    policies,
+    triggerType: trigType,
+    sourceOrderId: orderKey || null,
+  });
   if (!repeatCheck.allowed) return repeatCheck;
 
-  const maxCheck = await checkMaxEnrollments({ clientId, flowId, leadId, policies });
+  const maxCheck = await checkMaxEnrollments({
+    clientId,
+    flowId,
+    leadId,
+    policies,
+    triggerType: trigType,
+  });
   if (!maxCheck.allowed) return maxCheck;
 
   const cooldownCheck = await checkReentryCooldown({ clientId, flowId, leadId, policies });

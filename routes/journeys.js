@@ -940,6 +940,8 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
         flow,
         leadId,
         orderPayload: leadInput.orderPayload || null,
+        enrollmentSource: 'manual',
+        sourceOrderId: leadInput.sourceOrderId || null,
       });
       if (!policyCheck.allowed) {
         const policyMessages = {
@@ -1034,12 +1036,17 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       durationMs: Date.now() - enrollStarted,
     });
 
+    const enrolledCount = enrolledSequences.length;
     res.json({
-      success: true,
-      enrolled: enrolledSequences.length,
+      success: enrolledCount > 0,
+      enrolled: enrolledCount,
       queuedSteps: totalQueued,
       errors,
       warnings: enrollWarnings,
+      message:
+        enrolledCount === 0 && errors.length
+          ? errors[0]?.message || 'No contacts were enrolled'
+          : undefined,
       sequences: enrolledSequences.map((s) => ({ _id: s._id, leadId: s.leadId })),
     });
   } catch (err) {
