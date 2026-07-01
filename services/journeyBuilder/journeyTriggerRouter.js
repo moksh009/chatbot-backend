@@ -25,7 +25,10 @@ const AdLead = require('../../models/AdLead');
 const { compileGraphToSteps } = require('./compileGraphToSteps');
 const { evaluateTriggerRules } = require('./journeyTriggerEvaluator');
 const { enqueueDueStepsForSequence } = require('../../utils/messaging/sequenceStepEnqueue');
+const { checkJourneyEnrollmentAllowed } = require('./journeyPolicyService');
 const log = require('../../utils/core/logger')('JourneyTriggerRouter');
+
+const MAX_ACTIVE_SEQUENCES = 2;
 
 /** Map from internal journey trigger type → OrderStatusSent statusKey for dedup. */
 const TRIGGER_STATUS_KEY_MAP = {
@@ -78,7 +81,7 @@ async function isOrderAlreadySent(clientId, orderId, statusKey) {
     return !!existing;
   } catch (err) {
     log.warn(`[JourneyTriggerRouter] OrderStatusSent check error for ${orderId}: ${err.message}`);
-    return false;
+    return true;
   }
 }
 
@@ -147,6 +150,52 @@ async function hasActiveCartEnrollment(clientId, leadId, flowId) {
     status: 'active',
   }).select('_id').lean();
   return !!existing;
+}
+
+async function countActiveSequencesForLead(clientId, leadId) {
+  return FollowUpSequence.countDocuments({
+    clientId,
+    leadId: mongoose.Types.ObjectId.isValid(String(leadId)) ? new mongoose.Types.ObjectId(String(leadId)) : leadId,
+    status: 'active',
+  });
+}
+
+async function syncLeadActiveSequenceFlag(clientId, leadId) {
+  if (!leadId) return;
+  const count = await countActiveSequencesForLead(clientId, leadId);
+  await AdLead.findByIdAndUpdate(leadId, {
+    $set: { 'metaData.hasActiveSequence': count > 0 },
+  }).catch((err) => {
+    log.warn(`[JourneyTriggerRouter] hasActiveSequence sync failed: ${err.message}`);
+  });
+}
+
+/**
+ * True when at least one live order_placed journey would enroll for this order payload.
+ * Used by SAC to avoid blanket-skipping order confirmation when filters do not match.
+ */
+async function anyOrderPlacedJourneyWouldMatch(clientId, payload) {
+  try {
+    const blueprints = await WhatsAppFlow.find({
+      clientId,
+      flowType: 'journey',
+      status: 'PUBLISHED',
+      isActive: true,
+      'journeyTrigger.type': 'order_placed',
+    })
+      .select('journeyTrigger')
+      .lean();
+    for (const blueprint of blueprints) {
+      const filters = blueprint?.journeyTrigger?.filters || {};
+      if (await filtersMatch(clientId, filters, 'order_placed', payload)) {
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    log.warn(`[JourneyTriggerRouter] order_placed match probe failed: ${err.message}`);
+    return false;
+  }
 }
 
 /**
@@ -275,6 +324,36 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
 
     const leadId = lead._id;
 
+    const policyCheck = await checkJourneyEnrollmentAllowed({
+      clientId,
+      flow: blueprint,
+      leadId,
+      orderPayload: isOrderTrigger ? payload : null,
+      triggerType,
+    });
+    if (!policyCheck.allowed) {
+      skipped.push(`${flowId}:${policyCheck.reason || 'policy_blocked'}`);
+      log.info('[JourneyTriggerRouter] skipped policy', {
+        clientId,
+        flowId,
+        leadId: String(leadId),
+        reason: policyCheck.reason,
+      });
+      continue;
+    }
+
+    const activeCount = await countActiveSequencesForLead(clientId, leadId);
+    if (activeCount >= MAX_ACTIVE_SEQUENCES) {
+      skipped.push(`${flowId}:active_sequence_limit`);
+      log.info('[JourneyTriggerRouter] skipped active_sequence_limit', {
+        clientId,
+        flowId,
+        leadId: String(leadId),
+        activeCount,
+      });
+      continue;
+    }
+
     // Cart dedup: check active enrollment
     if (!isOrderTrigger) {
       const active = await hasActiveCartEnrollment(clientId, leadId, flowId);
@@ -317,6 +396,7 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
         return 0;
       });
       enrolled.push(flowId);
+      await syncLeadActiveSequenceFlag(clientId, leadId);
       log.info('[JourneyTriggerRouter] enrolled', {
         clientId,
         flowId,
@@ -345,4 +425,5 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
 
 module.exports = {
   routeToJourneyBlueprints,
+  anyOrderPlacedJourneyWouldMatch,
 };

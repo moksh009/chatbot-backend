@@ -4,6 +4,7 @@ const moment = require('moment');
 const { JOURNEY_NODE_TYPES, isKnownJourneyNodeType } = require('./journeyNodeContract');
 const { branchRuleToGates } = require('./branchRuleGates');
 const { buildWaClickTrackUrl } = require('../../utils/wa/waClickTrackingService');
+const { getEcoBodyMappingsForTemplate } = require('./journeySequenceWhatsApp');
 
 function nodeTypeOf(node) {
   return String(node?.type || node?.data?.nodeType || '').trim();
@@ -33,7 +34,7 @@ function pickLinearEdge(edges = []) {
 function pickBranchEdge(edges = [], polarity = 'yes') {
   if (!edges?.length) return null;
   if (polarity === 'yes') {
-    return edges.find((e) => e.sourceHandle === 'yes' || e.sourceHandle === 'a') || null;
+    return edges.find((e) => e.sourceHandle === 'yes' || e.sourceHandle === 'a' || e.sourceHandle === 'default') || null;
   }
   return edges.find((e) => e.sourceHandle === 'no' || e.sourceHandle === 'b') || null;
 }
@@ -95,6 +96,9 @@ function buildSendStep(node, type, ctx) {
   if (stepType === 'whatsapp') {
     step.templateName = String(d.templateName || '').trim();
     step.templateId = d.templateId || '';
+    // Store the template's Meta category so the dispatch worker sets the correct intent.
+    // Falls back to a DB lookup in sequenceDispatchWorker if not set at compile time.
+    if (d.templateCategory) step.templateCategory = String(d.templateCategory).toUpperCase();
     const vmRaw = d.variableMappings && typeof d.variableMappings === 'object' ? d.variableMappings : {};
     const vm = { ...vmRaw, body: vmRaw.body && typeof vmRaw.body === 'object' ? { ...vmRaw.body } : {} };
     let body = { ...(vm.body || {}) };
@@ -108,6 +112,16 @@ function buildSendStep(node, type, ctx) {
     }
     if (d.headerImageField && !vm.header) {
       vm.header = d.headerImageField;
+    }
+    const tplName = step.templateName;
+    if (tplName && !Object.keys(body).length) {
+      const ecoBody = getEcoBodyMappingsForTemplate(tplName);
+      if (ecoBody) {
+        Object.assign(body, ecoBody);
+        if (tplName === 'eco_order_confirmed' && body['3'] === 'order_total') {
+          body['3'] = 'order_items';
+        }
+      }
     }
     if (Object.keys(body).length) {
       step.variableMapping = { ...body };
@@ -141,8 +155,14 @@ function buildSendStep(node, type, ctx) {
       step.expectedActions = ['address_text'];
     }
   } else {
+    step.templateName = String(d.templateName || d.label || '').trim();
+    step.templateId = String(d.templateId || '').trim();
     step.subject = String(d.subject || '').trim();
     step.content = String(d.content || d.body || '').trim();
+    const etm = d.emailTokenMappings;
+    if (etm && typeof etm === 'object' && Object.keys(etm).length) {
+      step.emailTokenMappings = { ...etm };
+    }
     if (!step.subject || !step.content) {
       ctx.warnings.push('Email send node missing subject or body');
     }

@@ -45,19 +45,37 @@ const FILTER_ATTRIBUTES = Object.freeze({
   order_tags: {
     label: 'Order tags',
     operator: 'includes_any',
-    valueType: 'tags',
+    valueType: 'tag_list',
     orderEvents: true,
   },
-  shipping_state: {
-    label: 'Shipping state',
-    operator: 'is',
-    valueType: 'text',
+  order_tags_exclude: {
+    label: 'Order tags',
+    operator: 'excludes',
+    valueType: 'tag_list',
     orderEvents: true,
   },
-  shipping_city: {
-    label: 'Shipping city',
-    operator: 'is',
-    valueType: 'text',
+  discount_code: {
+    label: 'Discount code',
+    operator: 'includes_any',
+    valueType: 'tag_list',
+    orderEvents: true,
+  },
+  discount_code_exclude: {
+    label: 'Discount code',
+    operator: 'excludes',
+    valueType: 'tag_list',
+    orderEvents: true,
+  },
+  line_item_count_min: {
+    label: 'Item count',
+    operator: 'gte',
+    valueType: 'number',
+    orderEvents: true,
+  },
+  line_item_count_max: {
+    label: 'Item count',
+    operator: 'lte',
+    valueType: 'number',
     orderEvents: true,
   },
   cart_delay: {
@@ -83,8 +101,24 @@ const FILTER_ATTRIBUTES = Object.freeze({
 const ORDER_EVENTS = Object.freeze(['order_placed', 'order_shipped', 'order_delivered']);
 const CART_EVENTS = Object.freeze(['cart_abandoned']);
 
+const REMOVED_FILTER_ATTRIBUTES = new Set(['shipping_state', 'shipping_city']);
+
+function tagListIds(value) {
+  if (Array.isArray(value)) return value.map((t) => String(t).trim()).filter(Boolean);
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return [];
+}
+
 function newRuleId() {
   return `rule_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function productRuleIds(value) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (value && typeof value === 'object' && Array.isArray(value.ids)) {
+    return value.ids.map(String).filter(Boolean);
+  }
+  return [];
 }
 
 function createRule(attribute, value, operator) {
@@ -101,7 +135,6 @@ function createRule(attribute, value, operator) {
 function defaultValueForAttribute(attribute) {
   switch (attribute) {
     case 'payment_method':
-      return 'any';
     case 'customer_type':
       return 'any';
     case 'cart_delay':
@@ -110,26 +143,19 @@ function defaultValueForAttribute(attribute) {
     case 'products_exclude':
     case 'cart_products':
     case 'order_tags':
+    case 'order_tags_exclude':
+    case 'discount_code':
+    case 'discount_code_exclude':
       return [];
-    case 'shipping_state':
-    case 'shipping_city':
-      return '';
     default:
       return '';
   }
 }
 
-/** Default visible rules when merchant picks an order event (hybrid UX). */
+/** Opt-in filters: orders match all by default; cart always has delay. */
 function defaultRulesForEvent(entryType) {
   if (CART_EVENTS.includes(entryType)) {
     return [createRule('cart_delay', 25)];
-  }
-  if (ORDER_EVENTS.includes(entryType)) {
-    return [
-      createRule('payment_method', 'any'),
-      createRule('order_total_min', ''),
-      createRule('products', []),
-    ];
   }
   return [];
 }
@@ -151,14 +177,14 @@ function isRuleActive(rule) {
     return val && val !== 'any';
   }
   if (rule.attribute === 'cart_delay') return Number(val) > 0;
-  if (['products', 'products_exclude', 'cart_products', 'order_tags'].includes(rule.attribute)) {
-    return Array.isArray(val) && val.length > 0;
+  if (['products', 'products_exclude', 'cart_products'].includes(rule.attribute)) {
+    return productRuleIds(val).length > 0;
   }
-  if (['order_total_min', 'order_total_max', 'cart_value_min'].includes(rule.attribute)) {
+  if (['order_tags', 'order_tags_exclude', 'discount_code', 'discount_code_exclude'].includes(rule.attribute)) {
+    return tagListIds(val).length > 0;
+  }
+  if (['order_total_min', 'order_total_max', 'cart_value_min', 'line_item_count_min', 'line_item_count_max'].includes(rule.attribute)) {
     return Number(val) > 0;
-  }
-  if (['shipping_state', 'shipping_city'].includes(rule.attribute)) {
-    return String(val || '').trim().length > 0;
   }
   return false;
 }
@@ -169,14 +195,14 @@ function normalizeTriggerRules(raw = {}) {
 
   if (Array.isArray(raw.rules) && raw.rules.length) {
     return raw.rules
-      .filter((r) => r && r.attribute && FILTER_ATTRIBUTES[r.attribute])
+      .filter((r) => r && r.attribute && FILTER_ATTRIBUTES[r.attribute] && !REMOVED_FILTER_ATTRIBUTES.has(r.attribute))
       .map((r) => ({
         id: r.id || newRuleId(),
         attribute: r.attribute,
         operator: r.operator || FILTER_ATTRIBUTES[r.attribute].operator,
         value: r.value,
       }))
-      .filter((r) => isRuleActive(r) || r.attribute === 'payment_method' || r.attribute === 'cart_delay');
+      .filter((r) => isRuleActive(r) || r.attribute === 'cart_delay');
   }
 
   const rules = [];
@@ -222,7 +248,7 @@ function serializeTriggerRules(rules = []) {
     if (r.attribute === 'payment_method' && r.value === 'prepaid') legacy.paymentMethod = 'prepaid';
     if (r.attribute === 'order_total_min') legacy.minOrderTotal = Number(r.value);
     if (r.attribute === 'order_total_max') legacy.maxOrderTotal = Number(r.value);
-    if (r.attribute === 'products' && Array.isArray(r.value)) legacy.productIds = r.value;
+    if (r.attribute === 'products') legacy.productIds = productRuleIds(r.value);
     if (r.attribute === 'cart_delay') legacy.cartDelayMinutes = Number(r.value) || 25;
   }
 
@@ -232,23 +258,34 @@ function serializeTriggerRules(rules = []) {
   };
 }
 
-function summarizeTriggerRules(rules = []) {
+function summarizeTriggerRules(rules = [], entryType) {
   const parts = [];
-  for (const r of normalizeTriggerRules({ rules })) {
-    if (!isRuleActive(r) && r.attribute !== 'payment_method') continue;
+  const normalized = Array.isArray(rules) ? rules : normalizeTriggerRules({ rules });
+
+  for (const r of normalized) {
+    if (!isRuleActive(r) && r.attribute !== 'cart_delay') continue;
     if (r.attribute === 'payment_method') {
       if (r.value === 'cod') parts.push('COD');
       if (r.value === 'prepaid') parts.push('Prepaid');
     } else if (r.attribute === 'order_total_min') parts.push(`₹${r.value}+`);
     else if (r.attribute === 'order_total_max') parts.push(`≤₹${r.value}`);
-    else if (r.attribute === 'products' && Array.isArray(r.value)) parts.push(`${r.value.length} SKU(s)`);
-    else if (r.attribute === 'customer_type' && r.value !== 'any') {
+    else if (['products', 'cart_products'].includes(r.attribute)) {
+      const count = productRuleIds(r.value).length;
+      if (count) parts.push(`${count} SKU(s)`);
+    } else if (r.attribute === 'customer_type' && r.value !== 'any') {
       parts.push(r.value === 'first_time' ? 'First order' : 'Returning');
-    } else if (r.attribute === 'order_tags' && Array.isArray(r.value) && r.value.length) {
-      parts.push(`Tag: ${r.value[0]}`);
-    } else if (r.attribute === 'shipping_state' && r.value) parts.push(r.value);
-    else if (r.attribute === 'cart_delay') parts.push(`${r.value}m wait`);
+    } else if (r.attribute === 'cart_delay') parts.push(`${r.value}m wait`);
+    else if (r.attribute === 'cart_value_min') parts.push(`Cart ₹${r.value}+`);
   }
+
+  if (!parts.length && ORDER_EVENTS.includes(entryType)) return ['All orders'];
+  if (entryType === 'cart_abandoned') {
+    const delayRule = normalized.find((r) => r.attribute === 'cart_delay');
+    const delay = delayRule?.value || 25;
+    const onlyDelay = parts.length === 1 && parts[0] === `${delay}m wait`;
+    if (!parts.length || onlyDelay) return [`All carts after ${delay}m`];
+  }
+
   return parts;
 }
 
@@ -256,12 +293,15 @@ module.exports = {
   FILTER_ATTRIBUTES,
   ORDER_EVENTS,
   CART_EVENTS,
+  REMOVED_FILTER_ATTRIBUTES,
   newRuleId,
   createRule,
   defaultValueForAttribute,
   defaultRulesForEvent,
   attributesForEvent,
   isRuleActive,
+  productRuleIds,
+  tagListIds,
   normalizeTriggerRules,
   serializeTriggerRules,
   summarizeTriggerRules,

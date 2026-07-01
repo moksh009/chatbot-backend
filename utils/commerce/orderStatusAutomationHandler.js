@@ -41,6 +41,7 @@ const {
   phoneLookupVariants,
 } = require('./resolveOrderRecipientPhone');
 const { isCodShopifyOrder } = require('./canonicalOrderMessages');
+const { anyOrderPlacedJourneyWouldMatch } = require('../../services/journeyBuilder/journeyTriggerRouter');
 const log = require('../core/logger')('OrderStatusAutomation');
 const { logDispatchEvent } = require('../messaging/dispatchEventLog');
 const { maskPhone } = require('./ruleStatsDetailService');
@@ -663,6 +664,13 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
   if (financial) checks.push({ type: 'financial', status: financial });
   if (fulfillment) checks.push({ type: 'fulfillment', status: fulfillment });
 
+  let skipOrderPlacedSac = false;
+  try {
+    skipOrderPlacedSac = await anyOrderPlacedJourneyWouldMatch(clientId, payload);
+  } catch (_journeyCheckErr) {
+    log.warn(`[${source}] order_placed journey match check failed: ${_journeyCheckErr.message}`);
+  }
+
   const src = String(source || '');
   if (src.includes('orders/create') && isCodShopifyOrder(payload)) {
     checks.push({ type: 'payment', status: 'cod' });
@@ -684,6 +692,10 @@ async function processOrderStatusAutomations({ client, payload, source = 'unknow
     if (!matching.length) continue;
 
     for (const rule of matching) {
+      if (skipOrderPlacedSac && rule.id === 'sys_fulfillment_unfulfilled') {
+        outcomes.push({ statusKey, ruleId: rule.id, skipped: 'journey_order_placed_live' });
+        continue;
+      }
       try {
         const outcome = await dispatchRule({
           client,

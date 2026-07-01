@@ -648,7 +648,7 @@ async function runAbandonedCartTick() {
                     });
                 }
 
-                // Journey-only cart recovery when published cart-recovery-3step blueprint is live.
+                // Journey cart recovery when any published cart_abandoned journey is live.
                 let _journeyCartOnlyMode = false;
                 let _journeyCartEnrolledLeadIds = new Set();
                 try {
@@ -658,7 +658,7 @@ async function runAbandonedCartTick() {
                     flowType: 'journey',
                     status: 'PUBLISHED',
                     isActive: true,
-                    playbookKey: 'cart-recovery-3step',
+                    'journeyTrigger.type': 'cart_abandoned',
                   });
                   _journeyCartOnlyMode = Boolean(hasCartJourney);
 
@@ -666,10 +666,15 @@ async function runAbandonedCartTick() {
                     const { routeToJourneyBlueprints: _routeCart } = require('../services/journeyBuilder/journeyTriggerRouter');
                     const abandonedBatch = await require('../models/AdLead').find({
                       clientId: client.clientId,
+                      ...mongoCartRecoveryFilter(client),
+                      isOrderPlaced: { $ne: true },
                       cartStatus: 'abandoned',
                       recoveryStep: { $in: [null, 0] },
                       phoneNumber: { $exists: true, $ne: '' },
-                    }).select('_id phoneNumber email name').limit(50).lean();
+                    })
+                      .select('_id phoneNumber email name cartAbandonedAt lastCartEventAt cartValue cartItems productIds cartTotal')
+                      .limit(50)
+                      .lean();
 
                     for (const lead of abandonedBatch) {
                       const result = await _routeCart(client.clientId, 'cart_abandoned', lead).catch(() => null);
@@ -699,7 +704,7 @@ async function runAbandonedCartTick() {
                 }
 
                 if (_journeyCartOnlyMode) {
-                  log.debug(`[AbandonedCart] ${client.clientId} — cart-recovery-3step journey live; skipping SAC ladder`);
+                  log.debug(`[AbandonedCart] ${client.clientId} — cart_abandoned journey live; skipping SAC ladder`);
                 }
 
                 if (!_journeyCartOnlyMode) {

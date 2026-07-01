@@ -406,6 +406,17 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                     items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
                   },
                 }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
+                if (topic === 'orders/cancelled' && client?.clientId) {
+                  const { cancelJourneyEnrollmentsForOrder } = require('../services/journeyBuilder/journeyPolicyService');
+                  const orderKey = String(data?.name || data?.id || '').trim();
+                  if (orderKey) {
+                    await cancelJourneyEnrollmentsForOrder({
+                      clientId: client.clientId,
+                      orderId: orderKey,
+                      reason: 'order_cancelled',
+                    }).catch((e) => log.warn(`[JourneyPolicy] order_cancelled exit failed: ${e.message}`));
+                  }
+                }
                 break;
             case 'orders/updated':
                 /** WS-2 fix: AWAIT before any legacy paths inside reconcile fire,

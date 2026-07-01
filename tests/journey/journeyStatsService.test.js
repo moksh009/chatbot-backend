@@ -7,7 +7,10 @@ const {
   MIN_SAMPLE_SIZE,
   isStepSent,
   isStepFailed,
+  isStepSkipped,
+  enrichFunnelStepsWithCompiledGraph,
 } = require('../../services/journeyBuilder/journeyStatsService');
+const { JOURNEY_NODE_TYPES } = require('../../services/journeyBuilder/journeyNodeContract');
 
 describe('journeyStatsService', () => {
   describe('parsePeriod', () => {
@@ -70,6 +73,53 @@ describe('isStepSent / isStepFailed — mutual exclusivity', () => {
     const step = { status: 'processing', sentAt: new Date() };
     assert.equal(isStepSent(step), true);
     assert.equal(isStepFailed(step), false);
+  });
+
+  it('skipped step counts only in skipped bucket', () => {
+    const step = { status: 'skipped', skipReason: 'email_opted_out' };
+    assert.equal(isStepSkipped(step), true);
+    assert.equal(isStepSent(step), false);
+    assert.equal(isStepFailed(step), false);
+  });
+});
+
+describe('enrichFunnelStepsWithCompiledGraph', () => {
+  it('fills email templateName from published graph when sequence steps omit it', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 'trigger_1',
+          type: JOURNEY_NODE_TYPES.JOURNEY_TRIGGER,
+          data: { nodeType: JOURNEY_NODE_TYPES.JOURNEY_TRIGGER, entryType: 'order_placed' },
+        },
+        {
+          id: 'send_email_1',
+          type: JOURNEY_NODE_TYPES.SEND_EMAIL,
+          data: {
+            nodeType: JOURNEY_NODE_TYPES.SEND_EMAIL,
+            templateName: 'Order confirmed',
+            subject: 'Your order {{order_number}} is confirmed! ✅',
+            content: '<p>Thanks</p>',
+          },
+        },
+        {
+          id: 'end_1',
+          type: JOURNEY_NODE_TYPES.END,
+          data: { nodeType: JOURNEY_NODE_TYPES.END },
+        },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger_1', target: 'send_email_1' },
+        { id: 'e2', source: 'send_email_1', target: 'end_1' },
+      ],
+    };
+
+    const enriched = enrichFunnelStepsWithCompiledGraph(graph, [
+      { stepIndex: 0, type: 'email', templateName: '', subject: '' },
+    ]);
+
+    assert.equal(enriched[0].templateName, 'Order confirmed');
+    assert.match(enriched[0].subject, /confirmed/);
   });
 });
 

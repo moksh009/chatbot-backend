@@ -16,7 +16,8 @@ const {
   WHATSAPP_CREDENTIAL_SELECT,
   EMAIL_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
-const { buildJourneySequenceWhatsAppPayload } = require('../services/journeyBuilder/journeySequenceWhatsApp');
+const { buildJourneySequenceWhatsAppPayload, findOrderDocForSequence, orderDocToSendPayload } = require('../services/journeyBuilder/journeySequenceWhatsApp');
+const MetaTemplate = require('../models/MetaTemplate');
 const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
 const { journeyLog, journeyLogWarn, journeyLogError } = require('../utils/journeyBuilder/journeyPipelineLog');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
@@ -342,39 +343,28 @@ async function processSequenceDispatchJob(job) {
     if (stepChannel === 'email') {
       intent = 'marketing';
 
-      // Bug 6: load order so real order tokens (order_id, order_total, etc.)
-      // are substituted instead of falling back to sample placeholders.
+      // Load order context for merge fields (sourceOrderId or latest order by phone).
       let orderFlatContext = {};
-      const { sourceOrderId } = seq;
-      if (sourceOrderId) {
-        try {
-          const Order = require('../models/Order');
-          const orderDoc = await Order.findOne({
-            clientId,
-            $or: [
-              { shopifyOrderId: String(sourceOrderId) },
-              { orderId: String(sourceOrderId) },
-              { orderNumber: String(sourceOrderId) },
-            ],
-          }).lean();
-          if (orderDoc) {
-            orderFlatContext = {
-              order_id: String(orderDoc.shopifyOrderId || orderDoc.orderId || ''),
-              order_number: orderDoc.orderNumber || String(orderDoc.shopifyOrderId || ''),
-              order_total: orderDoc.totalPrice
-                ? `₹${Number(orderDoc.totalPrice).toLocaleString('en-IN')}`
-                : '',
-              order_currency: 'INR',
-              financial_status: orderDoc.financialStatus || '',
-              fulfillment_status: orderDoc.fulfillmentStatus || '',
-              tracking_number: orderDoc.trackingNumber || '',
-              tracking_url: orderDoc.trackingUrl || '',
-              carrier: orderDoc.carrier || '',
-            };
-          }
-        } catch (orderErr) {
-          log.warn(`[SequenceDispatch] email order load ${sequenceId}:${stepIdx}: ${orderErr.message}`);
+      try {
+        const phoneForOrder = lead?.phoneNumber || seq?.phone || '';
+        const orderDoc = await findOrderDocForSequence(clientId, seq, phoneForOrder);
+        if (orderDoc) {
+          orderFlatContext = {
+            order_id: String(orderDoc.shopifyOrderId || orderDoc.orderId || ''),
+            order_number: orderDoc.orderNumber || String(orderDoc.shopifyOrderId || ''),
+            order_total: orderDoc.totalPrice != null
+              ? `₹${Number(orderDoc.totalPrice).toLocaleString('en-IN')}`
+              : '',
+            order_currency: 'INR',
+            financial_status: orderDoc.financialStatus || '',
+            fulfillment_status: orderDoc.fulfillmentStatus || '',
+            tracking_number: orderDoc.trackingNumber || '',
+            tracking_url: orderDoc.trackingUrl || '',
+            carrier: orderDoc.carrier || '',
+          };
         }
+      } catch (orderErr) {
+        log.warn(`[SequenceDispatch] email order load ${sequenceId}:${stepIdx}: ${orderErr.message}`);
       }
 
       const merged = mergeEmailForLead(
@@ -382,21 +372,53 @@ async function processSequenceDispatchJob(job) {
         step.content || '',
         lead || { name: seq.name, email, phoneNumber: seq.phone },
         client,
-        orderFlatContext
+        orderFlatContext,
+        { emailTokenMappings: step.emailTokenMappings }
       );
       payload = {
         subject: merged.subject,
         html: merged.html,
       };
     } else if (step.templateName) {
-      intent = intentFromTemplateCategory(step.templateCategory);
-      payload = await buildSequenceWhatsAppPayload({
-        client,
-        clientId,
-        step,
-        lead,
-        seq,
-      });
+      // Derive intent from stored category first; fall back to a MetaTemplate DB lookup
+      // so that UTILITY/AUTHENTICATION templates are not incorrectly sent with marketing intent.
+      let templateCategory = step.templateCategory;
+      if (!templateCategory) {
+        try {
+          const tplDoc = await MetaTemplate.findOne(
+            { clientId, name: step.templateName, submissionStatus: 'approved' },
+            { category: 1 }
+          ).lean();
+          if (tplDoc?.category) templateCategory = tplDoc.category;
+        } catch (_) { /* non-fatal — fall through to marketing default */ }
+      }
+      intent = intentFromTemplateCategory(templateCategory);
+      try {
+        payload = await buildSequenceWhatsAppPayload({
+          client,
+          clientId,
+          step,
+          lead,
+          seq,
+        });
+      } catch (buildErr) {
+        const reason =
+          buildErr.code === 'template_variables_missing'
+            ? 'template_variables_missing'
+            : buildErr.code === 'template_header_image_missing'
+              ? 'template_header_image_missing'
+              : (buildErr.message || 'template_build_failed');
+        journeyLogError('send', 'whatsapp payload build failed', {
+          ...dispatchMeta,
+          reason,
+        });
+        await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+          failureReason: reason,
+          errorLog: reason,
+        });
+        await finalizeStepAndContinue(sequenceId, clientId, stepIdx);
+        return;
+      }
     } else {
       payload = { text: step.content || '' };
     }

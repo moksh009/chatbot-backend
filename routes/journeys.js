@@ -375,7 +375,7 @@ router.get('/:clientId/:flowId/analytics/detail', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId))
-      .select('flowId name')
+      .select('flowId name journeyTrigger playbookKey')
       .lean();
     if (!flow) {
       return res.status(404).json({ success: false, message: 'Journey not found' });
@@ -388,10 +388,17 @@ router.get('/:clientId/:flowId/analytics/detail', protect, async (req, res) => {
       page: req.query.page,
       limit: req.query.limit,
       search: req.query.search,
+      journeyName: flow.name || '',
     });
+    const { isNonRevenue } = require('../utils/commerce/journeyAttributionHelper');
+    const nonRevenue = isNonRevenue(flow.playbookKey || flow.journeyTrigger || '', flow.flowId);
     res.json({
       success: true,
       journey: { flowId: flow.flowId, name: flow.name },
+      revenueEligible: !nonRevenue,
+      revenueNote: nonRevenue
+        ? 'Confirmation journey — revenue is organic and not attributed to this journey'
+        : null,
       ...detail,
     });
   } catch (err) {
@@ -673,6 +680,14 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
     flow.publishedNodes = nodes;
     flow.publishedEdges = edges;
     flow.status = 'PUBLISHED';
+
+    const nodeJt = triggerNode?.data?.journeyTrigger;
+    flow.journeyTrigger = {
+      type: entryType,
+      filters: nodeJt?.filters || {},
+      exitConditions: nodeJt?.exitConditions || ['journey_end', 'reply'],
+    };
+
     if (flow.journeyPolicies) {
       flow.journeyPolicies.cancelOnReply = cancelOnReply;
     } else {
@@ -693,9 +708,7 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
 });
 
 // POST /api/journeys/:clientId/:flowId/enroll/preflight
-// Dry-run: returns per-channel eligibility for the provided lead list WITHOUT
-// creating any sequences or sending any messages.
-// Response: { total, waEligible, emailEligible, noPhone, noEmail, noContact, wouldSkip }
+// Dry-run: per-lead channel eligibility + layman warnings (no sequences created).
 router.post('/:clientId/:flowId/enroll/preflight', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
@@ -720,61 +733,22 @@ router.post('/:clientId/:flowId/enroll/preflight', protect, async (req, res) => 
     const edges = flow.publishedEdges?.length ? flow.publishedEdges : flow.edges || [];
     const { steps } = compileGraphToSteps({ nodes, edges });
 
-    const hasWaSteps = steps.some((s) => String(s.type || 'whatsapp').toLowerCase() !== 'email');
-    const hasEmailSteps = steps.some((s) => String(s.type).toLowerCase() === 'email');
-
-    const AdLead = require('../models/AdLead');
     const leadIds = leads.map((l) => l.leadId).filter(Boolean);
     const leadDocs = leadIds.length
       ? await AdLead.find({ _id: { $in: leadIds }, clientId })
-          .select('phoneNumber email channelConsent optStatus')
+          .select('name fullName phoneNumber email channelConsent optStatus emailBounced')
           .lean()
       : [];
 
-    const leadMap = new Map(leadDocs.map((l) => [String(l._id), l]));
-
-    let waEligible = 0;
-    let emailEligible = 0;
-    let noPhone = 0;
-    let noEmail = 0;
-    let noContact = 0;
-
-    for (const leadInput of leads) {
-      const leadDoc = leadMap.get(String(leadInput.leadId || ''));
-      const phone = leadDoc?.phoneNumber || leadInput.phone || '';
-      const email = leadDoc?.email || leadInput.email || '';
-      const hasPhone = !!(phone && phone.length > 5);
-      const hasEmail = !!(email && email.includes('@'));
-
-      if (!hasPhone && !hasEmail) {
-        noContact += 1;
-        continue;
-      }
-      if (hasWaSteps) {
-        if (hasPhone) waEligible += 1;
-        else noPhone += 1;
-      }
-      if (hasEmailSteps) {
-        if (hasEmail) emailEligible += 1;
-        else noEmail += 1;
-      }
-    }
-
-    const total = leads.length;
-    const wouldSkip = noContact + (hasWaSteps ? noPhone : 0) + (hasEmailSteps ? noEmail : 0);
-
-    return res.json({
-      success: true,
-      total,
-      waEligible: hasWaSteps ? waEligible : null,
-      emailEligible: hasEmailSteps ? emailEligible : null,
-      noPhone: hasWaSteps ? noPhone : null,
-      noEmail: hasEmailSteps ? noEmail : null,
-      noContact,
-      wouldSkip,
-      hasWaSteps,
-      hasEmailSteps,
+    const { buildEnrollPreflightReport } = require('../services/journeyBuilder/journeyEnrollPreflightService');
+    const report = await buildEnrollPreflightReport({
+      clientId,
+      leads,
+      leadDocs,
+      steps,
     });
+
+    return res.json({ success: true, ...report });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -878,6 +852,45 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
     const leadOidList = leads.map((l) => l.leadId).filter(Boolean);
     let countMap = await activeSequenceCountMap(clientId, leadOidList);
     const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
+    const { findOrderDocForSequence } = require('../services/journeyBuilder/journeySequenceWhatsApp');
+
+    const leadDocs = leadOidList.length
+      ? await AdLead.find({ clientId, _id: { $in: leadOidList } })
+          .select('name fullName phoneNumber email channelConsent optStatus emailBounced')
+          .lean()
+      : [];
+    const leadDocMap = new Map(leadDocs.map((l) => [String(l._id), l]));
+
+    const { buildEnrollPreflightReport } = require('../services/journeyBuilder/journeyEnrollPreflightService');
+    const preflightReport = await buildEnrollPreflightReport({
+      clientId,
+      leads,
+      leadDocs,
+      steps,
+    });
+    const enrollWarnings = preflightReport.leads
+      .filter((r) => r.warnings?.length)
+      .map((r) => ({
+        leadId: r.leadId,
+        name: r.name,
+        warnings: r.warnings,
+        enrollStatus: r.enrollStatus,
+        blockedReason: r.blockedReason,
+      }));
+
+    const blockedLeadIds = new Set(
+      preflightReport.leads
+        .filter((r) => r.enrollStatus === 'blocked')
+        .map((r) => String(r.leadId))
+    );
+
+    if (preflightReport.blockedCount === leads.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'None of the selected contacts can be enrolled — check phone, email, and opt-in status.',
+        preflight: preflightReport,
+      });
+    }
 
     const onlyEmailSteps = hasEmailSteps && steps.every((s) => String(s.type).toLowerCase() === 'email');
 
@@ -902,9 +915,44 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       }
 
       const lid = String(leadId);
+      if (blockedLeadIds.has(lid)) {
+        const blockedRow = preflightReport.leads.find((r) => String(r.leadId) === lid);
+        errors.push({
+          leadId,
+          message: blockedRow?.blockedReason === 'wa_opted_out'
+            ? 'Opted out of WhatsApp'
+            : blockedRow?.blockedReason === 'no_phone'
+              ? 'No valid phone number'
+              : 'Cannot enroll this contact',
+          code: blockedRow?.blockedReason || 'blocked',
+        });
+        continue;
+      }
+
       let activeCount = countMap.get(lid) || 0;
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {
         errors.push({ leadId, message: 'Active sequence limit reached' });
+        continue;
+      }
+
+      const policyCheck = await require('../services/journeyBuilder/journeyPolicyService').checkJourneyEnrollmentAllowed({
+        clientId,
+        flow,
+        leadId,
+        orderPayload: leadInput.orderPayload || null,
+      });
+      if (!policyCheck.allowed) {
+        const policyMessages = {
+          repeat_window: 'Already enrolled in this journey',
+          max_enrollments: 'Maximum enrollments reached for this journey',
+          cooldown: 'Re-entry cooldown active — try again later',
+          min_order_value: 'Order value below journey minimum',
+        };
+        errors.push({
+          leadId,
+          message: policyMessages[policyCheck.reason] || 'Enrollment blocked by journey policy',
+          code: policyCheck.reason,
+        });
         continue;
       }
 
@@ -920,21 +968,35 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
         status: 'pending',
       }));
 
+      const leadDoc = leadDocMap.get(lid);
+      const displayName = leadDoc?.name || leadDoc?.fullName || leadInput.name || 'Customer';
+      const latestOrder = await findOrderDocForSequence(clientId, null, normalizedPhone);
+      const sourceOrderId =
+        leadInput.sourceOrderId
+        || latestOrder?.orderNumber
+        || latestOrder?.shopifyOrderId
+        || latestOrder?.orderId
+        || undefined;
+
       const sequence = new FollowUpSequence({
         clientId,
         leadId,
         phone,
         email,
-        name: name || flow.name || 'Journey enrollment',
+        name: displayName,
         type: 'custom',
         cancelOnReply: cancelOnReply !== false,
         sourceFlowId: flow.flowId,
+        sourceOrderId,
         playbookKey: flow.playbookKey || '',
         enrollment: { mode: 'blueprint', blueprint: { flowId: flow.flowId, name: flow.name } },
         steps: mappedSteps,
       });
 
       await sequence.save();
+      await AdLead.findByIdAndUpdate(leadId, {
+        $set: { 'metaData.hasActiveSequence': true },
+      }).catch(() => {});
       const queued = await enqueueDueStepsForSequence(sequence).catch((enqueueErr) => {
         journeyLogError('enqueue', 'failed after enroll save', {
           clientId,
@@ -977,6 +1039,7 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       enrolled: enrolledSequences.length,
       queuedSteps: totalQueued,
       errors,
+      warnings: enrollWarnings,
       sequences: enrolledSequences.map((s) => ({ _id: s._id, leadId: s.leadId })),
     });
   } catch (err) {

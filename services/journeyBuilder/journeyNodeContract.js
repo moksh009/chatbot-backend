@@ -72,7 +72,10 @@ function journeyTriggerSummary(journeyTrigger) {
     order_delivered: 'Order delivered',
   };
   let label = labels[type] || String(type || 'Manual enroll');
-  const parts = summarizeTriggerRules(filters?.rules?.length ? filters.rules : normalizeTriggerRules(filters));
+  const parts = summarizeTriggerRules(
+    filters?.rules?.length ? filters.rules : normalizeTriggerRules(filters),
+    type
+  );
   if (parts.length) label += ` · ${parts.join(' · ')}`;
   return label;
 }

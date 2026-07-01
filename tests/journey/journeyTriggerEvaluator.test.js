@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   evaluateSyncRule,
   evaluateTriggerRules,
+  cartProductIdsFromPayload,
 } = require('../../services/journeyBuilder/journeyTriggerEvaluator');
 const { serializeTriggerRules, normalizeTriggerRules } = require('../../services/journeyBuilder/triggerFilterCatalog');
 
@@ -14,8 +15,6 @@ const COD_ORDER = {
   payment_gateway_names: ['Cash on Delivery (COD)'],
   line_items: [{ product_id: '111' }],
   customer: { id: 'cust_1' },
-  tags: 'wholesale, vip',
-  shipping_address: { province: 'Maharashtra', city: 'Mumbai' },
 };
 
 const PREPAID_ORDER = {
@@ -25,8 +24,13 @@ const PREPAID_ORDER = {
   gateway: 'razorpay',
   line_items: [{ product_id: '222' }],
   customer: { id: 'cust_2' },
-  tags: 'retail',
-  shipping_address: { province: 'Gujarat', city: 'Ahmedabad' },
+};
+
+const CART_LEAD = {
+  phoneNumber: '919876543210',
+  cartValue: 1500,
+  cartItems: [{ product_id: '555' }, { product_id: '666' }],
+  cartAbandonedAt: new Date(Date.now() - 30 * 60 * 1000),
 };
 
 test('payment_method cod matches COD Shopify order', () => {
@@ -36,17 +40,6 @@ test('payment_method cod matches COD Shopify order', () => {
   );
   assert.equal(
     evaluateSyncRule({ attribute: 'payment_method', operator: 'is', value: 'cod' }, 'order_placed', PREPAID_ORDER),
-    false
-  );
-});
-
-test('payment_method prepaid matches non-COD order', () => {
-  assert.equal(
-    evaluateSyncRule({ attribute: 'payment_method', operator: 'is', value: 'prepaid' }, 'order_shipped', PREPAID_ORDER),
-    true
-  );
-  assert.equal(
-    evaluateSyncRule({ attribute: 'payment_method', operator: 'is', value: 'prepaid' }, 'order_shipped', COD_ORDER),
     false
   );
 });
@@ -73,14 +66,69 @@ test('products includes_any', () => {
   );
 });
 
-test('order_tags and shipping_state', () => {
+test('cart_products reads AdLead cartItems', () => {
+  const ids = cartProductIdsFromPayload(CART_LEAD);
+  assert.deepEqual(ids, ['555', '666']);
   assert.equal(
-    evaluateSyncRule({ attribute: 'order_tags', operator: 'includes_any', value: ['wholesale'] }, 'order_placed', COD_ORDER),
+    evaluateSyncRule({ attribute: 'cart_products', operator: 'includes_any', value: ['555'] }, 'cart_abandoned', CART_LEAD),
+    true
+  );
+});
+
+test('cart_delay enforces wait minutes', () => {
+  const recentLead = { ...CART_LEAD, cartAbandonedAt: new Date(Date.now() - 5 * 60 * 1000) };
+  assert.equal(
+    evaluateSyncRule({ attribute: 'cart_delay', operator: 'is', value: 25 }, 'cart_abandoned', recentLead),
+    false
+  );
+  assert.equal(
+    evaluateSyncRule({ attribute: 'cart_delay', operator: 'is', value: 25 }, 'cart_abandoned', CART_LEAD),
+    true
+  );
+});
+
+test('order_tags includes_any matches tagged order', () => {
+  const taggedOrder = { ...COD_ORDER, tags: 'vip, wholesale' };
+  assert.equal(
+    evaluateSyncRule({ attribute: 'order_tags', operator: 'includes_any', value: ['vip'] }, 'order_placed', taggedOrder),
     true
   );
   assert.equal(
-    evaluateSyncRule({ attribute: 'shipping_state', operator: 'is', value: 'Maharashtra' }, 'order_placed', COD_ORDER),
+    evaluateSyncRule({ attribute: 'order_tags', operator: 'includes_any', value: ['wholesale'] }, 'order_placed', COD_ORDER),
+    false
+  );
+});
+
+test('discount_code includes_any', () => {
+  const withCode = {
+    ...PREPAID_ORDER,
+    discount_codes: [{ code: 'SAVE10' }],
+  };
+  assert.equal(
+    evaluateSyncRule({ attribute: 'discount_code', operator: 'includes_any', value: ['SAVE10'] }, 'order_placed', withCode),
     true
+  );
+});
+
+test('line_item_count_min', () => {
+  const multiItem = {
+    ...COD_ORDER,
+    line_items: [{ product_id: '1' }, { product_id: '2' }],
+  };
+  assert.equal(
+    evaluateSyncRule({ attribute: 'line_item_count_min', operator: 'gte', value: 2 }, 'order_placed', multiItem),
+    true
+  );
+  assert.equal(
+    evaluateSyncRule({ attribute: 'line_item_count_min', operator: 'gte', value: 3 }, 'order_placed', multiItem),
+    false
+  );
+});
+
+test('unknown attribute fails closed', () => {
+  assert.equal(
+    evaluateSyncRule({ attribute: 'shipping_city', operator: 'is', value: 'Mumbai' }, 'order_placed', COD_ORDER),
+    false
   );
 });
 
@@ -111,4 +159,17 @@ test('empty rules match all', async () => {
     filters: {},
   });
   assert.equal(match, true);
+});
+
+test('removed attributes stripped on normalize', () => {
+  const rules = normalizeTriggerRules({
+    rules: [
+      { attribute: 'shipping_city', operator: 'is', value: 'Mumbai' },
+      { attribute: 'order_tags', operator: 'includes_any', value: ['vip'] },
+      { attribute: 'payment_method', operator: 'is', value: 'cod' },
+    ],
+  });
+  assert.equal(rules.length, 2);
+  assert.ok(rules.some((r) => r.attribute === 'order_tags'));
+  assert.ok(rules.some((r) => r.attribute === 'payment_method'));
 });

@@ -10,6 +10,7 @@ const {
   MIN_SAMPLE_SIZE,
   isStepSent,
   isStepFailed,
+  isStepSkipped,
 } = require('./journeyStatsService');
 
 const TRACKING_NOTE =
@@ -35,6 +36,132 @@ function maskEmail(email) {
   if (!user || !domain) return '—';
   const head = user.length <= 2 ? user[0] || '*' : `${user.slice(0, 2)}••`;
   return `${head}@${domain}`;
+}
+
+function normalizePhoneKey(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (d.length >= 10) return d.slice(-10);
+  return '';
+}
+
+function resolveRecipientName(seq = {}, lead = {}, journeyName = '') {
+  const leadName = String(lead?.name || lead?.fullName || '').trim();
+  const seqName = String(seq.name || '').trim();
+  const blueprintName = String(
+    journeyName || seq.enrollment?.blueprint?.name || ''
+  ).trim();
+
+  if (leadName) return leadName;
+  if (
+    seqName
+    && blueprintName
+    && seqName.toLowerCase() === blueprintName.toLowerCase()
+  ) {
+    return 'Customer';
+  }
+  if (seqName) return seqName;
+  return 'Customer';
+}
+
+async function fetchLeadsForSequences(clientId, sequences = []) {
+  const leadIds = [...new Set(sequences.map((s) => String(s.leadId)).filter(Boolean))];
+  const phoneKeys = [
+    ...new Set(
+      sequences
+        .map((s) => normalizePhoneKey(s.phone))
+        .filter(Boolean)
+    ),
+  ];
+
+  const queries = [];
+  if (leadIds.length) {
+    queries.push(
+      AdLead.find({ clientId, _id: { $in: leadIds } })
+        .select('name fullName phoneNumber phone email')
+        .lean()
+    );
+  }
+  if (phoneKeys.length) {
+    queries.push(
+      AdLead.find({
+        clientId,
+        $or: phoneKeys.map((k) => ({ phoneNumber: { $regex: `${k}$` } })),
+      })
+        .select('name fullName phoneNumber phone email')
+        .lean()
+    );
+  }
+  if (!queries.length) {
+    return { byId: new Map(), byPhone: new Map() };
+  }
+
+  const resultSets = await Promise.all(queries);
+  const allLeads = [];
+  const seen = new Set();
+  for (const rows of resultSets) {
+    for (const lead of rows) {
+      const id = String(lead._id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      allLeads.push(lead);
+    }
+  }
+
+  const byId = new Map(allLeads.map((l) => [String(l._id), l]));
+  const byPhone = new Map();
+  for (const lead of allLeads) {
+    const key = normalizePhoneKey(lead.phoneNumber || lead.phone);
+    if (key && !byPhone.has(key)) byPhone.set(key, lead);
+  }
+  return { byId, byPhone };
+}
+
+function resolveLeadForSequence(seq, leadLookups = {}) {
+  const byId = leadLookups.byId || new Map();
+  const byPhone = leadLookups.byPhone || new Map();
+  return (
+    byId.get(String(seq.leadId))
+    || byPhone.get(normalizePhoneKey(seq.phone))
+    || null
+  );
+}
+
+function formatJourneyStepLabel(step = {}) {
+  const channel = step.type || step.channel || 'whatsapp';
+  if (channel === 'email') {
+    const name = String(step.templateName || '').trim();
+    if (name) return name.replace(/_/g, ' ');
+    const subject = String(step.subject || '').trim();
+    if (subject) return subject;
+    return 'Email';
+  }
+  return (step.templateName || 'WhatsApp').replace(/_/g, ' ');
+}
+
+function buildStepOutcomes(steps = []) {
+  return (steps || []).map((step) => {
+    const channel = step.type || step.channel || 'whatsapp';
+    const isEmail = channel === 'email';
+    return {
+      stepIndex: step.stepIndex,
+      channel,
+      label: formatJourneyStepLabel(step),
+      outcome: step.outcome || 'pending',
+      reason: step.failureReason || null,
+      sentAt: step.sentAt || null,
+      readAt: step.readAt || null,
+    };
+  });
+}
+
+function buildSkipSummary(steps = []) {
+  const reasons = new Set();
+  for (const step of steps) {
+    if (step.outcome !== 'skipped' && step.outcome !== 'failed') continue;
+    const code = step.failureReason || step.outcome;
+    if (code) reasons.add(code);
+  }
+  return [...reasons];
 }
 
 function safeRate(num, den) {
@@ -93,6 +220,7 @@ function summarizeRecipientEngagement(steps = [], orders = []) {
   else if (opened > 0) bestOutcome = 'opened';
   else if (sent > 0 && failed === 0) bestOutcome = 'sent';
   else if (failed > 0 && sent === 0) bestOutcome = 'failed';
+  else if (skipped > 0 && sent === 0 && failed === 0) bestOutcome = 'skipped';
   else if (sent > 0) bestOutcome = 'partial'; // some sent, some failed
 
   return {
@@ -123,6 +251,7 @@ function buildSummaryFromStats(stats = {}) {
     read,
     clicked,
     failed: Number(stats.failed || 0),
+    skipped: Number(stats.skipped || 0),
     revenueInr: Number(stats.revenueInr || 0),
     attributedOrders,
     openRate: stats.openRate ?? safeRate(read, delivered || sent),
@@ -162,15 +291,19 @@ async function fetchAttributionBySequence(clientId, sourceFlowId, sequenceIds = 
   return map;
 }
 
-function mapRecipientRow(seq, lead, orders = []) {
+function mapRecipientRow(seq, lead, orders = [], journeyName = '') {
   const engagement = summarizeRecipientEngagement(seq.steps || [], orders);
+  const phoneRaw = seq.phone || lead?.phoneNumber || lead?.phone || '';
+  const displayName = resolveRecipientName(seq, lead, journeyName);
   return {
     enrollmentId: String(seq._id),
     leadId: seq.leadId ? String(seq.leadId) : '',
-    phone: maskPhone(seq.phone || lead?.phoneNumber || lead?.phone),
-    phoneRaw: seq.phone || lead?.phoneNumber || lead?.phone || '',
-    name: seq.name || lead?.name || lead?.fullName || 'Customer',
+    phone: maskPhone(phoneRaw),
+    phoneRaw,
+    phoneDisplay: phoneRaw,
+    name: displayName,
     email: maskEmail(seq.email || lead?.email),
+    emailRaw: seq.email || lead?.email || '',
     status: seq.status || 'active',
     enrolledAt: seq.createdAt,
     completedAt: seq.status === 'completed' ? seq.updatedAt : null,
@@ -178,8 +311,95 @@ function mapRecipientRow(seq, lead, orders = []) {
     cancelledReason: seq.cancelledReason || '',
     sourceOrderId: seq.sourceOrderId || '',
     engagement,
+    stepOutcomes: buildStepOutcomes(engagement.steps),
+    skipSummary: buildSkipSummary(engagement.steps),
     orders,
   };
+}
+
+function groupKeyForRecipient(row = {}) {
+  const phone = normalizePhoneKey(row.phoneRaw);
+  if (phone) return `phone:${phone}`;
+  if (row.leadId) return `lead:${row.leadId}`;
+  return `enrollment:${row.enrollmentId}`;
+}
+
+function groupRecipientsByContact(recipients = []) {
+  const map = new Map();
+  for (const row of recipients) {
+    const key = groupKeyForRecipient(row);
+    if (!map.has(key)) {
+      map.set(key, {
+        groupKey: key,
+        leadId: row.leadId || '',
+        phone: row.phone,
+        phoneRaw: row.phoneRaw,
+        phoneDisplay: row.phoneDisplay || row.phoneRaw,
+        name: row.name,
+        email: row.email,
+        emailRaw: row.emailRaw || '',
+        runCount: 0,
+        enrollments: [],
+        latestEnrolledAt: null,
+        rollup: {
+          sent: 0,
+          opened: 0,
+          clicked: 0,
+          failed: 0,
+          skipped: 0,
+          revenueInr: 0,
+          bestOutcome: 'enrolled',
+        },
+      });
+    }
+    const group = map.get(key);
+    group.runCount += 1;
+    group.enrollments.push(row);
+    if (row.name && row.name !== 'Customer') group.name = row.name;
+    if (row.emailRaw) group.emailRaw = row.emailRaw;
+    else if (row.email && row.email !== '—') group.email = row.email;
+    const enrolledAt = row.enrolledAt ? new Date(row.enrolledAt) : null;
+    if (enrolledAt && (!group.latestEnrolledAt || enrolledAt > new Date(group.latestEnrolledAt))) {
+      group.latestEnrolledAt = row.enrolledAt;
+    }
+    const e = row.engagement || {};
+    group.rollup.sent += Number(e.sent || 0);
+    group.rollup.opened += Number(e.opened || 0);
+    group.rollup.clicked += Number(e.clicked || 0);
+    group.rollup.failed += Number(e.failed || 0);
+    group.rollup.skipped += Number(e.skipped || 0);
+    group.rollup.revenueInr += Number(e.revenueInr || 0);
+    const outcomeRank = {
+      purchased: 6,
+      clicked: 5,
+      opened: 4,
+      sent: 3,
+      partial: 2,
+      failed: 1,
+      skipped: 1,
+      enrolled: 0,
+    };
+    const cur = outcomeRank[group.rollup.bestOutcome] ?? 0;
+    const next = outcomeRank[e.bestOutcome] ?? 0;
+    if (next > cur) group.rollup.bestOutcome = e.bestOutcome;
+  }
+
+  return [...map.values()]
+    .map((g) => {
+      const latest = g.enrollments[0] || null;
+      const latestSteps = latest?.stepOutcomes || buildStepOutcomes(latest?.engagement?.steps);
+      const resolvedName = g.enrollments.find((r) => r.name && r.name !== 'Customer')?.name || g.name;
+      return {
+        ...g,
+        name: resolvedName || g.name || 'Customer',
+        stepOutcomes: latestSteps,
+        skipSummary: latest?.skipSummary || buildSkipSummary(latest?.engagement?.steps),
+        enrollments: g.enrollments.sort(
+          (a, b) => new Date(b.enrolledAt || 0) - new Date(a.enrolledAt || 0)
+        ),
+      };
+    })
+    .sort((a, b) => new Date(b.latestEnrolledAt || 0) - new Date(a.latestEnrolledAt || 0));
 }
 
 async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
@@ -187,7 +407,9 @@ async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
   const page = Math.max(1, Number(options.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(options.limit) || 25));
   const search = String(options.search || '').trim().toLowerCase();
+  const journeyName = String(options.journeyName || '').trim();
   const { from, to, label } = parsePeriod(period);
+  const MAX_FETCH = 5000;
 
   const enrollMatch = {
     clientId,
@@ -195,32 +417,16 @@ async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
     ...((from && { createdAt: { $gte: from, $lte: to } }) || {}),
   };
 
-  if (search) {
-    enrollMatch.$or = [
-      { phone: { $regex: search, $options: 'i' } },
-      { name: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-    ];
-  }
-
-  const [stats, funnel, totalCount, sequences] = await Promise.all([
+  const [stats, funnel, sequences] = await Promise.all([
     getBlueprintStats(clientId, sourceFlowId, period),
     getStepFunnel(clientId, sourceFlowId, period),
-    FollowUpSequence.countDocuments(enrollMatch),
     FollowUpSequence.find(enrollMatch)
       .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
+      .limit(MAX_FETCH)
       .lean(),
   ]);
 
-  const leadIds = [...new Set(sequences.map((s) => String(s.leadId)).filter(Boolean))];
-  const leads = leadIds.length
-    ? await AdLead.find({ clientId, _id: { $in: leadIds } })
-        .select('name fullName phoneNumber phone email')
-        .lean()
-    : [];
-  const leadMap = new Map(leads.map((l) => [String(l._id), l]));
+  const leadLookups = await fetchLeadsForSequences(clientId, sequences);
 
   const attrMap = await fetchAttributionBySequence(
     clientId,
@@ -228,11 +434,33 @@ async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
     sequences.map((s) => s._id)
   );
 
-  let recipients = sequences.map((seq) => {
-    const lead = leadMap.get(String(seq.leadId));
+  let allRecipients = sequences.map((seq) => {
+    const lead = resolveLeadForSequence(seq, leadLookups);
     const orders = attrMap.get(String(seq._id)) || [];
-    return mapRecipientRow(seq, lead, orders);
+    return mapRecipientRow(seq, lead, orders, journeyName);
   });
+
+  if (search) {
+    allRecipients = allRecipients.filter((r) => {
+      const hay = [
+        r.name,
+        r.phoneRaw,
+        r.phoneDisplay,
+        r.emailRaw,
+        r.email,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(search);
+    });
+  }
+
+  const allGroups = groupRecipientsByContact(allRecipients);
+  const totalEnrollments = allRecipients.length;
+  const totalContacts = allGroups.length;
+  const paginatedGroups = allGroups.slice((page - 1) * limit, page * limit);
+  const recipients = paginatedGroups.flatMap((g) => g.enrollments);
 
   return {
     sourceFlowId,
@@ -241,11 +469,14 @@ async function getJourneyAnalyticsDetail(clientId, sourceFlowId, options = {}) {
     funnel: funnel.steps || [],
     funnelByNodeId: funnel.byNodeId || {},
     recipients,
+    recipientGroups: paginatedGroups,
     pagination: {
       page,
       limit,
-      total: totalCount,
-      totalPages: Math.ceil(totalCount / limit) || 1,
+      total: totalContacts,
+      totalEnrollments,
+      uniqueContacts: totalContacts,
+      totalPages: Math.ceil(totalContacts / limit) || 1,
     },
     trackingNote: TRACKING_NOTE,
   };
@@ -316,6 +547,8 @@ module.exports = {
   mapStepEngagement,
   summarizeRecipientEngagement,
   buildSummaryFromStats,
+  groupRecipientsByContact,
+  groupKeyForRecipient,
   getJourneyAnalyticsDetail,
   exportJourneyEnrollmentsCsv,
 };

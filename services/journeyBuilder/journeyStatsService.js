@@ -2,6 +2,8 @@
 
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const JourneyRevenueAttribution = require('../../models/JourneyRevenueAttribution');
+const WhatsAppFlow = require('../../models/WhatsAppFlow');
+const { compileGraphToSteps } = require('./compileGraphToSteps');
 
 const MIN_SAMPLE_SIZE = 10;
 
@@ -41,20 +43,26 @@ function periodMatch(field = 'createdAt', from, to) {
   return { [field]: { $gte: from, $lte: to } };
 }
 
+function isStepSkipped(step) {
+  return step.status === 'skipped';
+}
+
 function countEngagement(steps = []) {
   let sent = 0;
   let delivered = 0;
   let read = 0;
   let clicked = 0;
   let failed = 0;
+  let skipped = 0;
   for (const step of steps) {
     if (isStepSent(step)) sent += 1;
     if (isStepFailed(step)) failed += 1;
+    if (isStepSkipped(step)) skipped += 1;
     if (step.deliveredAt) delivered += 1;
     if (step.readAt) read += 1;
     if (step.clickedAt) clicked += 1;
   }
-  return { sent, delivered, read, clicked, failed };
+  return { sent, delivered, read, clicked, failed, skipped };
 }
 
 function safeRate(num, den) {
@@ -81,7 +89,43 @@ async function getHubStats(clientId, period = '7d') {
     },
   ]);
   const enrollRow = enrollRows[0] || {};
-  const uniqueRecipients = (enrollRow.uniqueRecipients || []).length;
+  const uniqueRecipients = (enrollRow.uniqueRecipients || []).filter(Boolean).length;
+  const enrollments = Number(enrollRow.enrollments || 0);
+
+  const msgRows = await FollowUpSequence.aggregate([
+    { $match: enrollMatch },
+    { $unwind: '$steps' },
+    {
+      $group: {
+        _id: null,
+        messagesSent: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$steps.status', 'failed'] },
+                  {
+                    $or: [
+                      { $eq: ['$steps.status', 'sent'] },
+                      { $ne: [{ $ifNull: ['$steps.sentAt', null] }, null] },
+                    ],
+                  },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        messagesFailed: {
+          $sum: { $cond: [{ $eq: ['$steps.status', 'failed'] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+  const msgRow = msgRows[0] || {};
+  const messagesSent = Number(msgRow.messagesSent || 0);
+  const messagesFailed = Number(msgRow.messagesFailed || 0);
 
   const revMatch = {
     clientId,
@@ -116,7 +160,9 @@ async function getHubStats(clientId, period = '7d') {
   return {
     uniqueRecipients,
     uniqueEnrollments: uniqueRecipients,
-    enrollments: enrollRow.enrollments || 0,
+    enrollments,
+    messagesSent,
+    messagesFailed,
     journeyRevenueInr: revenueInr,
     conversionRate,
     attributedOrders,
@@ -142,7 +188,7 @@ async function getBlueprintStats(clientId, sourceFlowId, period = '7d') {
     .lean();
 
   const uniqueLeadIds = new Set();
-  let engagement = { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 };
+  let engagement = { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0, skipped: 0 };
 
   for (const seq of sequences) {
     if (seq.leadId) uniqueLeadIds.add(String(seq.leadId));
@@ -152,6 +198,7 @@ async function getBlueprintStats(clientId, sourceFlowId, period = '7d') {
     engagement.read += e.read;
     engagement.clicked += e.clicked;
     engagement.failed += e.failed;
+    engagement.skipped += e.skipped;
   }
 
   const revMatch = {
@@ -205,12 +252,39 @@ async function getBlueprintStats(clientId, sourceFlowId, period = '7d') {
     read: engagement.read,
     clicked: engagement.clicked,
     failed: engagement.failed,
+    skipped: engagement.skipped,
     attributedOrders,
     lowVolume,
     openRateUnavailable: false,
     period: { from, to, label },
     isSample: false,
   };
+}
+
+function enrichFunnelStepsWithCompiledGraph(graph, funnelSteps = []) {
+  if (!graph?.nodes?.length || !funnelSteps.length) return funnelSteps;
+  let compiled = [];
+  try {
+    compiled = compileGraphToSteps(graph).steps || [];
+  } catch {
+    return funnelSteps;
+  }
+  const byIndex = new Map(compiled.map((s, i) => [i, s]));
+  const byNodeId = new Map(
+    compiled.filter((s) => s.graphNodeId).map((s) => [String(s.graphNodeId), s])
+  );
+
+  return funnelSteps.map((row) => {
+    const def =
+      byIndex.get(row.stepIndex)
+      || (row.graphNodeId ? byNodeId.get(String(row.graphNodeId)) : null);
+    if (!def) return row;
+    return {
+      ...row,
+      templateName: row.templateName || def.templateName || '',
+      subject: row.subject || def.subject || '',
+    };
+  });
 }
 
 async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
@@ -244,12 +318,15 @@ async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
           graphNodeId: nodeId,
           type: step.type || 'whatsapp',
           templateName: step.templateName || '',
+          subject: step.subject || '',
           sent: 0, delivered: 0, read: 0, clicked: 0,
           failed: 0, skipped: 0, pending: 0,
         });
       }
       const row = funnelByIndex.get(stepIndex);
       if (!row.graphNodeId && nodeId) row.graphNodeId = nodeId;
+      if (!row.templateName && step.templateName) row.templateName = step.templateName;
+      if (!row.subject && step.subject) row.subject = step.subject;
       if (isSent) row.sent += 1;
       if (isFailed) row.failed += 1;
       if (isSkipped) row.skipped += 1;
@@ -266,11 +343,14 @@ async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
             stepIndex,
             type: step.type || 'whatsapp',
             templateName: step.templateName || '',
+            subject: step.subject || '',
             sent: 0, delivered: 0, read: 0, clicked: 0,
             failed: 0, skipped: 0, pending: 0,
           });
         }
         const nRow = funnelByNodeId.get(nodeId);
+        if (!nRow.templateName && step.templateName) nRow.templateName = step.templateName;
+        if (!nRow.subject && step.subject) nRow.subject = step.subject;
         if (isSent) nRow.sent += 1;
         if (isFailed) nRow.failed += 1;
         if (isSkipped) nRow.skipped += 1;
@@ -282,10 +362,26 @@ async function getStepFunnel(clientId, sourceFlowId, period = '7d') {
     });
   }
 
+  const rawSteps = [...funnelByIndex.values()].sort((a, b) => a.stepIndex - b.stepIndex);
+  const flow = await WhatsAppFlow.findOne({ clientId, flowId: sourceFlowId })
+    .select('graph')
+    .lean();
+  const steps = enrichFunnelStepsWithCompiledGraph(flow?.graph, rawSteps);
+  const enrichedByNodeId = { ...Object.fromEntries(funnelByNodeId) };
+  for (const row of steps) {
+    if (row.graphNodeId && enrichedByNodeId[row.graphNodeId]) {
+      enrichedByNodeId[row.graphNodeId] = {
+        ...enrichedByNodeId[row.graphNodeId],
+        templateName: row.templateName || enrichedByNodeId[row.graphNodeId].templateName || '',
+        subject: row.subject || enrichedByNodeId[row.graphNodeId].subject || '',
+      };
+    }
+  }
+
   return {
     sourceFlowId,
-    steps: [...funnelByIndex.values()].sort((a, b) => a.stepIndex - b.stepIndex),
-    byNodeId: Object.fromEntries(funnelByNodeId),
+    steps,
+    byNodeId: enrichedByNodeId,
     period: { from, to, label },
   };
 }
@@ -311,4 +407,6 @@ module.exports = {
   MIN_SAMPLE_SIZE,
   isStepSent,
   isStepFailed,
+  isStepSkipped,
+  enrichFunnelStepsWithCompiledGraph,
 };

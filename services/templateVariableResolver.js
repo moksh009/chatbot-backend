@@ -137,10 +137,15 @@ async function buildMetaTemplateComponents(metaTemplate, context, options = {}) 
   for (const comp of synced) {
     const type = String(comp.type || "").toUpperCase();
     if (type === "HEADER") {
-      if (comp.format === "IMAGE" && headerImage && /^https?:\/\//i.test(headerImage)) {
+      const blueprintImage =
+        comp._imageUrl ||
+        (Array.isArray(comp.example?.header_handle) ? comp.example.header_handle[0] : null) ||
+        "";
+      const resolvedHeaderImage = headerImage || blueprintImage;
+      if (comp.format === "IMAGE" && resolvedHeaderImage && /^https?:\/\//i.test(resolvedHeaderImage)) {
         components.push({
           type: "header",
-          parameters: [{ type: "image", image: { link: String(headerImage).slice(0, 2048) } }],
+          parameters: [{ type: "image", image: { link: String(resolvedHeaderImage).slice(0, 2048) } }],
         });
       } else if (comp.format === "TEXT" && /\{\{1\}\}/.test(comp.text || "")) {
         const params = buildPositionalBodyParams({ body: mappings.header || { 1: mappings.header?.[1] || "brand_name" } }, context);

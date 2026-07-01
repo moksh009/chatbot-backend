@@ -58,6 +58,14 @@ describe('journeyEnrollmentDetailService', () => {
       assert.equal(summary.revenueInr, 1299);
       assert.equal(summary.attributedOrders, 1);
     });
+
+    it('marks skipped when all actionable steps skipped', () => {
+      const summary = summarizeRecipientEngagement([
+        { type: 'email', status: 'skipped', skipReason: 'email_opted_out' },
+      ]);
+      assert.equal(summary.skipped, 1);
+      assert.equal(summary.bestOutcome, 'skipped');
+    });
   });
 
   describe('buildSummaryFromStats', () => {
@@ -75,6 +83,37 @@ describe('journeyEnrollmentDetailService', () => {
       assert.equal(s.clickRate, 0.2);
       assert.equal(s.orderRate, 0.125);
       assert.equal(s.lowVolume, false);
+    });
+  });
+
+  describe('groupRecipientsByContact', () => {
+    const { groupRecipientsByContact } = require('../../services/journeyBuilder/journeyEnrollmentDetailService');
+
+    it('groups multiple enrollments for the same lead', () => {
+      const groups = groupRecipientsByContact([
+        {
+          enrollmentId: 'a',
+          leadId: 'lead1',
+          phone: '••••5439',
+          phoneRaw: '919313045439',
+          name: 'Priya',
+          enrolledAt: '2026-07-01T10:00:00.000Z',
+          engagement: { sent: 0, opened: 0, clicked: 0, failed: 0, revenueInr: 0, bestOutcome: 'enrolled' },
+        },
+        {
+          enrollmentId: 'b',
+          leadId: 'lead1',
+          phone: '••••5439',
+          phoneRaw: '919313045439',
+          name: 'Priya',
+          enrolledAt: '2026-07-01T16:00:00.000Z',
+          engagement: { sent: 1, opened: 0, clicked: 0, failed: 0, revenueInr: 0, bestOutcome: 'sent' },
+        },
+      ]);
+      assert.equal(groups.length, 1);
+      assert.equal(groups[0].runCount, 2);
+      assert.equal(groups[0].rollup.sent, 1);
+      assert.equal(groups[0].enrollments[0].enrollmentId, 'b');
     });
   });
 });

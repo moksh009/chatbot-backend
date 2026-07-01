@@ -202,7 +202,7 @@ function buildCodConfirmBasicGraph() {
     edge('e2', 'send_wa_1', 'send_email_1'),
     edge('e3', 'send_email_1', 'wait_1'),
     edge('e4', 'wait_1', 'cond_1'),
-    edge('e5', 'cond_1', 'send_wa_2', 'default'),
+    edge('e5', 'cond_1', 'send_wa_2', 'yes'),
     edge('e6', 'send_wa_2', 'send_email_2'),
     edge('e7', 'send_email_2', 'send_wa_3'),
     edge('e8', 'send_wa_3', 'end_1'),

@@ -189,10 +189,29 @@ function valueForNormKey(nk, lead, client, flatContext = {}) {
   }
 }
 
+function buildMappingFlatContext(mappings, lead, client, flatContext = {}) {
+  if (!mappings || typeof mappings !== 'object') return { ...flatContext };
+  const out = { ...flatContext };
+  for (const [templateToken, fieldKey] of Object.entries(mappings)) {
+    if (!fieldKey) continue;
+    const tk = normalizeKey(templateToken);
+    const fk = normalizeKey(fieldKey);
+    const val = valueForNormKey(fk, lead, client, flatContext);
+    if (val != null && String(val).trim() !== '') out[tk] = String(val);
+  }
+  return out;
+}
+
 /**
  * @returns {{ subject: string, html: string, unknownTokens: string[], missingDataHints: string[] }}
  */
-function mergeEmailForLead(subject, html, lead, client, flatContext = {}) {
+function mergeEmailForLead(subject, html, lead, client, flatContext = {}, options = {}) {
+  const mergedContext = buildMappingFlatContext(
+    options.emailTokenMappings,
+    lead,
+    client,
+    flatContext
+  );
   const combined = `${subject || ''}\n${html || ''}`;
   const rawTokens = extractTokens(combined);
   const unknownTokens = [];
@@ -219,7 +238,7 @@ function mergeEmailForLead(subject, html, lead, client, flatContext = {}) {
       const raw = String(inner || '').trim();
       const nk = normalizeKey(raw);
       if (!KNOWN.has(nk)) return '';
-      const val = valueForNormKey(nk, lead, client, flatContext);
+      const val = valueForNormKey(nk, lead, client, mergedContext);
       return val == null ? '' : String(val);
     });
     return out;

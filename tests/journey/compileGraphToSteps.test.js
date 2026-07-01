@@ -173,4 +173,32 @@ describe('compileGraphToSteps', () => {
     assert.equal(steps[0].templateName, 'tpl_a');
     assert.ok(warnings.some((w) => /always continue/i.test(w)));
   });
+
+  it('persists email templateName and subject on compiled steps', () => {
+    const nodes = [
+      node('trigger_1', JOURNEY_NODE_TYPES.JOURNEY_TRIGGER, { entryType: 'order_placed' }, 0),
+      node(
+        'send_email_1',
+        JOURNEY_NODE_TYPES.SEND_EMAIL,
+        {
+          templateId: 'order_confirmed',
+          templateName: 'Order confirmed',
+          subject: 'Your order {{order_number}} is confirmed! ✅',
+          content: '<p>Thanks for your order</p>',
+        },
+        100
+      ),
+      node('end_1', JOURNEY_NODE_TYPES.END, {}, 200),
+    ];
+    const edges = [
+      edge('e1', 'trigger_1', 'send_email_1'),
+      edge('e2', 'send_email_1', 'end_1'),
+    ];
+
+    const { steps } = compileGraphToSteps({ nodes, edges });
+    assert.equal(steps.length, 1);
+    assert.equal(steps[0].type, 'email');
+    assert.equal(steps[0].templateName, 'Order confirmed');
+    assert.equal(steps[0].subject, 'Your order {{order_number}} is confirmed! ✅');
+  });
 });
