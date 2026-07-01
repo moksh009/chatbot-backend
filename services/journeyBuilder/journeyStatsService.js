@@ -72,15 +72,26 @@ async function getHubStats(clientId, period = '7d') {
     { $match: revMatch },
     {
       $group: {
-        _id: null,
+        _id: { $ifNull: ['$journeyType', 'other'] },
         revenueInr: { $sum: '$amount' },
         attributedOrders: { $sum: 1 },
       },
     },
   ]);
-  const revRow = revRows[0] || {};
-  const revenueInr = Number(revRow.revenueInr || 0);
-  const attributedOrders = Number(revRow.attributedOrders || 0);
+  let revenueInr = 0;
+  let attributedOrders = 0;
+  let cartRecoveryRevenue = 0;
+  let cartRecoveryOrders = 0;
+  for (const row of revRows) {
+    const rev = Number(row.revenueInr || 0);
+    const orders = Number(row.attributedOrders || 0);
+    revenueInr += rev;
+    attributedOrders += orders;
+    if (row._id === 'cart_abandoned') {
+      cartRecoveryRevenue += rev;
+      cartRecoveryOrders += orders;
+    }
+  }
   const conversionRate = safeRate(attributedOrders, uniqueRecipients);
 
   return {
@@ -90,6 +101,10 @@ async function getHubStats(clientId, period = '7d') {
     journeyRevenueInr: revenueInr,
     conversionRate,
     attributedOrders,
+    revenueBySource: {
+      cartRecovery: { revenue: cartRecoveryRevenue, orders: cartRecoveryOrders },
+      other: { revenue: revenueInr - cartRecoveryRevenue, orders: attributedOrders - cartRecoveryOrders },
+    },
     period: { from, to, label },
     isSample: false,
   };

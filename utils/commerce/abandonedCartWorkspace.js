@@ -32,7 +32,7 @@ const {
   computeNextPromotionAt,
   buildConfigPayload,
 } = require('./cartRecoveryConfigService');
-const { calculateRecoveryMetrics } = require('../../services/cartRecoveryMetricsService');
+const { calculateRecoveryMetrics, buildOrderContactMap, pickOrderForLead } = require('../../services/cartRecoveryMetricsService');
 
 const PRESETS = {
   today: () => ({ from: startOfDayIST(), to: new Date(), timezone: 'Asia/Kolkata' }),
@@ -772,10 +772,14 @@ async function persistRecoveriesFromOrderMap(client, leads, orderMap) {
 
 async function buildAbandonedCartWorkspace(clientId, query = {}) {
   const { from, to, preset } = parseDateRange(query);
-  const reconcileSince = new Date(Math.min(from.getTime(), Date.now() - 90 * 86400000));
-  await reconcileOpenCartLeadsForClient(clientId, { since: reconcileSince, maxLeads: 400 }).catch((err) => {
-    log.warn(`[AbandonedCartWorkspace] recovery reconcile skipped: ${err.message}`);
-  });
+  const shouldReconcile = String(query.reconcile || '') === '1';
+
+  if (shouldReconcile) {
+    const reconcileSince = new Date(Math.min(from.getTime(), Date.now() - 90 * 86400000));
+    await reconcileOpenCartLeadsForClient(clientId, { since: reconcileSince, maxLeads: 400 }).catch((err) => {
+      log.warn(`[AbandonedCartWorkspace] recovery reconcile skipped: ${err.message}`);
+    });
+  }
 
   const client = await Client.findOne({ clientId })
     .select('wizardFeatures cartRecoveryConfig timezone commerceAutomations shopifyConnected shopifyAccessToken whatsappToken phoneNumberId wabaId')
@@ -810,32 +814,15 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     leads.filter((l) => isAbandonCandidate(l) && leadInAbandonWindow(l, from, to))
   );
   const phones = filtered.map((l) => l.phoneNumber);
-  const leadsByPhone = new Map();
-  for (const lead of filtered) {
-    const key = normalizePhoneKey(lead.phoneNumber);
-    if (key.length >= 8 && !isPlaceholderPhone(lead.phoneNumber)) {
-      leadsByPhone.set(key, lead);
-    }
-  }
-  const orderMap = await latestOrdersByPhone(clientId, phones, leadsByPhone);
+  const workingLeads = filtered;
 
-  const persisted = await persistRecoveriesFromOrderMap(client, filtered, orderMap).catch((err) => {
-    log.warn(`[AbandonedCartWorkspace] order-map reconcile skipped: ${err.message}`);
-    return 0;
-  });
-
-  let workingLeads = filtered;
-  if (persisted > 0) {
-    const refreshed = await AdLead.find({
-      clientId,
-      _id: { $in: filtered.map((l) => l._id) },
-    })
-      .select(
-        'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt contactCapturedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt checkoutToken tags nextPromotionAt nextAllowedSendAt cartValueTier recoveryUrl exitIntentAt visitorFirstVisitAt visitorVisitCount recoveredAt lastPurchaseDate lifetimeValue totalSpent recoveredOrderId lastOrderId meta utmSource utmMedium utmCampaign referrerDomain source'
-      )
-      .lean();
-    const byId = new Map(refreshed.map((l) => [String(l._id), l]));
-    workingLeads = filtered.map((l) => byId.get(String(l._id)) || l);
+  const orderMaps = await buildOrderContactMap(clientId, workingLeads, { from });
+  const orderMap = new Map();
+  for (const lead of workingLeads) {
+    const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
+    if (!phoneKeyOrder) continue;
+    const order = pickOrderForLead(lead, orderMaps);
+    if (order) orderMap.set(phoneKeyOrder, order);
   }
 
   const [followupConfig, whatsappMetrics, attemptByPhone] = await Promise.all([
@@ -854,6 +841,8 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     includeRows: false,
     reconcileFirst: false,
     persistOrderMap: false,
+    prefetchedCohort: workingLeads,
+    prefetchedOrderMaps: orderMaps,
   });
 
   const rows = [];
@@ -872,6 +861,8 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     buttonClicks: 0,
     averageAbandonedCartValue: canonical.averageAbandonedCartValue,
     recoveryRate: canonical.recoveryRate,
+    journeyRevenue: canonical.journeyRevenue,
+    cartRecovery: canonical.cartRecovery,
   };
 
   let unknownPhoneCount = 0;

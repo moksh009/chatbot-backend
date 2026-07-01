@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const dns = require('dns');
 const net = require('net');
 const axios = require('axios');
+const { maybeDecryptSecret } = require('./clientGeminiKey');
 const { decrypt } = require('./encryption');
 const { renderBrandedEmail } = require('../../services/mjmlEmailRenderer');
 
@@ -75,7 +76,7 @@ async function markGmailAuthRevoked(clientId, reason = 'invalid_grant') {
  * @returns {{ accessToken: string|null, error?: string, revoked?: boolean }}
  */
 async function refreshClientGmailAccessToken(client) {
-    const rt = String(client.gmailRefreshToken || '').trim();
+    const rt = maybeDecryptSecret(client.gmailRefreshToken);
     if (!rt) {
         return { accessToken: null, error: 'missing_refresh_token' };
     }
@@ -127,7 +128,7 @@ async function refreshClientGmailAccessToken(client) {
  * Resolve a usable Gmail access token — always refresh when a refresh token exists.
  */
 async function resolveGmailAccessToken(client) {
-    const rt = String(client.gmailRefreshToken || '').trim();
+    const rt = maybeDecryptSecret(client.gmailRefreshToken);
     if (rt) {
         const refreshed = await refreshClientGmailAccessToken(client);
         if (refreshed.accessToken) return refreshed;
@@ -140,7 +141,7 @@ async function resolveGmailAccessToken(client) {
         }
     }
 
-    const access = String(client.gmailAccessToken || '').trim();
+    const access = maybeDecryptSecret(client.gmailAccessToken);
     if (access) return { accessToken: access };
 
     if (!rt) {

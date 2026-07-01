@@ -290,7 +290,7 @@ function pickOrderForLead(lead, orderMaps) {
 
 // ─── Order contact map (phone + email) ─────────────────────────────────────
 
-async function buildOrderContactMap(clientId, leads = []) {
+async function buildOrderContactMap(clientId, leads = [], options = {}) {
   const phoneSuffixes = new Set();
   const emailKeys = new Set();
 
@@ -307,12 +307,28 @@ async function buildOrderContactMap(clientId, leads = []) {
     return { byPhone: new Map(), byEmail: new Map() };
   }
 
-  const orders = await Order.find({ clientId })
+  const cohortFrom =
+    options.from instanceof Date
+      ? options.from
+      : leads.reduce((min, lead) => {
+          const d = abandonDate(lead);
+          if (!d) return min;
+          const t = new Date(d).getTime();
+          return min == null || t < min ? t : min;
+        }, null);
+  const orderSince = new Date(
+    (cohortFrom instanceof Date ? cohortFrom.getTime() : cohortFrom || Date.now()) - 7 * 86400000
+  );
+
+  const orders = await Order.find({
+    clientId,
+    createdAt: { $gte: orderSince },
+  })
     .sort({ createdAt: -1 })
     .select(
       'phone customerPhone orderId orderNumber shopifyOrderId financialStatus fulfillmentStatus status totalPrice amount createdAt customerEmail email'
     )
-    .limit(5000)
+    .limit(3000)
     .lean();
 
   const byPhone = new Map();
@@ -434,6 +450,29 @@ function trackFunnelRecovery(funnel, attempt, lead) {
   }
 }
 
+function chartBucketKey(date, unit = 'day') {
+  if (!date) return null;
+  if (unit === 'day') return formatDateStrIST(date);
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  d.setHours(0, 0, 0, 0);
+  return formatDateStrIST(d);
+}
+
+function bumpChartBucket(chartBuckets, key, { recovered, messaged }) {
+  if (!key || !chartBuckets) return;
+  if (!chartBuckets.has(key)) {
+    chartBuckets.set(key, { date: key, abandoned: 0, recovered: 0, stillAbandoned: 0, messaged: 0 });
+  }
+  const pt = chartBuckets.get(key);
+  pt.abandoned += 1;
+  if (recovered) pt.recovered += 1;
+  else pt.stillAbandoned += 1;
+  if (messaged) pt.messaged += 1;
+}
+
 // ─── Main calculation ────────────────────────────────────────────────────────
 
 async function calculateRecoveryMetrics(clientId, options = {}) {
@@ -441,14 +480,17 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
   const { from, to, timezone } = resolveDateRange(options);
   const includeFunnel = options.includeFunnel !== false;
   const includeRows = options.includeRows === true;
-  const reconcileFirst = options.reconcileFirst !== false;
-  const persistOrderMap = options.persistOrderMap !== false;
+  const includeChartBuckets = options.includeChartBuckets === true;
+  const chartBucketUnit = options.chartBucketUnit || 'day';
+  const reconcileFirst = options.reconcileFirst === true;
+  const persistOrderMap = options.persistOrderMap === true;
 
   const {
     buildRecoveryMetricsCacheKey,
     readRecoveryMetricsCache,
     writeRecoveryMetricsCache,
     shouldBypassRecoveryMetricsCache,
+    dedupeRecoveryMetricsCompute,
   } = require('../utils/commerce/cartRecoveryMetricsCache');
 
   const cacheKey = buildRecoveryMetricsCacheKey(clientId, options, { from, to, timezone });
@@ -460,6 +502,51 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
       return JSON.parse(JSON.stringify(cached));
     }
   }
+
+  return dedupeRecoveryMetricsCompute(cacheKey, async () => {
+    if (!bypassCache) {
+      const cachedAgain = readRecoveryMetricsCache(cacheKey);
+      if (cachedAgain) {
+        return JSON.parse(JSON.stringify(cachedAgain));
+      }
+    }
+
+    return computeRecoveryMetricsBody(clientId, {
+      mode,
+      from,
+      to,
+      timezone,
+      includeFunnel,
+      includeRows,
+      includeChartBuckets,
+      chartBucketUnit,
+      reconcileFirst,
+      persistOrderMap,
+      prefetchedCohort: options.prefetchedCohort,
+      prefetchedOrderMaps: options.prefetchedOrderMaps,
+      cacheKey,
+      bypassCache,
+    });
+  });
+}
+
+async function computeRecoveryMetricsBody(clientId, options) {
+  const {
+    mode,
+    from,
+    to,
+    timezone,
+    includeFunnel,
+    includeRows,
+    includeChartBuckets,
+    chartBucketUnit,
+    reconcileFirst,
+    persistOrderMap,
+    cacheKey,
+    bypassCache,
+  } = options;
+
+  const { writeRecoveryMetricsCache } = require('../utils/commerce/cartRecoveryMetricsCache');
 
   if (reconcileFirst) {
     const reconcileSince = new Date(Math.min(from.getTime(), Date.now() - 90 * 86400000));
@@ -475,10 +562,18 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
     .select('wizardFeatures cartRecoveryConfig commerceAutomations')
     .lean();
 
-  const rawLeads = await fetchAbandonLeads(clientId, from, to);
-  let cohort = buildAbandonCohort(rawLeads, from, to);
+  let cohort;
+  if (Array.isArray(options.prefetchedCohort)) {
+    cohort = options.prefetchedCohort;
+  } else {
+    const rawLeads = await fetchAbandonLeads(clientId, from, to);
+    cohort = buildAbandonCohort(rawLeads, from, to);
+  }
 
-  const orderMaps = await buildOrderContactMap(clientId, cohort);
+  const orderMaps =
+    options.prefetchedOrderMaps && options.prefetchedOrderMaps.byPhone
+      ? options.prefetchedOrderMaps
+      : await buildOrderContactMap(clientId, cohort, { from });
   const phones = cohort.map((l) => l.phoneNumber);
 
   let persisted = 0;
@@ -500,10 +595,31 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
     cohort = cohort.map((l) => byId.get(String(l._id)) || l);
   }
 
-  const [whatsappMetrics, attemptByPhone] = await Promise.all([
+  const JourneyRevenueAttribution = require('../models/JourneyRevenueAttribution');
+
+  const [whatsappMetrics, attemptByPhone, journeyCartRevenueResult] = await Promise.all([
     getWhatsappRecoveryMetrics(clientId, from, to),
     loadLatestAttemptsByPhone(clientId, phones),
+    JourneyRevenueAttribution.aggregate([
+      {
+        $match: {
+          clientId,
+          journeyType: 'cart_abandoned',
+          attributedAt: { $gte: from, $lte: to },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$amount' },
+          orderCount: { $sum: 1 },
+          orderKeys: { $addToSet: '$orderKey' },
+        },
+      },
+    ]).exec().catch(() => []),
   ]);
+
+  const journeyCartRevenue = journeyCartRevenueResult?.[0] || { totalRevenue: 0, orderCount: 0, orderKeys: [] };
 
   let totalAbandoned = 0;
   let recoveredCarts = 0;
@@ -525,9 +641,15 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
   };
 
   const rows = [];
+  const chartBuckets = includeChartBuckets ? new Map() : null;
+  const _matchedOrderIds = new Set();
 
   for (const lead of cohort) {
     const matchedOrder = pickOrderForLead(lead, orderMaps);
+    if (matchedOrder) {
+      const mKey = matchedOrder.orderId || matchedOrder.orderNumber || matchedOrder._id;
+      if (mKey) _matchedOrderIds.add(String(mKey));
+    }
     const phoneKey = contactPhoneKey(lead.phoneNumber) || normalizePhoneKey(lead.phoneNumber);
     const attempt = attemptByPhone.get(phoneKey) || null;
 
@@ -581,6 +703,13 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
         matchedOrderId: matchedOrder?.orderId || matchedOrder?.orderNumber || null,
       });
     }
+
+    if (chartBuckets) {
+      const abAt = abandonDate(lead);
+      const bucketKey = chartBucketKey(abAt, chartBucketUnit);
+      const messaged = collectSentSteps(lead).size > 0;
+      bumpChartBucket(chartBuckets, bucketKey, { recovered, messaged });
+    }
   }
 
   recoveredCarts = Math.min(recoveredCarts, totalAbandoned);
@@ -602,6 +731,28 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
       Math.round((recoveredCarts / funnel.msg1Sent) * 10000) / 100;
   }
 
+  // Snapshot legacy-only totals before merging journey revenue
+  const legacyRevenue = revenueRecovered;
+  const legacyOrders = recoveredCarts;
+
+  // Merge journey cart-recovery revenue (additive, deduplicated by orderKey)
+  let journeyDeduplicatedRevenue = 0;
+  let journeyDeduplicatedOrders = 0;
+  if (journeyCartRevenue.totalRevenue > 0) {
+    const uniqueJourneyKeys = (journeyCartRevenue.orderKeys || []).filter(
+      (k) => !_matchedOrderIds.has(String(k))
+    );
+    if (uniqueJourneyKeys.length > 0) {
+      journeyDeduplicatedRevenue =
+        journeyCartRevenue.totalRevenue * (uniqueJourneyKeys.length / Math.max((journeyCartRevenue.orderKeys || []).length, 1));
+      journeyDeduplicatedOrders = uniqueJourneyKeys.length;
+      revenueRecovered += journeyDeduplicatedRevenue;
+      revenueRecoveredFromWhatsapp += journeyDeduplicatedRevenue;
+      whatsappRecovered += journeyDeduplicatedOrders;
+      recoveredCarts += journeyDeduplicatedOrders;
+    }
+  }
+
   const result = {
     totalAbandoned,
     recoveredCarts,
@@ -613,18 +764,33 @@ async function calculateRecoveryMetrics(clientId, options = {}) {
     recoveryRate,
     averageAbandonedCartValue,
     funnel,
+    journeyRevenue: {
+      total: journeyCartRevenue.totalRevenue || 0,
+      orders: journeyCartRevenue.orderCount || 0,
+    },
+    cartRecovery: {
+      total: { revenue: revenueRecovered, orders: recoveredCarts },
+      legacy: { revenue: legacyRevenue, orders: legacyOrders },
+      journey: { revenue: journeyDeduplicatedRevenue, orders: journeyDeduplicatedOrders },
+    },
     meta: {
       mode,
       from: from.toISOString(),
       to: to.toISOString(),
       timezone,
       computedAt: new Date().toISOString(),
-      version: 'ssot-cohort-v1',
+      version: 'ssot-cohort-v2',
     },
   };
 
   if (includeRows) {
     result.rows = rows;
+  }
+
+  if (includeChartBuckets && chartBuckets) {
+    result.chartBuckets = Array.from(chartBuckets.values()).sort((a, b) =>
+      a.date.localeCompare(b.date)
+    );
   }
 
   if (!bypassCache) {
@@ -639,6 +805,7 @@ module.exports = {
   isRecovered,
   buildAbandonCohort,
   buildOrderContactMap,
+  pickOrderForLead,
   sumRecoveredRevenue,
   abandonDate,
   isRecoveredLead,

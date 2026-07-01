@@ -54,7 +54,7 @@ router.get('/:clientId', protect, apiCache(90), async (req, res) => {
         id: "abandoned_carts", type: "alert", icon: "🛒",
         title: `${get(abandons, 0)} cart${get(abandons,0) > 1 ? "s" : ""} abandoned`,
         detail: "Recovery messages queued. Manual nudge can boost recovery 23%.",
-        action: { label: "View Carts", path: "/audience-hub?tab=cart-recovery" }
+        action: { label: "View Carts", path: "/journeys?view=cart-leads" }
       });
     }
     

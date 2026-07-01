@@ -1311,6 +1311,8 @@ function encryptSubDocs(doc) {
   if (doc.payuMerchantSalt) doc.payuMerchantSalt = enc(doc.payuMerchantSalt);
   if (doc.phonepeSaltKey) doc.phonepeSaltKey = enc(doc.phonepeSaltKey);
   if (doc.emailAppPassword) doc.emailAppPassword = enc(doc.emailAppPassword);
+  if (doc.gmailRefreshToken) doc.gmailRefreshToken = enc(doc.gmailRefreshToken);
+  if (doc.gmailAccessToken) doc.gmailAccessToken = enc(doc.gmailAccessToken);
   if (doc.amazonConfig?.refreshToken) {
     doc.amazonConfig.refreshToken = enc(doc.amazonConfig.refreshToken);
   }
@@ -1405,7 +1407,8 @@ function encryptUpdateQuery(update) {
     'whatsappToken', 'metaCatalogAccessToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
     'instagramAppSecret', 'igAccessToken', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
-    'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword', 'whatsappRegistrationPin'
+    'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword', 'whatsappRegistrationPin',
+    'gmailRefreshToken', 'gmailAccessToken'
   ];
 
   for (const path of encPaths) {

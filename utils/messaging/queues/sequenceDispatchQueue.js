@@ -26,10 +26,18 @@ async function enqueueSequenceStepJob(payload, opts = {}) {
   const q = getSequenceDispatchQueue();
   if (!q) throw new Error('sequence_dispatch_queue_unavailable');
   const jobId = sequenceStepJobId(payload.sequenceId, payload.stepIdx);
-  return q.add('dispatch', payload, {
-    jobId,
-    delay: opts.delay || 0,
-  });
+  try {
+    return await q.add('dispatch', payload, {
+      jobId,
+      delay: opts.delay || 0,
+    });
+  } catch (err) {
+    const msg = String(err?.message || '').toLowerCase();
+    if (msg.includes('already exists') || err?.name === 'JobIdAlreadyExistsError') {
+      return null;
+    }
+    throw err;
+  }
 }
 
 module.exports = {

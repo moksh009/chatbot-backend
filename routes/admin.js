@@ -1289,18 +1289,24 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     if (waPatchRequested) {
       const { normalizeMetaId } = require('../utils/meta/whatsappMetaValidate');
+      const {
+        WHATSAPP_CREDENTIAL_SELECT,
+        resolveWhatsAppCredentials,
+      } = require('../utils/meta/clientWhatsAppCreds');
       const existing = await Client.findOne({ clientId: targetClientId })
-        .select('phoneNumberId wabaId whatsappToken clientId name platformVars')
+        .select(WHATSAPP_CREDENTIAL_SELECT)
         .lean();
 
       if (!existing) {
         return res.status(404).json({ success: false, message: 'Client not found' });
       }
 
+      const resolvedExisting = resolveWhatsAppCredentials(existing);
+
       const effPid =
         phoneNumberId !== undefined
           ? normalizeMetaId(phoneNumberId)
-          : normalizeMetaId(existing.phoneNumberId);
+          : normalizeMetaId(resolvedExisting.phoneNumberId);
 
       let effTok = '';
       if (
@@ -1310,15 +1316,13 @@ router.patch('/my-settings', protect, async (req, res) => {
       ) {
         effTok = String(whatsappToken).trim();
       } else {
-        try {
-          effTok = decrypt(existing.whatsappToken || '') || '';
-        } catch (_) {
-          effTok = '';
-        }
+        effTok = String(resolvedExisting.token || '').trim();
       }
 
       const effWaba =
-        wabaId !== undefined ? normalizeMetaId(wabaId) : normalizeMetaId(existing.wabaId);
+        wabaId !== undefined
+          ? normalizeMetaId(wabaId)
+          : normalizeMetaId(resolvedExisting.wabaId);
 
       if (!effPid || !effTok) {
         return res.status(400).json({
@@ -2397,21 +2401,30 @@ router.get('/templates/sync/:clientId', protect, async (req, res) => {
             return res.status(401).json({ message: "Not authorized. Provide key or login." });
         }
 
-        const client = await Client.findOne({ clientId });
+        const {
+          WHATSAPP_CREDENTIAL_SELECT,
+          getEffectiveWhatsAppAccessToken,
+          getEffectiveWhatsAppWabaId,
+        } = require('../utils/meta/clientWhatsAppCreds');
+        const client = await Client.findOne({ clientId })
+          .select(WHATSAPP_CREDENTIAL_SELECT)
+          .lean();
         if (!client) return res.status(404).json({ error: 'Client not found' });
-        
-        if (!client.wabaId || !client.whatsappToken) {
+
+        const token = getEffectiveWhatsAppAccessToken(client);
+        const waba = getEffectiveWhatsAppWabaId(client);
+        if (!waba || !token) {
             return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing.' });
         }
 
         log.info(`Syncing templates for ${clientId} via Meta API...`);
-        const token = decrypt(client.whatsappToken);
-        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?limit=100`;
+        const url = `https://graph.facebook.com/v21.0/${waba}/message_templates?limit=100`;
         const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const approvedTemplates = response.data.data.filter(t => t.status === 'APPROVED');
-        client.syncedMetaTemplates = approvedTemplates;
-        await client.save();
+        const clientDoc = await Client.findOne({ clientId });
+        clientDoc.syncedMetaTemplates = approvedTemplates;
+        await clientDoc.save();
         
         res.json({ success: true, count: approvedTemplates.length, data: approvedTemplates });
     } catch (err) {
@@ -2425,21 +2438,30 @@ router.get('/flows/sync/:clientId', protect, async (req, res) => {
     try {
         let { clientId } = req.params;
         if (clientId.startsWith(':')) clientId = clientId.substring(1);
-        const client = await Client.findOne({ clientId });
+        const {
+          WHATSAPP_CREDENTIAL_SELECT,
+          getEffectiveWhatsAppAccessToken,
+          getEffectiveWhatsAppWabaId,
+        } = require('../utils/meta/clientWhatsAppCreds');
+        const client = await Client.findOne({ clientId })
+          .select(WHATSAPP_CREDENTIAL_SELECT)
+          .lean();
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
-        if (!client.wabaId || !client.whatsappToken) {
+        const token = getEffectiveWhatsAppAccessToken(client);
+        const waba = getEffectiveWhatsAppWabaId(client);
+        if (!waba || !token) {
             return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing.' });
         }
 
         log.info(`Syncing flows for ${clientId}...`);
-        const token = decrypt(client.whatsappToken);
-        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/flows?limit=100`;
+        const url = `https://graph.facebook.com/v21.0/${waba}/flows?limit=100`;
         const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const flows = response.data.data || [];
-        client.syncedMetaFlows = flows;
-        await client.save();
+        const clientDoc = await Client.findOne({ clientId });
+        clientDoc.syncedMetaFlows = flows;
+        await clientDoc.save();
         
         res.json({ success: true, count: flows.length, flows });
     } catch (err) {
@@ -2737,33 +2759,37 @@ router.post('/test-whatsapp', protect, async (req, res) => {
   try {
     let { phoneNumberId, whatsappToken, wabaId, clientId: bodyClientId } = req.body;
     const { normalizeMetaId } = require('../utils/meta/whatsappMetaValidate');
+    const {
+      WHATSAPP_CREDENTIAL_SELECT,
+      resolveWhatsAppCredentials,
+    } = require('../utils/meta/clientWhatsAppCreds');
     const targetClientId =
       req.user.role === 'SUPER_ADMIN' && bodyClientId ? String(bodyClientId).trim() : req.user.clientId;
 
     let effPid = normalizeMetaId(phoneNumberId);
     let effTok = String(whatsappToken || '').trim();
     let effWaba = normalizeMetaId(wabaId);
+    const { looksLikeAppEncryptedToken } = require('../utils/meta/clientWhatsAppCreds');
+    const tokenIsMasked = effTok === '••••••••' || looksLikeAppEncryptedToken(effTok);
+    if (looksLikeAppEncryptedToken(effTok)) effTok = '';
 
-    if ((!effTok || effTok === '••••••••') && targetClientId) {
+    if ((!effTok || tokenIsMasked) && targetClientId) {
       const existing = await Client.findOne({ clientId: targetClientId })
-        .select('phoneNumberId wabaId whatsappToken')
+        .select(WHATSAPP_CREDENTIAL_SELECT)
         .lean();
       if (existing) {
-        if (!effPid) effPid = normalizeMetaId(existing.phoneNumberId);
-        if (!effWaba) effWaba = normalizeMetaId(existing.wabaId);
-        try {
-          const { decrypt } = require('../utils/core/encryption');
-          effTok = decrypt(existing.whatsappToken || '') || '';
-        } catch (_) {
-          effTok = '';
-        }
+        const resolved = resolveWhatsAppCredentials(existing);
+        if (!effPid) effPid = normalizeMetaId(resolved.phoneNumberId);
+        if (!effWaba) effWaba = normalizeMetaId(resolved.wabaId);
+        if (!effTok || tokenIsMasked) effTok = String(resolved.token || '').trim();
       }
     }
 
     if (!effPid || !effTok) {
       return res.status(400).json({
         success: false,
-        message: 'Phone Number ID and Access Token are required. Paste your permanent token if updating an existing connection.',
+        message:
+          'Phone Number ID and Access Token are required. Paste a new permanent Meta token (EAAG…) if your saved token expired.',
       });
     }
 
@@ -2926,18 +2952,42 @@ router.post('/whatsapp-webhook-ack', protect, async (req, res) => {
 // POST /admin/test-shopify — Validates Shopify Admin API credentials
 router.post('/test-shopify', protect, async (req, res) => {
   try {
-    const { shopDomain, shopifyAccessToken } = req.body;
-    if (!shopDomain || !shopifyAccessToken) {
-      return res.status(400).json({ success: false, message: 'Shop domain and access token are required.' });
+    let { shopDomain, shopifyAccessToken, clientId: bodyClientId } = req.body;
+    const { resolveShopifyCredentials } = require('../utils/shopify/resolveShopifyCredentials');
+    const targetClientId =
+      req.user.role === 'SUPER_ADMIN' && bodyClientId
+        ? String(bodyClientId).trim()
+        : req.user.clientId;
+
+    let domain = String(shopDomain || '')
+      .replace(/^https?:\/\//, '')
+      .split('/')[0];
+    let token = String(shopifyAccessToken || '').trim();
+    const tokenIsMasked = token === '••••••••';
+
+    if ((!domain || !token || tokenIsMasked) && targetClientId) {
+      const existing = await Client.findOne({ clientId: targetClientId })
+        .select('shopDomain shopifyAccessToken shopifyStores commerce.shopify')
+        .lean();
+      if (existing) {
+        const creds = resolveShopifyCredentials(existing);
+        if (!domain) domain = creds.shopDomain || '';
+        if (!token || tokenIsMasked) token = creds.tokenPlain || '';
+      }
     }
 
-    const cleanDomain = shopDomain.replace('https://', '').replace('http://', '').split('/')[0];
+    if (!domain || !token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Shop domain and access token are required. Connect via OAuth or paste an Admin API token.',
+      });
+    }
 
     const response = await axios.get(
-      `https://${cleanDomain}/admin/api/${shopifyAdminApiVersion}/shop.json`,
+      `https://${domain}/admin/api/${shopifyAdminApiVersion}/shop.json`,
       {
-        headers: { 'X-Shopify-Access-Token': shopifyAccessToken },
-        timeout: 10000
+        headers: { 'X-Shopify-Access-Token': token },
+        timeout: 10000,
       }
     );
 
@@ -2965,18 +3015,60 @@ router.post('/test-shopify', protect, async (req, res) => {
   }
 });
 
-// POST /admin/test-email — Validates SMTP email credentials
+// POST /admin/test-email — Validates SMTP email credentials (or Gmail OAuth when configured)
 router.post('/test-email', protect, async (req, res) => {
   try {
-    const { emailUser, emailAppPassword } = req.body;
-    if (!emailUser || !emailAppPassword) {
-      return res.status(400).json({ success: false, message: 'Email address and app password are required.' });
+    let { emailUser, emailAppPassword, clientId: bodyClientId } = req.body;
+    const { maybeDecryptSecret } = require('../utils/core/clientGeminiKey');
+    const targetClientId =
+      req.user.role === 'SUPER_ADMIN' && bodyClientId
+        ? String(bodyClientId).trim()
+        : req.user.clientId;
+
+    let user = String(emailUser || '').trim();
+    let pass = String(emailAppPassword || '').trim();
+    const passIsMasked = pass === '••••••••';
+
+    let existing = null;
+    if (targetClientId) {
+      existing = await Client.findOne({ clientId: targetClientId })
+        .select('emailUser emailAppPassword emailMethod gmailAddress gmailRefreshToken gmailAccessToken')
+        .lean();
+    }
+
+    if (existing?.emailMethod === 'gmail_oauth') {
+      const { resolveGmailAccessToken } = require('../utils/core/emailService');
+      const resolved = await resolveGmailAccessToken(existing);
+      if (resolved.accessToken) {
+        return res.json({
+          success: true,
+          message: `Gmail OAuth verified for ${existing.gmailAddress || existing.emailUser || user}`,
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: resolved.revoked
+          ? 'Gmail access was revoked. Reconnect under Settings → Connections.'
+          : 'Gmail OAuth token missing or expired. Reconnect your Google account.',
+      });
+    }
+
+    if (existing) {
+      if (!user) user = String(existing.emailUser || existing.gmailAddress || '').trim();
+      if (!pass || passIsMasked) pass = maybeDecryptSecret(existing.emailAppPassword);
+    }
+
+    if (!user || !pass) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address and app password are required. Paste a new Gmail App Password if updating SMTP.',
+      });
     }
 
     const nodemailer = require('nodemailer');
     const transporter = nodemailer.createTransport({
       service: 'gmail',
-      auth: { user: emailUser, pass: emailAppPassword },
+      auth: { user, pass },
       connectionTimeout: 8000,
     });
 

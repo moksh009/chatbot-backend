@@ -1376,6 +1376,7 @@ router.get('/funnel', protect, async (req, res) => {
       recoveryRate: recoveryMetrics.recoveryRate,
       messageEfficiencyRate: recoveryMetrics.funnel?.messageEfficiencyRate ?? 0,
       funnel: recoveryMetrics.funnel,
+      cartRecovery: recoveryMetrics.cartRecovery || null,
       range: { from, to, preset },
       conversionRate: totalLeads > 0 ? ((totalOrders / totalLeads) * 100).toFixed(2) : 0,
     });

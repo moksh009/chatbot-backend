@@ -33,12 +33,13 @@ async function writeProbeCache(clientId, channel, payload) {
 }
 
 async function probeWhatsApp(client) {
-  const token = decryptToken(client.whatsappToken || client.whatsapp?.accessToken || '');
+  const { resolveWhatsAppCredentials } = require('../meta/clientWhatsAppCreds');
+  const resolved = resolveWhatsAppCredentials(client);
+  const token = String(resolved.token || '').trim();
   if (!token || token.length < 8) return { tokenStatus: 'missing', ok: false };
 
-  // Use the WABA or phone-number endpoint — more accurate for System User tokens
-  const phoneNumberId = client.phoneNumberId || client.whatsapp?.phoneNumberId;
-  const wabaId = client.wabaId || client.whatsapp?.wabaId;
+  const phoneNumberId = resolved.phoneNumberId || client.phoneNumberId || client.whatsapp?.phoneNumberId;
+  const wabaId = resolved.wabaId || client.wabaId || client.whatsapp?.wabaId;
   const probeUrl = phoneNumberId
     ? `${graphUrl()}/${phoneNumberId}`
     : wabaId

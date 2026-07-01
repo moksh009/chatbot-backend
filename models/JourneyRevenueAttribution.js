@@ -32,5 +32,6 @@ const JourneyRevenueAttributionSchema = new mongoose.Schema(
 
 JourneyRevenueAttributionSchema.index({ clientId: 1, orderKey: 1 }, { unique: true });
 JourneyRevenueAttributionSchema.index({ clientId: 1, sourceFlowId: 1, attributedAt: -1 });
+JourneyRevenueAttributionSchema.index({ clientId: 1, journeyType: 1, attributedAt: -1 });
 
 module.exports = mongoose.model('JourneyRevenueAttribution', JourneyRevenueAttributionSchema);

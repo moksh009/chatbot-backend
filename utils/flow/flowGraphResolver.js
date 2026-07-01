@@ -418,6 +418,9 @@ function mergeFlowsListForDashboard(
     const id = f.flowId || f.id;
     if (!id) continue;
     const vf = vfById.get(String(id));
+    const hasPublishedGraph = (f.publishedNodes?.length || 0) > 0;
+    const vfActive = !!vf?.isActive;
+    const isLive = f.status === "PUBLISHED" || hasPublishedGraph || vfActive;
     const counts = resolveFlowListCounts(
       f.nodes,
       f.publishedNodes,
@@ -430,8 +433,8 @@ function mergeFlowsListForDashboard(
       name: f.name,
       platform: f.platform || "whatsapp",
       folderId: f.folderId || "",
-      isActive: f.status === "PUBLISHED",
-      status: f.status || "DRAFT",
+      isActive: isLive,
+      status: isLive ? "PUBLISHED" : "DRAFT",
       version: f.version || 1,
       ...counts,
       createdAt: f.createdAt,
@@ -449,16 +452,20 @@ function mergeFlowsListForDashboard(
       const row = byId.get(String(id));
       row.nodeCount = Math.max(row.nodeCount || 0, counts.nodeCount);
       row.edgeCount = Math.max(row.edgeCount || 0, counts.edgeCount);
-      if (!row.isActive && vf.isActive) row.isActive = true;
+      if (!row.isActive && vf.isActive) {
+        row.isActive = true;
+        row.status = "PUBLISHED";
+      }
       continue;
     }
+    const vfLive = !!vf.isActive;
     byId.set(String(id), {
       id,
       name: vf.name || "Untitled flow",
       platform: vf.platform || "whatsapp",
       folderId: vf.folderId || "",
-      isActive: !!vf.isActive,
-      status: vf.isActive ? "PUBLISHED" : "DRAFT",
+      isActive: vfLive,
+      status: vfLive ? "PUBLISHED" : "DRAFT",
       version: vf.version || 1,
       ...counts,
       createdAt: vf.createdAt,
@@ -489,6 +496,7 @@ function mergeFlowsListForDashboard(
 
 module.exports = {
   flattenFlowNodes,
+  pickGraphFromFlowDoc,
   resolveFlowListCounts,
   loadClientFlowSources,
   buildSlimRoutingBundles,

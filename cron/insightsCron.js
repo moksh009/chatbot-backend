@@ -78,7 +78,7 @@ async function generateInsightsForClient(clientId) {
       type: recoveryRate > 15 ? 'success' : 'warning',
       icon: recoveryRate > 15 ? '🎯' : '⚠️',
       message: `Cart recovery rate is ${recoveryRate}% (${totalRecovered}/${totalCartsSent} recovered). ${recoveryRate > 15 ? 'Great performance!' : 'Consider optimizing your recovery messages.'}`,
-      actionUrl: '/audience-hub?tab=cart-recovery',
+      actionUrl: '/journeys?view=cart-leads',
       estimatedValue: revenueRecovered,
       generatedAt: now
     });

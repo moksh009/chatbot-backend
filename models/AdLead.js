@@ -400,6 +400,8 @@ adLeadSchema.index({ clientId: 1, phoneNumber: 1 }, { unique: true });
 adLeadSchema.index({ clientId: 1, lastInteraction: -1 }); // Dashboard "Recent Activity" sorts
 adLeadSchema.index({ clientId: 1, tags: 1 });              // Segment tag filtering queries
 adLeadSchema.index({ clientId: 1, cartStatus: 1 });        // Abandoned cart recovery queries
+adLeadSchema.index({ clientId: 1, cartAbandonedAt: -1 });  // Abandoned cart workspace date range
+adLeadSchema.index({ clientId: 1, addToCartCount: 1, lastInteraction: -1 }); // Cart cohort fallback branch
 adLeadSchema.index({ clientId: 1, checkoutToken: 1 }, { sparse: true });
 adLeadSchema.index({ clientId: 1, cartToken: 1 }, { sparse: true });
 adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leaderboard queries

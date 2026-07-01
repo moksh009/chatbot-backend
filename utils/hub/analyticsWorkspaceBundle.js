@@ -36,7 +36,8 @@ async function buildCartRecoveryMetricsSection(clientId, days) {
     timezone,
     includeFunnel: true,
     includeRows: false,
-    reconcileFirst: true,
+    reconcileFirst: false,
+    persistOrderMap: false,
   });
   return { success: true, ...metrics };
 }

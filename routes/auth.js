@@ -263,11 +263,23 @@ const BOOTSTRAP_CLIENT_SELECT =
 
 function sanitizeClientForBootstrap(client) {
   if (!client) return {};
-  const out = { ...client };
-  out.hasGmailRefreshToken = !!out.gmailRefreshToken;
-  out.hasGmailAccessToken = !!out.gmailAccessToken;
-  delete out.gmailRefreshToken;
-  delete out.gmailAccessToken;
+  const { sanitize } = require('../utils/core/sanitize');
+  const out = sanitize(client);
+  out.hasGmailRefreshToken = !!client.gmailRefreshToken;
+  out.hasGmailAccessToken = !!client.gmailAccessToken;
+  out.hasWhatsappToken = !!(
+    client.whatsappToken ||
+    client.whatsapp?.accessToken ||
+    client.config?.whatsappToken ||
+    client.premiumAccessToken
+  );
+  out.hasShopifyAccessToken = !!(
+    client.shopifyAccessToken ||
+    client.commerce?.shopify?.accessToken ||
+    (Array.isArray(client.shopifyStores) && client.shopifyStores.some((s) => s?.accessToken))
+  );
+  out.hasEmailAppPassword = !!client.emailAppPassword;
+  out.hasGeminiKey = !!(client.geminiApiKey || client.ai?.geminiKey);
   return out;
 }
 

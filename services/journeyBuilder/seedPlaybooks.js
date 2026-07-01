@@ -365,7 +365,7 @@ async function seedPlaybooksForClient(clientId, { keys = null, maxTier = 2 } = {
       publishedEdges: [],
       journeyTrigger: playbook.journeyTrigger || { type: 'manual', filters: {} },
       journeyPolicies: { cancelOnReply: true },
-      isActive: true,
+      isActive: false,
     });
     created += 1;
   }

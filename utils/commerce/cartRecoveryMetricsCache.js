@@ -6,6 +6,8 @@
  */
 
 const recoveryMetricsMemCache = new Map();
+/** In-flight dedupe — parallel dashboard widgets share one compute. */
+const recoveryMetricsInflight = new Map();
 
 /** Cohort dashboard metrics — align with dashboard workspace apiCache(60). */
 const RECOVERY_METRICS_CACHE_TTL_MS = 90_000;
@@ -14,10 +16,30 @@ function buildRecoveryMetricsCacheKey(clientId, options, resolvedRange) {
   const mode = options.mode === 'activity' ? 'activity' : 'cohort';
   const includeFunnel = options.includeFunnel !== false ? '1' : '0';
   const includeRows = options.includeRows === true ? '1' : '0';
+  const includeChartBuckets = options.includeChartBuckets === true ? '1' : '0';
+  const chartBucketUnit = options.chartBucketUnit || 'day';
   const from = resolvedRange?.from instanceof Date ? resolvedRange.from.toISOString() : '';
   const to = resolvedRange?.to instanceof Date ? resolvedRange.to.toISOString() : '';
   const timezone = resolvedRange?.timezone || 'Asia/Kolkata';
-  return `${clientId}:${mode}:${from}:${to}:${timezone}:${includeFunnel}:${includeRows}`;
+  return `${clientId}:${mode}:${from}:${to}:${timezone}:${includeFunnel}:${includeRows}:${includeChartBuckets}:${chartBucketUnit}`;
+}
+
+/**
+ * Coalesce concurrent calculateRecoveryMetrics calls with the same cache key.
+ */
+async function dedupeRecoveryMetricsCompute(cacheKey, compute) {
+  const existing = recoveryMetricsInflight.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = Promise.resolve()
+    .then(compute)
+    .finally(() => {
+      if (recoveryMetricsInflight.get(cacheKey) === promise) {
+        recoveryMetricsInflight.delete(cacheKey);
+      }
+    });
+  recoveryMetricsInflight.set(cacheKey, promise);
+  return promise;
 }
 
 function readRecoveryMetricsCache(key) {
@@ -61,4 +83,5 @@ module.exports = {
   writeRecoveryMetricsCache,
   invalidateRecoveryMetricsCache,
   shouldBypassRecoveryMetricsCache,
+  dedupeRecoveryMetricsCompute,
 };

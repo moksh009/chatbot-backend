@@ -5,7 +5,7 @@ const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
 const { intentFromTemplateCategory } = require('../utils/messaging/envelopeHelpers');
-const { transitionSequenceStep } = require('../utils/messaging/transitions/sequenceStepTransition');
+const { transitionSequenceStep, tryTransitionSequenceStep, readSequenceStepStatus } = require('../utils/messaging/transitions/sequenceStepTransition');
 const { acquire, release } = require('../utils/messaging/concurrency/tenantConcurrencyGate');
 const { startHeartbeat, stopHeartbeat } = require('../utils/messaging/concurrency/heartbeat');
 const { classifyEnvelopeOutcome } = require('../utils/messaging/dispatch/dispatchOutcomeHandler');
@@ -17,6 +17,8 @@ const {
   EMAIL_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
 const { buildJourneySequenceWhatsAppPayload } = require('../services/journeyBuilder/journeySequenceWhatsApp');
+const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
+const { journeyLog, journeyLogWarn, journeyLogError } = require('../utils/journeyBuilder/journeyPipelineLog');
 const log = require('../utils/core/logger')('SequenceDispatchWorker');
 const { logDispatchEvent } = require('../utils/messaging/dispatchEventLog');
 const { emitToClient } = require('../utils/core/socket');
@@ -101,26 +103,95 @@ async function maybeFinalizeSequence(sequenceId, clientId) {
   }
 }
 
-async function markStepSkipped(sequenceId, stepIdx, fromStatus, reason) {
-  const from = fromStatus === 'processing' ? 'processing' : fromStatus;
-  await transitionSequenceStep(sequenceId, stepIdx, from, 'skipped', {
+async function markStepSkipped(sequenceId, stepIdx, fromStatus, reason, meta = {}) {
+  const from = ['queued', 'retrying', 'processing'].includes(fromStatus) ? fromStatus : 'queued';
+  const result = await tryTransitionSequenceStep(sequenceId, stepIdx, from, 'skipped', {
     failureReason: reason,
     skipReason: reason,
     lockedBy: null,
     lockedAt: null,
   });
+  if (!result.ok) {
+    journeyLog('dispatch', 'skip transition conflict — step already moved', {
+      sequenceId: String(sequenceId),
+      stepIdx,
+      fromStatus: from,
+      reason,
+      ...meta,
+    });
+    return false;
+  }
+  journeyLog('dispatch', 'step skipped', {
+    sequenceId: String(sequenceId),
+    stepIdx,
+    reason,
+    ...meta,
+  });
+  return true;
+}
+
+async function claimStepForProcessing(sequenceId, stepIdx, step) {
+  const fromStatus = step.status;
+  if (!['queued', 'retrying'].includes(fromStatus)) {
+    return { ok: false, reason: 'not_claimable', fromStatus };
+  }
+  return tryTransitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
+    lockedBy: WORKER_ID,
+    lockedAt: new Date(),
+    attempts: (step.attempts || 0) + 1,
+    lastAttemptAt: new Date(),
+  });
+}
+
+async function finalizeStepAndContinue(sequenceId, clientId) {
+  await maybeFinalizeSequence(sequenceId, clientId);
+  await enqueueDueStepsForSequence(sequenceId).catch((e) => {
+    journeyLogWarn('enqueue', 'post-step enqueue failed', {
+      sequenceId: String(sequenceId),
+      clientId,
+      error: e.message,
+    });
+  });
+  await emitSequenceProgress(clientId, sequenceId);
 }
 
 async function processSequenceDispatchJob(job) {
   const { sequenceId, stepIdx, clientId } = job.data;
+  const dispatchMeta = {
+    clientId,
+    sequenceId: String(sequenceId),
+    stepIdx,
+    jobId: job.id,
+  };
+
   const seq = await FollowUpSequence.findById(sequenceId);
-  if (!seq || seq.status !== 'active') return;
+  if (!seq || seq.status !== 'active') {
+    journeyLogWarn('dispatch', 'sequence missing or not active', dispatchMeta);
+    return;
+  }
   const step = seq.steps?.[stepIdx];
-  if (!step) return;
+  if (!step) {
+    journeyLogWarn('dispatch', 'step not found', dispatchMeta);
+    return;
+  }
 
   const stepType = String(step?.type || 'whatsapp').toLowerCase();
-  const fromStatus = step.status === 'pending' ? 'pending' : step.status;
-  if (!['queued', 'pending', 'retrying'].includes(fromStatus)) return;
+  if (!['queued', 'retrying'].includes(step.status)) {
+    journeyLog('dispatch', 'step not claimable — another worker finished or scheduler pending', {
+      ...dispatchMeta,
+      stepStatus: step.status,
+      stepType,
+    });
+    return;
+  }
+
+  journeyLog('dispatch', 'processing step', {
+    ...dispatchMeta,
+    stepType,
+    stepStatus: step.status,
+    templateName: step.templateName || null,
+    sendAt: step.sendAt || null,
+  });
 
   const lead = await AdLead.findById(seq.leadId).lean();
   const phone = normalizePhone(lead, seq);
@@ -134,42 +205,32 @@ async function processSequenceDispatchJob(job) {
     sequence: seq,
   });
   if (!conditionResult.proceed) {
-    await markStepSkipped(sequenceId, stepIdx, fromStatus, conditionResult.reason || 'condition_not_met');
-    await maybeFinalizeSequence(sequenceId, clientId);
-    await emitSequenceProgress(clientId, sequenceId);
+    const reason = conditionResult.reason || 'condition_not_met';
+    journeyLog('condition', 'step skipped by rule', { ...dispatchMeta, reason, stepType });
+    await markStepSkipped(sequenceId, stepIdx, step.status, reason, dispatchMeta);
+    await finalizeStepAndContinue(sequenceId, clientId);
     return;
   }
 
   if (stepType === 'flow_handoff') {
     if (phone.length < 10) {
-      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
-        lockedBy: WORKER_ID,
-        lockedAt: new Date(),
-        attempts: (step.attempts || 0) + 1,
-        lastAttemptAt: new Date(),
-      });
-      await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_phone');
-      await maybeFinalizeSequence(sequenceId, clientId);
-      await emitSequenceProgress(clientId, sequenceId);
+      await markStepSkipped(sequenceId, stepIdx, step.status, 'no_phone', dispatchMeta);
+      await finalizeStepAndContinue(sequenceId, clientId);
       return;
     }
 
     const targetFlowId = String(step.targetFlowId || '').trim();
     if (!targetFlowId) {
-      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
-        lockedBy: WORKER_ID,
-        lockedAt: new Date(),
-        attempts: (step.attempts || 0) + 1,
-        lastAttemptAt: new Date(),
-      });
-      await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_target_flow');
-      await maybeFinalizeSequence(sequenceId, clientId);
-      await emitSequenceProgress(clientId, sequenceId);
+      await markStepSkipped(sequenceId, stepIdx, step.status, 'no_target_flow', dispatchMeta);
+      await finalizeStepAndContinue(sequenceId, clientId);
       return;
     }
 
     const client = await Client.findOne({ clientId }).select(WHATSAPP_CREDENTIAL_SELECT).lean();
-    if (!client) return;
+    if (!client) {
+      journeyLogWarn('dispatch', 'client not found for flow handoff', dispatchMeta);
+      return;
+    }
 
     const gate = await acquire({ client, clientId, channel: 'whatsapp' });
     if (!gate.acquired) {
@@ -179,12 +240,14 @@ async function processSequenceDispatchJob(job) {
 
     let hbKey;
     try {
-      await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
-        lockedBy: WORKER_ID,
-        lockedAt: new Date(),
-        attempts: (step.attempts || 0) + 1,
-        lastAttemptAt: new Date(),
-      });
+      const claimed = await claimStepForProcessing(sequenceId, stepIdx, step);
+      if (!claimed.ok) {
+        journeyLog('dispatch', 'flow handoff claim lost to concurrent worker', {
+          ...dispatchMeta,
+          reason: claimed.reason || claimed.message,
+        });
+        return;
+      }
       hbKey = startHeartbeat({ workerId: WORKER_ID, type: 'sequence_step', recordId: sequenceId, stepIdx });
 
       const { executeJourneyFlowHandoff } = require('../services/journeyBuilder/journeyFlowHandoff');
@@ -201,7 +264,7 @@ async function processSequenceDispatchJob(job) {
         lockedAt: null,
         channel: 'whatsapp',
       });
-      await maybeFinalizeSequence(sequenceId, clientId);
+      journeyLog('send', 'flow handoff completed', { ...dispatchMeta, targetFlowId });
       logDispatchEvent('SequenceDispatch', 'sequence_flow_handoff', {
         clientId,
         sequenceId: String(sequenceId),
@@ -209,16 +272,15 @@ async function processSequenceDispatchJob(job) {
         targetFlowId,
         outcome: 'sent',
       });
-      await emitSequenceProgress(clientId, sequenceId);
+      await finalizeStepAndContinue(sequenceId, clientId);
     } catch (handoffErr) {
-      log.warn(`Flow handoff ${sequenceId}:${stepIdx}: ${handoffErr.message}`);
-      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+      journeyLogError('send', 'flow handoff failed', { ...dispatchMeta, error: handoffErr.message });
+      const failResult = await tryTransitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
         failureReason: handoffErr.message,
         lockedBy: null,
         lockedAt: null,
       });
-      await maybeFinalizeSequence(sequenceId, clientId);
-      await emitSequenceProgress(clientId, sequenceId);
+      if (failResult.ok) await finalizeStepAndContinue(sequenceId, clientId);
     } finally {
       if (hbKey) stopHeartbeat(hbKey);
       await release({ clientId, channel: 'whatsapp' });
@@ -229,35 +291,26 @@ async function processSequenceDispatchJob(job) {
   const stepChannel = resolveStepChannel(step);
 
   if (stepChannel === 'email' && (!email || !email.includes('@'))) {
-    await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
-      lockedBy: WORKER_ID,
-      lockedAt: new Date(),
-      attempts: (step.attempts || 0) + 1,
-      lastAttemptAt: new Date(),
-    });
-    await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_email');
-    await maybeFinalizeSequence(sequenceId, clientId);
-    await emitSequenceProgress(clientId, sequenceId);
+    journeyLogWarn('dispatch', 'skipped — lead has no email', { ...dispatchMeta, email: email || null });
+    await markStepSkipped(sequenceId, stepIdx, step.status, 'no_email', dispatchMeta);
+    await finalizeStepAndContinue(sequenceId, clientId);
     return;
   }
 
   if (stepChannel === 'whatsapp' && phone.length < 10) {
-    await transitionSequenceStep(sequenceId, stepIdx, fromStatus, 'processing', {
-      lockedBy: WORKER_ID,
-      lockedAt: new Date(),
-      attempts: (step.attempts || 0) + 1,
-      lastAttemptAt: new Date(),
-    });
-    await markStepSkipped(sequenceId, stepIdx, 'processing', 'no_phone');
-    await maybeFinalizeSequence(sequenceId, clientId);
-    await emitSequenceProgress(clientId, sequenceId);
+    journeyLogWarn('dispatch', 'skipped — lead has no valid phone', { ...dispatchMeta, phoneTail: phone.slice(-4) || null });
+    await markStepSkipped(sequenceId, stepIdx, step.status, 'no_phone', dispatchMeta);
+    await finalizeStepAndContinue(sequenceId, clientId);
     return;
   }
 
   const credSelect =
     stepChannel === 'email' ? EMAIL_CREDENTIAL_SELECT : WHATSAPP_CREDENTIAL_SELECT;
   const client = await Client.findOne({ clientId }).select(credSelect).lean();
-  if (!client) return;
+  if (!client) {
+    journeyLogWarn('dispatch', 'client not found', dispatchMeta);
+    return;
+  }
 
   const gate = await acquire({ client, clientId, channel: stepChannel });
   if (!gate.acquired) {
@@ -266,14 +319,17 @@ async function processSequenceDispatchJob(job) {
   }
 
   let hbKey;
+  let reachedProcessing = false;
   try {
-    const toProcessing = fromStatus === 'retrying' ? 'retrying' : fromStatus;
-    await transitionSequenceStep(sequenceId, stepIdx, toProcessing, 'processing', {
-      lockedBy: WORKER_ID,
-      lockedAt: new Date(),
-      attempts: (step.attempts || 0) + 1,
-      lastAttemptAt: new Date(),
-    });
+    const claimed = await claimStepForProcessing(sequenceId, stepIdx, step);
+    if (!claimed.ok) {
+      journeyLog('dispatch', 'send claim lost to concurrent worker', {
+        ...dispatchMeta,
+        reason: claimed.reason || claimed.message,
+      });
+      return;
+    }
+    reachedProcessing = true;
 
     hbKey = startHeartbeat({ workerId: WORKER_ID, type: 'sequence_step', recordId: sequenceId, stepIdx });
 
@@ -281,11 +337,48 @@ async function processSequenceDispatchJob(job) {
     let intent = 'marketing';
     if (stepChannel === 'email') {
       intent = 'marketing';
+
+      // Bug 6: load order so real order tokens (order_id, order_total, etc.)
+      // are substituted instead of falling back to sample placeholders.
+      let orderFlatContext = {};
+      const { sourceOrderId } = seq;
+      if (sourceOrderId) {
+        try {
+          const Order = require('../models/Order');
+          const orderDoc = await Order.findOne({
+            clientId,
+            $or: [
+              { shopifyOrderId: String(sourceOrderId) },
+              { orderId: String(sourceOrderId) },
+              { orderNumber: String(sourceOrderId) },
+            ],
+          }).lean();
+          if (orderDoc) {
+            orderFlatContext = {
+              order_id: String(orderDoc.shopifyOrderId || orderDoc.orderId || ''),
+              order_number: orderDoc.orderNumber || String(orderDoc.shopifyOrderId || ''),
+              order_total: orderDoc.totalPrice
+                ? `₹${Number(orderDoc.totalPrice).toLocaleString('en-IN')}`
+                : '',
+              order_currency: 'INR',
+              financial_status: orderDoc.financialStatus || '',
+              fulfillment_status: orderDoc.fulfillmentStatus || '',
+              tracking_number: orderDoc.trackingNumber || '',
+              tracking_url: orderDoc.trackingUrl || '',
+              carrier: orderDoc.carrier || '',
+            };
+          }
+        } catch (orderErr) {
+          log.warn(`[SequenceDispatch] email order load ${sequenceId}:${stepIdx}: ${orderErr.message}`);
+        }
+      }
+
       const merged = mergeEmailForLead(
         step.subject || 'Follow up',
         step.content || '',
         lead || { name: seq.name, email, phoneNumber: seq.phone },
-        client
+        client,
+        orderFlatContext
       );
       payload = {
         subject: merged.subject,
@@ -340,7 +433,12 @@ async function processSequenceDispatchJob(job) {
       if (result?.envelopeId) sentPatch.envelopeId = result.envelopeId;
 
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', sentPatch);
-      await maybeFinalizeSequence(sequenceId, clientId);
+      journeyLog('send', `${stepChannel} step sent`, {
+        ...dispatchMeta,
+        channel: stepChannel,
+        messageId: result?.messageId || null,
+        templateName: step.templateName || null,
+      });
 
       if (seq.sourceFlowId && stepChannel === 'whatsapp' && result?.messageId) {
         try {
@@ -396,25 +494,50 @@ async function processSequenceDispatchJob(job) {
         } catch (persistErr) {
           log.warn(`Sequence inbox persist ${sequenceId}:${stepIdx}: ${persistErr.message}`);
         }
+
+        if (seq.playbookKey && seq.playbookKey.includes('cart-recovery') && lead?._id) {
+          try {
+            const stepNum = stepIdx + 1;
+            await AdLead.findByIdAndUpdate(lead._id, {
+              $max: { recoveryStep: stepNum },
+              $push: { activityLog: { action: 'automation_nudge', details: `cart_step_${stepNum}_journey`, timestamp: new Date() } },
+            });
+          } catch (_cartStepErr) {
+            log.warn(`Journey cart step track ${sequenceId}:${stepIdx}: ${_cartStepErr.message}`);
+          }
+        }
       }
+      await finalizeStepAndContinue(sequenceId, clientId);
     } else if (outcome.action === 'skipped') {
-      await markStepSkipped(sequenceId, stepIdx, 'processing', outcome.reason || 'skipped');
-      await maybeFinalizeSequence(sequenceId, clientId);
+      await markStepSkipped(sequenceId, stepIdx, 'processing', outcome.reason || 'skipped', dispatchMeta);
+      await finalizeStepAndContinue(sequenceId, clientId);
     } else if (outcome.action === 'retry') {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'retrying', {
         nextAttemptAt: new Date(Date.now() + outcome.delaySec * 1000),
         failureReason: outcome.reason,
       });
+      journeyLogWarn('send', 'step scheduled for retry', {
+        ...dispatchMeta,
+        channel: stepChannel,
+        reason: outcome.reason,
+        delaySec: outcome.delaySec,
+      });
       await enqueueSequenceStepJob(
         { ...job.data, channel: stepChannel },
         { delay: outcome.delaySec * 1000 }
       );
+      await emitSequenceProgress(clientId, sequenceId);
     } else {
       await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
         failureReason: outcome.reason || 'failed',
         errorLog: outcome.reason,
       });
-      await maybeFinalizeSequence(sequenceId, clientId);
+      journeyLogError('send', 'step failed', {
+        ...dispatchMeta,
+        channel: stepChannel,
+        reason: outcome.reason || 'failed',
+      });
+      await finalizeStepAndContinue(sequenceId, clientId);
       logDispatchEvent('SequenceDispatch', 'sequence_step_failed', {
         clientId,
         sequenceId: String(sequenceId),
@@ -425,15 +548,27 @@ async function processSequenceDispatchJob(job) {
       }, 'warn');
     }
   } catch (err) {
-    log.warn(`Sequence job ${sequenceId}:${stepIdx}: ${err.message}`);
-    try {
-      await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+    if (err.code === 'transition_conflict') {
+      journeyLog('dispatch', 'concurrent worker won step — exiting safely', dispatchMeta);
+      return;
+    }
+    journeyLogError('dispatch', 'unexpected dispatch error', {
+      ...dispatchMeta,
+      error: err.message,
+      reachedProcessing,
+    });
+    if (reachedProcessing) {
+      const failResult = await tryTransitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
         failureReason: err.message || 'dispatch_error',
         errorLog: err.message,
       });
-      await maybeFinalizeSequence(sequenceId, clientId);
-    } catch (transitionErr) {
-      log.warn(`Sequence fail transition ${sequenceId}:${stepIdx}: ${transitionErr.message}`);
+      if (failResult.ok) await finalizeStepAndContinue(sequenceId, clientId);
+    } else {
+      const current = await readSequenceStepStatus(sequenceId, stepIdx);
+      journeyLogWarn('dispatch', 'error before claim — step left for scheduler', {
+        ...dispatchMeta,
+        stepStatus: current.stepStatus,
+      });
     }
   } finally {
     if (hbKey) stopHeartbeat(hbKey);

@@ -44,8 +44,35 @@ async function transitionSequenceStep(sequenceId, stepIdx, fromStatus, toStatus,
   return doc;
 }
 
+/**
+ * Non-throwing transition — returns { ok, doc?, code?, message? }.
+ * Use in workers/enqueue to avoid marking steps failed on benign races.
+ */
+async function tryTransitionSequenceStep(sequenceId, stepIdx, fromStatus, toStatus, patch = {}) {
+  try {
+    const doc = await transitionSequenceStep(sequenceId, stepIdx, fromStatus, toStatus, patch);
+    return { ok: true, doc };
+  } catch (err) {
+    if (err.code === 'transition_conflict' || err.code === 'invalid_transition') {
+      return { ok: false, code: err.code, message: err.message };
+    }
+    throw err;
+  }
+}
+
+async function readSequenceStepStatus(sequenceId, stepIdx) {
+  const doc = await FollowUpSequence.findById(sequenceId).select(`steps.${stepIdx}.status status`).lean();
+  if (!doc) return { sequenceStatus: null, stepStatus: null };
+  return {
+    sequenceStatus: doc.status,
+    stepStatus: doc.steps?.[stepIdx]?.status || null,
+  };
+}
+
 module.exports = {
   transitionSequenceStep,
+  tryTransitionSequenceStep,
+  readSequenceStepStatus,
   assertStepTransition,
   ALLOWED,
 };

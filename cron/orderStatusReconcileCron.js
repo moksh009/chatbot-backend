@@ -11,6 +11,8 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 const { processOrderStatusAutomations } = require('../utils/commerce/orderStatusAutomationHandler');
+const { resolveShopifyCredentials } = require('../utils/shopify/resolveShopifyCredentials');
+const { routeToJourneyBlueprints } = require('../services/journeyBuilder/journeyTriggerRouter');
 const log = require('../utils/core/logger')('OrderStatusReconcileCron');
 
 const LOOKBACK_HOURS = Number(process.env.ORDER_RECONCILE_LOOKBACK_HOURS || 24);
@@ -20,11 +22,15 @@ const CLIENT_BATCH = Number(process.env.ORDER_RECONCILE_CLIENT_BATCH || 30);
 async function reconcileClientOrders(client) {
   const since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
   const domain = String(client.shopDomain || '').replace(/^https?:\/\//, '').split('/')[0];
-  if (!domain || !client.shopifyAccessToken) return { processed: 0 };
+
+  // Bug 3: use resolveShopifyCredentials to decrypt the stored encrypted token
+  const creds = resolveShopifyCredentials(client);
+  const token = creds?.tokenPlain;
+  if (!domain || !token) return { processed: 0 };
 
   const url = `https://${domain}/admin/api/${shopifyAdminApiVersion}/orders.json`;
   const res = await axios.get(url, {
-    headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken },
+    headers: { 'X-Shopify-Access-Token': token },
     params: {
       status: 'any',
       updated_at_min: since,
@@ -47,6 +53,13 @@ async function reconcileClientOrders(client) {
       return null;
     });
     if (result?.processed) processed += result.processed;
+
+    // Bug 4: route to journey blueprints for orders that missed their webhook.
+    // OrderStatusSent dedup in journeyTriggerRouter prevents double-enrollment.
+    await routeToJourneyBlueprints(client.clientId, 'order_placed', payload)
+      .catch((e) =>
+        log.warn(`[OrderReconcile] journey routing failed for order ${payload?.id}: ${e.message}`)
+      );
   }
 
   return { processed, ordersChecked: orders.length };
@@ -59,7 +72,7 @@ async function runOrderStatusReconcileTick() {
       shopDomain: { $exists: true, $ne: '' },
       isActive: { $ne: false },
     })
-      .select('clientId shopDomain shopifyAccessToken commerceAutomations wizardFeatures')
+      .select('clientId shopDomain shopifyAccessToken shopifyStores commerce commerceAutomations wizardFeatures')
       .limit(CLIENT_BATCH)
       .lean();
 

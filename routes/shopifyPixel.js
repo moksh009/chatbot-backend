@@ -1100,7 +1100,7 @@ async function buildPixelStatusPayload(clientId, req) {
   for (const session of anonymousActivity) {
     if (session.hasContact) {
       session.identified = true;
-      session.cartRecoveryHref = '/audience-hub?tab=cart-recovery';
+      session.cartRecoveryHref = '/journeys?view=cart-leads';
     }
   }
 

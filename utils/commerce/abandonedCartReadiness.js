@@ -369,7 +369,7 @@ function buildChecklist(ctx) {
       detail: ctx.usesThirdPartyCheckout
         ? 'Using third-party checkout — pixel optional'
         : undefined,
-      href: '/audience-hub?tab=cart-recovery#cart-pixel',
+      href: '/journeys?view=cart-leads#cart-pixel',
       actionLabel: 'Install pixel',
     },
     {
@@ -381,7 +381,7 @@ function buildChecklist(ctx) {
           ? 'Webhook receiving events'
           : 'Paste webhook URL in GoKwik / Razorpay dashboard'
         : 'Not required (Shopify native checkout)',
-      href: '/audience-hub?tab=cart-recovery',
+      href: '/journeys?view=cart-leads',
     },
     {
       id: 'workers',

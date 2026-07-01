@@ -66,12 +66,28 @@ async function filtersMatch(clientId, blueprintFilters, triggerType, payload) {
 }
 
 /**
- * Write an OrderStatusSent dedup row for order-based journey triggers.
- * Uses upsert so the unique index prevents duplicates.
- * Returns { alreadySent: boolean }.
+ * Read-only check: has this order already been sent for this statusKey?
+ * Does NOT write anything — safe to call at the top of the loop.
  */
-async function checkAndMarkOrderSent(clientId, orderId, statusKey, phone) {
-  if (!orderId || !statusKey) return { alreadySent: false };
+async function isOrderAlreadySent(clientId, orderId, statusKey) {
+  if (!orderId || !statusKey) return false;
+  try {
+    const existing = await OrderStatusSent.findOne({ clientId, orderId, statusKey })
+      .select('_id')
+      .lean();
+    return !!existing;
+  } catch (err) {
+    log.warn(`[JourneyTriggerRouter] OrderStatusSent check error for ${orderId}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Write the OrderStatusSent dedup row AFTER a successful enrollment.
+ * Duplicate key errors are silently ignored (another concurrent job won).
+ */
+async function markOrderSent(clientId, orderId, statusKey, phone) {
+  if (!orderId || !statusKey) return;
   try {
     await OrderStatusSent.create({
       clientId,
@@ -80,13 +96,9 @@ async function checkAndMarkOrderSent(clientId, orderId, statusKey, phone) {
       channel: 'whatsapp',
       phone: phone || '',
     });
-    return { alreadySent: false };
   } catch (err) {
-    if (err?.code === 11000 || err?.name === 'MongoServerError') {
-      return { alreadySent: true };
-    }
-    log.warn(`[JourneyTriggerRouter] OrderStatusSent upsert error for ${orderId}: ${err.message}`);
-    return { alreadySent: false };
+    if (err?.code === 11000 || err?.name === 'MongoServerError') return; // already written — fine
+    log.warn(`[JourneyTriggerRouter] OrderStatusSent write error for ${orderId}: ${err.message}`);
   }
 }
 
@@ -151,8 +163,22 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
   const errors = [];
 
   if (!clientId || !triggerType || !payload) {
-    return { enrolled: 0, skipped, errors: ['Missing required args'] };
+    const out = { enrolled: 0, skipped, errors: ['Missing required args'] };
+    log.warn('[JourneyTriggerRouter] route skipped — missing args', { clientId, triggerType, hasPayload: !!payload });
+    return out;
   }
+
+  const isOrderTrigger = triggerType !== 'cart_abandoned';
+  const phone = isOrderTrigger ? extractPhone(payload) : String(payload?.phoneNumber || '').replace(/\D/g, '');
+  const orderId = isOrderTrigger ? extractOrderId(payload) : '';
+
+  log.info('[JourneyTriggerRouter] route start', {
+    clientId,
+    triggerType,
+    orderId: orderId || null,
+    phoneTail: phone ? phone.slice(-4) : null,
+    hasPhone: phone.length >= 8,
+  });
 
   let blueprints;
   try {
@@ -169,12 +195,21 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
   }
 
   if (!blueprints.length) {
+    log.info('[JourneyTriggerRouter] no matching blueprints', {
+      clientId,
+      triggerType,
+      hint: 'Publish a journey with this trigger type and Live toggle ON',
+    });
     return { enrolled: 0, skipped, errors };
   }
 
-  const isOrderTrigger = triggerType !== 'cart_abandoned';
-  const phone = isOrderTrigger ? extractPhone(payload) : String(payload?.phoneNumber || '').replace(/\D/g, '');
-  const orderId = isOrderTrigger ? extractOrderId(payload) : '';
+  log.info('[JourneyTriggerRouter] blueprints matched', {
+    clientId,
+    triggerType,
+    count: blueprints.length,
+    flowIds: blueprints.map((b) => b.flowId),
+  });
+
   const statusKey = TRIGGER_STATUS_KEY_MAP[triggerType] || `journey_${triggerType}`;
 
   for (const blueprint of blueprints) {
@@ -184,20 +219,28 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
     // Filter matching
     if (!(await filtersMatch(clientId, filters, triggerType, payload))) {
       skipped.push(`${flowId}:filter_mismatch`);
+      log.info('[JourneyTriggerRouter] skipped filter_mismatch', { clientId, flowId, triggerType });
       continue;
     }
 
     // Phone is required for WA sends
     if (!phone || phone.length < 8) {
       skipped.push(`${flowId}:no_phone`);
+      log.warn('[JourneyTriggerRouter] skipped no_phone', {
+        clientId,
+        flowId,
+        orderId,
+        hint: 'Shopify order must include customer phone on billing/shipping/customer',
+      });
       continue;
     }
 
-    // Order dedup: check OrderStatusSent
+    // Order dedup: read-only check BEFORE doing any work
     if (isOrderTrigger && orderId) {
-      const { alreadySent } = await checkAndMarkOrderSent(clientId, orderId, `${statusKey}_${flowId}`, phone);
+      const alreadySent = await isOrderAlreadySent(clientId, orderId, `${statusKey}_${flowId}`);
       if (alreadySent) {
         skipped.push(`${flowId}:already_sent`);
+        log.info('[JourneyTriggerRouter] skipped already_sent', { clientId, flowId, orderId });
         continue;
       }
     }
@@ -215,6 +258,7 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
 
     if (!compiled.steps.length) {
       skipped.push(`${flowId}:no_steps`);
+      log.warn('[JourneyTriggerRouter] skipped no_steps', { clientId, flowId });
       continue;
     }
 
@@ -225,6 +269,7 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
 
     if (!lead?._id) {
       skipped.push(`${flowId}:no_lead`);
+      log.warn('[JourneyTriggerRouter] skipped no_lead', { clientId, flowId, phoneTail: phone.slice(-4) });
       continue;
     }
 
@@ -235,11 +280,12 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
       const active = await hasActiveCartEnrollment(clientId, leadId, flowId);
       if (active) {
         skipped.push(`${flowId}:already_enrolled`);
+        log.info('[JourneyTriggerRouter] skipped already_enrolled', { clientId, flowId, leadId: String(leadId) });
         continue;
       }
     }
 
-    // Enroll
+    // Enroll — create the sequence FIRST, then write the dedup row
     try {
       const mappedSteps = compiled.steps.map((s) => ({ ...s, status: 'pending' }));
       const sequence = await FollowUpSequence.create({
@@ -260,16 +306,41 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
         steps: mappedSteps,
       });
 
-      await enqueueDueStepsForSequence(sequence).catch(() => {});
+      // Write dedup row only after successful enrollment so a failed create
+      // does not permanently block retries via the OrderStatusSent check above.
+      if (isOrderTrigger && orderId) {
+        await markOrderSent(clientId, orderId, `${statusKey}_${flowId}`, phone);
+      }
+
+      const queued = await enqueueDueStepsForSequence(sequence).catch((enqueueErr) => {
+        log.error(`[JourneyTriggerRouter] enqueue failed for ${flowId}: ${enqueueErr.message}`);
+        return 0;
+      });
       enrolled.push(flowId);
-      log.info(`[JourneyTriggerRouter] Enrolled lead ${String(leadId)} in ${flowId} (trigger: ${triggerType})`);
+      log.info('[JourneyTriggerRouter] enrolled', {
+        clientId,
+        flowId,
+        triggerType,
+        leadId: String(leadId),
+        sequenceId: String(sequence._id),
+        stepCount: mappedSteps.length,
+        firstSendAt: mappedSteps[0]?.sendAt || null,
+        queuedSteps: queued,
+      });
     } catch (err) {
       errors.push(`${flowId}:enroll_error:${err.message}`);
       log.error(`[JourneyTriggerRouter] Enroll failed for ${flowId}: ${err.message}`);
     }
   }
 
-  return { enrolled: enrolled.length, enrolledFlowIds: enrolled, skipped, errors };
+  const result = { enrolled: enrolled.length, enrolledFlowIds: enrolled, skipped, errors };
+  log.info('[JourneyTriggerRouter] route complete', {
+    clientId,
+    triggerType,
+    orderId: orderId || null,
+    ...result,
+  });
+  return result;
 }
 
 module.exports = {

@@ -240,24 +240,26 @@ async function getCartRecoveryChart(clientId, period = '30d') {
     from,
     to,
     includeFunnel: true,
-    includeRows: true,
+    includeRows: false,
+    includeChartBuckets: true,
+    chartBucketUnit: unit,
+    reconcileFirst: false,
+    persistOrderMap: false,
   });
 
-  for (const row of metrics.rows || []) {
-    if (!row.abandonedAt) continue;
-    const dayKey = formatDateStrIST(row.abandonedAt);
-    const key = unit === 'day' ? dayKey : bucketKey(startOfDayForDateStrIST(dayKey), unit);
+  for (const pt of metrics.chartBuckets || []) {
+    const key = unit === 'day' ? pt.date : bucketKey(startOfDayForDateStrIST(pt.date), unit);
     if (!map.has(key)) {
       map.set(key, { date: key, abandoned: 0, recovered: 0, stillAbandoned: 0, messaged: 0 });
     }
-    const pt = map.get(key);
-    pt.abandoned += 1;
-    if (row.recovered) pt.recovered += 1;
-    else pt.stillAbandoned += 1;
-    if (row.messaged) pt.messaged += 1;
+    const bucket = map.get(key);
+    bucket.abandoned += pt.abandoned;
+    bucket.recovered += pt.recovered;
+    bucket.stillAbandoned += pt.stillAbandoned;
+    bucket.messaged += pt.messaged;
   }
 
-  const totalMessaged = (metrics.rows || []).filter((r) => r.messaged).length;
+  const totalMessaged = (metrics.chartBuckets || []).reduce((sum, pt) => sum + (pt.messaged || 0), 0);
 
   return {
     period,

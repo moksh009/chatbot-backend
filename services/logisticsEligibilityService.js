@@ -259,6 +259,37 @@ async function assertShipmentRuleEligible(clientId, ruleId) {
   throw err;
 }
 
+const LOGISTICS_NATIVE_COVERED_RULE_IDS = new Set([
+  'sys_shipment_in_transit',
+  'sys_shipment_out_for_delivery',
+  'sys_shipment_attempted_delivery',
+  'sys_shipment_failure',
+]);
+
+function assertNotRedundantWithLogisticsPartner(clientLean, ruleId) {
+  if (!LOGISTICS_NATIVE_COVERED_RULE_IDS.has(ruleId)) return;
+
+  const partner = getPartnerDef(clientLean?.logisticsPartner);
+  const health = normalizeHealth(clientLean);
+
+  if (!health.directWebhookActive) return;
+  if (!partner.supportsDirectWebhook) return;
+
+  const status = ruleIdToShipmentStatus(ruleId);
+  if (!status) return;
+  if (!partner.directWebhookStatuses.includes(status)) return;
+
+  const err = new Error(
+    `Your logistics partner (${partner.label}) already sends "${status.replace(/_/g, ' ')}" updates natively via direct webhook. ` +
+    'Enabling this rule would send a duplicate WhatsApp message for the same event, ' +
+    'costing an extra conversation fee with no added value for the customer.'
+  );
+  err.code = 'LOGISTICS_PARTNER_NATIVE_REDUNDANCY';
+  err.status = 422;
+  err.settingsUrl = '/settings?tab=connections&section=logistics';
+  throw err;
+}
+
 module.exports = {
   buildWebhookUrl,
   normalizeHealth,
@@ -269,4 +300,6 @@ module.exports = {
   recordObservedShopifyStatus,
   recordDirectWebhookSeen,
   assertShipmentRuleEligible,
+  LOGISTICS_NATIVE_COVERED_RULE_IDS,
+  assertNotRedundantWithLogisticsPartner,
 };

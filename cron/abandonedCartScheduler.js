@@ -675,6 +675,19 @@ async function runAbandonedCartTick() {
                       const result = await _routeCart(client.clientId, 'cart_abandoned', lead).catch(() => null);
                       if (result?.enrolled > 0) {
                         _journeyCartEnrolledLeadIds.add(String(lead._id));
+                        await AdLead.findByIdAndUpdate(lead._id, {
+                          $max: { recoveryStep: 1 },
+                          $set: { recoveryStartedAt: new Date() },
+                          $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_1_journey', timestamp: new Date() } },
+                        });
+                        try {
+                          const { emitCartRecoverySent } = require('../utils/commerce/pixelSocketEmit');
+                          emitCartRecoverySent(client.clientId, {
+                            leadId: String(lead._id),
+                            step: 1,
+                            source: 'journey',
+                          });
+                        } catch (_emitErr) { /* non-critical */ }
                       }
                     }
                     if (_journeyCartEnrolledLeadIds.size > 0) {

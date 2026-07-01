@@ -107,6 +107,33 @@ async function validateCompiledSteps(steps, syncedMetaTemplates = [], clientId =
         status: template?.status || 'MISSING',
       });
     }
+
+    if (template && eligibility.ok) {
+      const bodyComp = (template.components || []).find(
+        (c) => String(c.type || '').toUpperCase() === 'BODY'
+      );
+      const bodyText = bodyComp?.text || '';
+      const placeholders = bodyText.match(/\{\{(\d+)\}\}/g) || [];
+      const requiredIndices = [...new Set(placeholders.map((m) => m.replace(/[{}]/g, '')))];
+      const bodyMappings = step.variableMappings?.body || step.variableMapping || {};
+      const unmapped = requiredIndices.filter(
+        (idx_) => !bodyMappings[idx_] || String(bodyMappings[idx_]).trim() === ''
+      );
+      if (unmapped.length > 0) {
+        const stepReasons = failures.find((f) => f.step === idx + 1);
+        const reason = `Template placeholder(s) {{${unmapped.join('}}, {{')}}} have no variable binding`;
+        if (stepReasons) {
+          stepReasons.reasons.push(reason);
+        } else {
+          failures.push({
+            step: idx + 1,
+            templateName,
+            reasons: [reason],
+            severity: 'warn',
+          });
+        }
+      }
+    }
   }
   return failures;
 }
@@ -656,13 +683,18 @@ router.post('/:clientId/:flowId/publish', protect, async (req, res) => {
 
 // POST /api/journeys/:clientId/:flowId/enroll
 router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
+  const enrollStarted = Date.now();
+  const { journeyLog, journeyLogWarn, journeyLogError } = require('../utils/journeyBuilder/journeyPipelineLog');
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, req.params.flowId)).lean();
+    const flowId = req.params.flowId;
+    journeyLog('enroll', 'manual enroll request', { clientId, flowId, leadCount: req.body?.leads?.length || 0 });
+
+    const flow = await WhatsAppFlow.findOne(journeyQuery(clientId, flowId)).lean();
     if (!flow) {
       return res.status(404).json({ success: false, message: 'Journey not found' });
     }
@@ -680,20 +712,46 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
 
     const nodes = flow.publishedNodes?.length ? flow.publishedNodes : flow.nodes || [];
     const edges = flow.publishedEdges?.length ? flow.publishedEdges : flow.edges || [];
-    const { steps, cancelOnReply } = compileGraphToSteps({ nodes, edges });
+    const { steps, cancelOnReply, warnings: compileWarnings } = compileGraphToSteps({ nodes, edges });
+
+    if (compileWarnings?.length) {
+      journeyLogWarn('compile', 'journey compile warnings', { clientId, flowId, warnings: compileWarnings });
+    }
+    if (!steps.length) {
+      journeyLogWarn('compile', 'no actionable steps in journey graph', { clientId, flowId });
+      return res.status(400).json({
+        success: false,
+        message: 'Journey has no send steps. Add WhatsApp or email nodes before enrolling.',
+        warnings: compileWarnings,
+      });
+    }
 
     const client = await Client.findOne({ clientId })
-      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected')
+      .select('_id syncedMetaTemplates gmailAddress gmailRefreshToken gmailAccessToken emailMethod googleConnected whatsappToken phoneNumberId wabaId whatsapp commerce.shopify')
       .lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const hasEmailSteps = steps.some((s) => String(s.type).toLowerCase() === 'email');
+    const hasWaSteps = steps.some((s) => String(s.type || 'whatsapp').toLowerCase() !== 'email');
+
     if (hasEmailSteps) {
       const { isWorkspaceEmailReady } = require('../utils/core/emailService');
       if (!isWorkspaceEmailReady(client)) {
+        journeyLogWarn('enroll', 'blocked — Gmail not connected', { clientId, flowId });
         return res.status(400).json({
           success: false,
           message: 'Connect Gmail in Settings before enrolling journeys with email steps.',
+        });
+      }
+    }
+
+    if (hasWaSteps) {
+      const { isWhatsAppOutboundReady } = require('../utils/meta/clientWhatsAppCreds');
+      if (!isWhatsAppOutboundReady(client)) {
+        journeyLogWarn('enroll', 'blocked — WhatsApp not ready', { clientId, flowId });
+        return res.status(400).json({
+          success: false,
+          message: 'Connect WhatsApp in Settings before enrolling journeys with WhatsApp steps.',
         });
       }
     }
@@ -719,8 +777,8 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
     const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
     const onlyEmailSteps = hasEmailSteps && steps.every((s) => String(s.type).toLowerCase() === 'email');
-    const hasWaSteps = steps.some((s) => String(s.type).toLowerCase() !== 'email');
 
+    let totalQueued = 0;
     for (const leadInput of leads) {
       let { leadId, phone, email } = leadInput;
       if (!leadId && phone) {
@@ -774,7 +832,26 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       });
 
       await sequence.save();
-      await enqueueDueStepsForSequence(sequence).catch(() => {});
+      const queued = await enqueueDueStepsForSequence(sequence).catch((enqueueErr) => {
+        journeyLogError('enqueue', 'failed after enroll save', {
+          clientId,
+          flowId,
+          sequenceId: String(sequence._id),
+          leadId: String(leadId),
+          error: enqueueErr.message,
+        });
+        return 0;
+      });
+      totalQueued += queued;
+      journeyLog('enroll', 'lead enrolled', {
+        clientId,
+        flowId,
+        sequenceId: String(sequence._id),
+        leadId: String(leadId),
+        stepCount: mappedSteps.length,
+        queuedSteps: queued,
+        firstSendAt: mappedSteps[0]?.sendAt || null,
+      });
       countMap.set(lid, activeCount + 1);
       enrolledSequences.push(sequence);
     }
@@ -783,9 +860,19 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       await incrementUsage(client._id, 'sequences', enrolledSequences.length);
     }
 
+    journeyLog('enroll', 'manual enroll complete', {
+      clientId,
+      flowId,
+      enrolled: enrolledSequences.length,
+      queuedSteps: totalQueued,
+      errors: errors.length,
+      durationMs: Date.now() - enrollStarted,
+    });
+
     res.json({
       success: true,
       enrolled: enrolledSequences.length,
+      queuedSteps: totalQueued,
       errors,
       sequences: enrolledSequences.map((s) => ({ _id: s._id, leadId: s.leadId })),
     });

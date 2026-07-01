@@ -54,7 +54,8 @@ async function buildCartRecoveryMetricsCohort(clientId, days = 30) {
     timezone,
     includeFunnel: true,
     includeRows: false,
-    reconcileFirst: true,
+    reconcileFirst: false,
+    persistOrderMap: false,
   });
   return { success: true, ...metrics };
 }

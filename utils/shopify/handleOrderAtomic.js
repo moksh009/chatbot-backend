@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const AdLead = require('../../models/AdLead');
+const FollowUpSequence = require('../../models/FollowUpSequence');
 const { attributeOrderToRecoveryAttempt } = require('../commerce/cartRecoveryAttemptService');
 const { ABANDONED_CART_TAG, RECOVERED_CART_TAG } = require('../../constants/cartRecoveryTags');
 const { getAppRedis } = require('../core/redisFactory');
@@ -114,6 +115,57 @@ async function findRecoveryLead(clientId, data, cleanPhone) {
 }
 
 /**
+ * Check if a journey cart-recovery sequence sent WA messages to this phone
+ * within the attribution window (7d). Returns the latest sent step info
+ * so handleOrderAtomic can set recoveredViaWhatsApp correctly when no legacy
+ * CartRecoveryAttempt exists.
+ *
+ * Also handles dual-path: if both legacy CRA and journey sequence exist,
+ * the caller compares lastSentAt timestamps to pick last-touch winner.
+ */
+async function findJourneyCartRecoveryTouch(clientId, phone, orderDate) {
+  if (!phone || phone.length < 8) return null;
+
+  const { ATTRIBUTION_WINDOW_HOURS } = require('../commerce/journeyAttributionHelper');
+  const windowMs = (ATTRIBUTION_WINDOW_HOURS || 168) * 60 * 60 * 1000;
+  const windowStart = new Date(orderDate.getTime() - windowMs);
+
+  const phoneVariants = indianPhoneLookupVariants(phone);
+  const phoneOr = phoneVariants.flatMap((v) => [{ phone: v }, { phone: `+${v}` }]);
+  if (!phoneOr.length) return null;
+
+  const sequences = await FollowUpSequence.find({
+    clientId,
+    sourceFlowId: { $ne: '' },
+    $or: phoneOr,
+    playbookKey: /cart-recovery/,
+  })
+    .select('sourceFlowId leadId playbookKey steps phone')
+    .lean();
+
+  if (!sequences.length) return null;
+
+  let best = null;
+  for (const seq of sequences) {
+    for (let i = 0; i < (seq.steps || []).length; i++) {
+      const step = seq.steps[i];
+      if (step.status !== 'sent' || !step.sentAt) continue;
+      const sentAt = new Date(step.sentAt);
+      if (sentAt < windowStart || sentAt > orderDate) continue;
+      if (!best || sentAt > best.lastSentAt) {
+        best = {
+          sequenceId: seq._id,
+          sourceFlowId: seq.sourceFlowId,
+          lastSentAt: sentAt,
+          stepIndex: i + 1,
+        };
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Atomic purchase side-effects: lead flags + automation cancel (Mongo transaction).
  */
 async function handleOrderAtomic(client, data, cleanPhone) {
@@ -156,12 +208,43 @@ async function handleOrderAtomic(client, data, cleanPhone) {
   let cancelled = { sequences: 0, campaignMessages: 0, scheduledMessages: 0 };
   const session = await mongoose.startSession();
 
+  let journeyTouch = null;
+
   try {
     await session.withTransaction(async () => {
       if (existingLead?._id) {
         recoveryAttempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
-        if (recoveryAttempt?.recoveredViaWhatsapp) recoveredViaWhatsApp = true;
-        if (recoveryAttempt?.recoveredViaWhatsapp) {
+
+        journeyTouch = await findJourneyCartRecoveryTouch(
+          client.clientId, cleanPhone, orderDate
+        );
+
+        if (recoveryAttempt?.recoveredViaWhatsapp && journeyTouch) {
+          // Dual-path: both legacy CRA and journey sent messages.
+          // Use last-touch — attribute to whichever sent more recently.
+          const craLastSent = recoveryAttempt.whatsappMessageSentAt
+            ? new Date(recoveryAttempt.whatsappMessageSentAt).getTime()
+            : 0;
+          const journeyLastSent = journeyTouch.lastSentAt.getTime();
+
+          if (journeyLastSent > craLastSent) {
+            recoveredViaWhatsApp = true;
+            recoveredByStep = journeyTouch.stepIndex || recoveryStep || 1;
+            log.info(`[HandleOrderAtomic] Dual-path: journey last-touch wins (${client.clientId})`);
+          } else {
+            recoveredViaWhatsApp = true;
+            const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
+              .map((t) => Number(t.followupNumber))
+              .filter((n) => n > 0);
+            recoveredByStep = sentSteps.length
+              ? Math.max(...sentSteps)
+              : recoveryStep > 0
+                ? recoveryStep
+                : 1;
+            log.info(`[HandleOrderAtomic] Dual-path: legacy CRA last-touch wins (${client.clientId})`);
+          }
+        } else if (recoveryAttempt?.recoveredViaWhatsapp) {
+          recoveredViaWhatsApp = true;
           const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
             .map((t) => Number(t.followupNumber))
             .filter((n) => n > 0);
@@ -170,6 +253,12 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             : recoveryStep > 0
               ? recoveryStep
               : 1;
+        } else if (journeyTouch) {
+          // No legacy CRA attribution, but journey sent cart-recovery messages
+          // within the attribution window — credit the journey.
+          recoveredViaWhatsApp = true;
+          recoveredByStep = journeyTouch.stepIndex || recoveryStep || 1;
+          log.info(`[HandleOrderAtomic] Journey-only cart recovery attribution (${client.clientId})`);
         }
       }
 
@@ -186,7 +275,7 @@ async function handleOrderAtomic(client, data, cleanPhone) {
         {
           $set: {
             isOrderPlaced: true,
-            cartStatus: recoveryAttempt?.recoveredViaWhatsapp ? 'recovered' : 'purchased',
+            cartStatus: recoveredViaWhatsApp ? 'recovered' : 'purchased',
             lastPurchaseDate: orderDate,
             lastOrderAt: orderDate,
             lastOrderId,
@@ -282,12 +371,14 @@ async function handleOrderAtomic(client, data, cleanPhone) {
     cancelled,
     recoveryMatched: !!existingLead,
     recoveryAttempt,
+    journeyTouch,
   };
 }
 
 module.exports = {
   handleOrderAtomic,
   findRecoveryLead,
+  findJourneyCartRecoveryTouch,
   claimOrderProcessing,
   releaseOrderClaim,
   orderDedupKey,

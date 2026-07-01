@@ -315,9 +315,17 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                  *  AWAIT step 1 before 2 so dedup pre-check sees ledger writes. */
                 // Journey Trigger Router — runs before SAC handler; writes OrderStatusSent dedup row
                 const { routeToJourneyBlueprints } = require('../services/journeyBuilder/journeyTriggerRouter');
-                await routeToJourneyBlueprints(client.clientId, 'order_placed', data).catch((e) =>
-                  log.warn(`[JourneyTriggerRouter] order_placed failed: ${e.message}`)
-                );
+                const journeyOrderPlaced = await routeToJourneyBlueprints(client.clientId, 'order_placed', data).catch((e) => {
+                  log.warn(`[JourneyTriggerRouter] order_placed failed: ${e.message}`);
+                  return { enrolled: 0, skipped: [], errors: [e.message] };
+                });
+                if (journeyOrderPlaced?.enrolled || journeyOrderPlaced?.skipped?.length || journeyOrderPlaced?.errors?.length) {
+                  log.info('[ShopifyWebhook] journey order_placed routing', {
+                    clientId: client.clientId,
+                    order: data?.name || data?.id,
+                    ...journeyOrderPlaced,
+                  });
+                }
 
                 await processOrderStatusAutomations({
                   client,
@@ -1182,9 +1190,11 @@ async function handleOrder(client, data, storeKey = '') {
         log.warn(`[RTOProtection] COD confirm hook: ${e.message}`)
     );
 
-    // 4. Track in DailyStat (use CartRecoveryAttempt attribution from handleOrderAtomic)
+    // 4. Track in DailyStat (use CartRecoveryAttempt + journey attribution from handleOrderAtomic)
     const recoveryAttempt = atomic.recoveryAttempt;
+    const journeyTouch = atomic.journeyTouch;
     const hadAbandonLead = Boolean(atomic.recoveryMatched);
+    const wasRecoveredViaWa = recoveryAttempt?.recoveredViaWhatsapp || !!journeyTouch;
     const statsUpdate = {
         orders: 1,
         revenue: parseFloat(data.total_price)
@@ -1192,11 +1202,16 @@ async function handleOrder(client, data, storeKey = '') {
     if (hadAbandonLead) {
         statsUpdate.cartsRecovered = 1;
         statsUpdate.cartRevenueRecovered = parseFloat(data.total_price);
-        if (recoveryAttempt?.recoveredViaWhatsapp) {
-            const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
-                .map((t) => Number(t.followupNumber))
-                .filter(Boolean);
-            const recoverStep = sentSteps.length ? Math.max(...sentSteps) : Number(lead?.recoveryStep || 1);
+        if (wasRecoveredViaWa) {
+            let recoverStep;
+            if (recoveryAttempt?.recoveredViaWhatsapp) {
+                const sentSteps = (recoveryAttempt.whatsappTemplatesSent || [])
+                    .map((t) => Number(t.followupNumber))
+                    .filter(Boolean);
+                recoverStep = sentSteps.length ? Math.max(...sentSteps) : Number(lead?.recoveryStep || 1);
+            } else {
+                recoverStep = journeyTouch?.stepIndex || Number(lead?.recoveryStep || 1);
+            }
             if (recoverStep >= 3) statsUpdate.recoveredViaStep3 = 1;
             else if (recoverStep >= 2) statsUpdate.recoveredViaStep2 = 1;
             else statsUpdate.recoveredViaStep1 = 1;
@@ -1206,7 +1221,7 @@ async function handleOrder(client, data, storeKey = '') {
 
     // 5. Feature 5: Shopify Order Tagging for WhatsApp attribution
     const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
-    if (orderTaggingEnabled && recoveryAttempt?.recoveredViaWhatsapp && data.id && client.shopifyAccessToken) {
+    if (orderTaggingEnabled && wasRecoveredViaWa && data.id && client.shopifyAccessToken) {
         try {
             const baseUrl = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}`;
             const existingOrderRes = await axios.get(`${baseUrl}/orders/${data.id}.json`, {
@@ -1250,9 +1265,11 @@ async function handleOrder(client, data, storeKey = '') {
 
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
 
-    if (recoveryAttempt) {
+    if (recoveryAttempt || journeyTouch) {
+        const via = wasRecoveredViaWa ? 'WhatsApp' : 'Organic';
+        const source = journeyTouch && !recoveryAttempt?.recoveredViaWhatsapp ? 'journey' : recoveryAttempt ? 'legacy' : 'unknown';
         log.info(
-            `[CartRecovery] ${recoveryAttempt.recoveredViaWhatsapp ? 'WhatsApp' : 'Organic'} recovery for ${cleanPhone}, order ${newOrder.orderId}`
+            `[CartRecovery] ${via} recovery (${source}) for ${cleanPhone}, order ${newOrder.orderId}`
         );
     }
 

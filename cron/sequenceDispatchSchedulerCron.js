@@ -15,7 +15,7 @@ async function runSequenceDispatchSchedulerTick() {
     steps: {
       $elemMatch: {
         sendAt: { $lte: now },
-        status: { $in: ['pending', 'retrying'] },
+        status: 'pending',
       },
     },
   })

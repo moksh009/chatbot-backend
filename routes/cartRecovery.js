@@ -25,7 +25,10 @@ router.get('/metrics', protect, verifyClientAccess, async (req, res) => {
     const mode = req.query.mode === 'activity' ? 'activity' : 'cohort';
     const includeFunnel = req.query.includeFunnel !== 'false';
     const includeRows = req.query.includeRows === 'true';
-    const reconcileFirst = req.query.reconcileFirst !== 'false';
+    const reconcileFirst =
+      req.query.reconcile === '1' ||
+      req.query.reconcileFirst === 'true' ||
+      req.query.reconcileFirst === '1';
 
     const metrics = await calculateRecoveryMetrics(clientId, {
       mode,
@@ -35,6 +38,7 @@ router.get('/metrics', protect, verifyClientAccess, async (req, res) => {
       includeFunnel,
       includeRows,
       reconcileFirst,
+      persistOrderMap: reconcileFirst,
     });
 
     res.json({ success: true, ...metrics });

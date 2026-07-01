@@ -64,7 +64,7 @@ function recommendActions({ product, classification, bottleneck, shopDomain, ret
         {
           label: 'Run cart recovery WhatsApp',
           type: 'recover',
-          link: '/audience-hub?tab=cart-recovery',
+          link: '/journeys?view=cart-leads',
           primary: false,
         },
         {

@@ -11,6 +11,7 @@ const {
   validateCartFollowupDelay,
   cartFollowupSyncPatch,
   CART_FOLLOWUP_MIN_MINUTES,
+  RETIRED_ORDER_MESSAGE_RULE_IDS,
 } = require('./commerceAutomationPresets');
 
 const COMMERCE_AUTOMATION_VERSION = 3;
@@ -672,9 +673,29 @@ async function ensureSystemAutomationsPersisted(clientConfig = {}) {
     withSystem,
     clientConfig?.syncedMetaTemplates || []
   );
-  const merged = pruneDuplicateOrderNotificationRules(
+  let merged = pruneDuplicateOrderNotificationRules(
     syncSystemOrderRulesFromNicheMap(linked, clientConfig?.nicheData || {})
   );
+
+  const beforeRetiredStrip = merged.length;
+  merged = merged.filter((rule) => {
+    if (RETIRED_ORDER_MESSAGE_RULE_IDS.has(rule.id)) {
+      log.warn(`[CommerceAutomations] Stripping retired rule ${rule.id} from client ${clientConfig.clientId || '?'}`);
+      return false;
+    }
+    return true;
+  });
+  if (merged.length < beforeRetiredStrip && clientConfig.clientId) {
+    await withMongoRetry(() =>
+      Client.findOneAndUpdate(
+        { clientId: clientConfig.clientId },
+        { $set: { commerceAutomations: merged } }
+      )
+    ).catch((err) => {
+      log.warn('retired rule cleanup persist failed', { clientId: clientConfig.clientId, error: err.message });
+    });
+  }
+
   const changed =
     merged.length !== base.length ||
     merged.some((r, i) => {
@@ -834,9 +855,15 @@ async function upsertAutomation(clientId, automation = {}) {
 
   if (activatingNow) {
     const { ruleIdToShipmentStatus } = require('../../constants/logisticsPartnerRegistry');
-    const { assertShipmentRuleEligible } = require('../../services/logisticsEligibilityService');
+    const { assertShipmentRuleEligible, assertNotRedundantWithLogisticsPartner } = require('../../services/logisticsEligibilityService');
     if (ruleIdToShipmentStatus(automation.id)) {
       await assertShipmentRuleEligible(clientId, automation.id);
+    }
+    const clientLeanForRedundancy = await Client.findOne({ clientId })
+      .select('logisticsPartner logisticsMode logisticsIntegration logisticsHealth')
+      .lean();
+    if (clientLeanForRedundancy) {
+      assertNotRedundantWithLogisticsPartner(clientLeanForRedundancy, automation.id);
     }
     if (wantsWhatsApp) {
       const tpl = automation.templateName || existing?.templateName || '';
@@ -1050,9 +1077,15 @@ async function toggleAutomation(clientId, automationId, { active } = {}) {
       }
     } else {
     const { ruleIdToShipmentStatus } = require('../../constants/logisticsPartnerRegistry');
-    const { assertShipmentRuleEligible } = require('../../services/logisticsEligibilityService');
+    const { assertShipmentRuleEligible, assertNotRedundantWithLogisticsPartner } = require('../../services/logisticsEligibilityService');
     if (ruleIdToShipmentStatus(automationId)) {
       await assertShipmentRuleEligible(clientId, automationId);
+    }
+    const clientLean = await Client.findOne({ clientId })
+      .select('logisticsPartner logisticsMode logisticsIntegration logisticsHealth')
+      .lean();
+    if (clientLean) {
+      assertNotRedundantWithLogisticsPartner(clientLean, automationId);
     }
     /** WS-2 guard: refuse to activate a rule whose template is not APPROVED
      *  on Meta. Without this, the webhook silently logs `not_approved` and
