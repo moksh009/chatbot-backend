@@ -24,7 +24,34 @@ const REMOVED_LEGACY_NAMES = new Set([
   "shipping_address",
 ]);
 
-const CORE_VARIABLE_REGISTRY = [
+/** Hidden from Flow Builder pickers / master registry UI — still resolved at runtime. */
+const FLOW_BUILDER_EXCLUDED_NAMES = new Set([
+  "brand_name",
+  "bot_name",
+  "brand_logo_url",
+  "support_phone",
+  "open_hours",
+  "currency",
+  "warranty_duration",
+  "google_review_url",
+  "referral_points",
+  "support_email",
+  "captured_email",
+  "cancel_reason",
+  "return_reason",
+  "warranty_serial",
+  "support_query",
+  "order_items",
+  "cart_items_count",
+  "payment_method",
+  "product_name",
+  "first_product_title",
+  "first_product_image",
+  "line_items_list",
+  "estimated_delivery",
+]);
+
+const RUNTIME_CORE_REGISTRY = [
   // ── BRAND ─────────────────────────────────────────────────────────────
   { name: "brand_name", label: "Brand name", category: "Brand",
     source: "client.platformVars.brandName", wizardField: "businessName",
@@ -126,6 +153,10 @@ const CORE_VARIABLE_REGISTRY = [
     source: "convo.metadata.payment_link", wizardField: null, fallback: "", preview: "https://rzp.io/..." },
 ];
 
+const CORE_VARIABLE_REGISTRY = RUNTIME_CORE_REGISTRY.filter(
+  (v) => !FLOW_BUILDER_EXCLUDED_NAMES.has(v.name)
+);
+
 const SHOPIFY_ACTION_REGISTRY = SHOPIFY_ACTION_VARIABLES.map((v) => ({
   name: v.name,
   label: v.label,
@@ -140,6 +171,7 @@ const SHOPIFY_ACTION_REGISTRY = SHOPIFY_ACTION_VARIABLES.map((v) => ({
 }));
 
 const VARIABLE_REGISTRY = [...CORE_VARIABLE_REGISTRY, ...SHOPIFY_ACTION_REGISTRY];
+const RESOLVABLE_VARIABLE_REGISTRY = [...RUNTIME_CORE_REGISTRY, ...SHOPIFY_ACTION_REGISTRY];
 
 function resolveSourcePath(path, sources) {
   if (!path || typeof path !== "string") return null;
@@ -150,4 +182,10 @@ function resolveSourcePath(path, sources) {
   return parts.reduce((o, k) => (o != null && o[k] !== undefined ? o[k] : null), obj);
 }
 
-module.exports = { VARIABLE_REGISTRY, resolveSourcePath, REMOVED_LEGACY_NAMES };
+module.exports = {
+  VARIABLE_REGISTRY,
+  RESOLVABLE_VARIABLE_REGISTRY,
+  FLOW_BUILDER_EXCLUDED_NAMES,
+  resolveSourcePath,
+  REMOVED_LEGACY_NAMES,
+};

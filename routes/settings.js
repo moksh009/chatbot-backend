@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
+const { VARIABLE_REGISTRY, FLOW_BUILDER_EXCLUDED_NAMES } = require('../utils/core/variableRegistry');
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -92,12 +93,46 @@ router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (re
       }
     }
 
-    // Check for duplicate variable names
+    // Check for duplicate variable names (case-insensitive) vs registry + existing
     const incoming = Array.isArray(customVariables) ? customVariables : [];
+    const registryNames = new Set(
+      VARIABLE_REGISTRY.map((v) => String(v.name).toLowerCase())
+    );
+    for (const name of FLOW_BUILDER_EXCLUDED_NAMES) {
+      registryNames.add(String(name).toLowerCase());
+    }
+
+    const clientBefore = await Client.findOne({ clientId }).select('customVariables').lean();
+    const existingCustom = Array.isArray(clientBefore?.customVariables) ? clientBefore.customVariables : [];
+    const existingNames = new Set(existingCustom.map((v) => String(v.name).toLowerCase()));
+
+    for (const v of incoming) {
+      if (!v?.name) continue;
+      const key = String(v.name).toLowerCase();
+      if (registryNames.has(key)) {
+        return res.status(409).json({
+          success: false,
+          message: 'This variable name already exists. Please choose a different name.',
+        });
+      }
+      const isNew = !existingNames.has(key);
+      if (isNew) {
+        const dupInIncoming = incoming.filter(
+          (x) => x?.name && String(x.name).toLowerCase() === key
+        );
+        if (dupInIncoming.length > 1) {
+          return res.status(409).json({
+            success: false,
+            message: 'This variable name already exists. Please choose a different name.',
+          });
+        }
+      }
+    }
+
     const deduped = [];
     for (const v of incoming) {
       if (!v.name) continue;
-      if (deduped.some(d => d.name === v.name)) continue; // skip duplicates within the incoming list
+      if (deduped.some((d) => d.name.toLowerCase() === String(v.name).toLowerCase())) continue;
       deduped.push(v);
     }
 

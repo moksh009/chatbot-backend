@@ -2,7 +2,7 @@
 
 const Order = require("../../models/Order");
 const { normalizePhone } = require('./helpers');
-const { VARIABLE_REGISTRY, resolveSourcePath, REMOVED_LEGACY_NAMES } = require('./variableRegistry');
+const { RESOLVABLE_VARIABLE_REGISTRY, VARIABLE_REGISTRY, resolveSourcePath, REMOVED_LEGACY_NAMES } = require('./variableRegistry');
 const {
   SHOPIFY_ACTION_VARIABLE_NAMES,
 } = require('../../constants/shopifyActionVariables');
@@ -119,7 +119,7 @@ async function buildVariableContext(client, phone, convo, lead) {
 
   const pv = clientLean.platformVars || {};
   const ctx = {};
-  for (const def of VARIABLE_REGISTRY) {
+  for (const def of RESOLVABLE_VARIABLE_REGISTRY) {
     if (def.shopifyActionOnly) continue;
     let v = null;
     if (def.source && def.source.startsWith("computed.")) {
