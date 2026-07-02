@@ -17,6 +17,8 @@ const {
   EMAIL_CREDENTIAL_SELECT,
 } = require('../utils/meta/clientWhatsAppCreds');
 const { buildJourneySequenceWhatsAppPayload, findOrderDocForSequence, orderDocToSendPayload } = require('../services/journeyBuilder/journeySequenceWhatsApp');
+const { assertSequenceContextForStep, stepNeedsContextResolution, markSequenceContextLifecycle } = require('../services/journeyBuilder/sequenceContextService');
+const { buildSendContext } = require('../services/templateVariableResolver');
 const MetaTemplate = require('../models/MetaTemplate');
 const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
 const { journeyLog, journeyLogWarn, journeyLogError } = require('../utils/journeyBuilder/journeyPipelineLog');
@@ -95,6 +97,7 @@ async function maybeFinalizeSequence(sequenceId, clientId) {
   if (hasPending) return;
 
   await FollowUpSequence.findByIdAndUpdate(sequenceId, { $set: { status: 'completed' } });
+  await markSequenceContextLifecycle(sequenceId, 'completed');
 
   if (fresh.leadId) {
     const count = await FollowUpSequence.countDocuments({
@@ -211,9 +214,94 @@ async function processSequenceDispatchJob(job) {
   });
   if (!conditionResult.proceed) {
     const reason = conditionResult.reason || 'condition_not_met';
+    if (reason === 'cod_prepaid_outcome_pending' || conditionResult.defer) {
+      journeyLog('condition', 'step deferred — COD prepaid outcome pending', {
+        ...dispatchMeta,
+        reason,
+        stepType,
+      });
+      await enqueueSequenceStepJob(
+        { ...job.data, channel: step.channel || stepType },
+        { delay: 60_000 }
+      );
+      return;
+    }
     journeyLog('condition', 'step skipped by rule', { ...dispatchMeta, reason, stepType });
     await markStepSkipped(sequenceId, stepIdx, step.status, reason, dispatchMeta);
     await finalizeStepAndContinue(sequenceId, clientId);
+    return;
+  }
+
+  const stepContextCheck = stepNeedsContextResolution(step)
+    ? assertSequenceContextForStep(seq, step)
+    : { ok: true };
+  if (!stepContextCheck.ok) {
+    journeyLogWarn('dispatch', 'step skipped — missing enrollment context', {
+      ...dispatchMeta,
+      reason: stepContextCheck.reason,
+      missing: stepContextCheck.missing,
+    });
+    await markStepSkipped(sequenceId, stepIdx, step.status, stepContextCheck.reason, dispatchMeta);
+    await finalizeStepAndContinue(sequenceId, clientId);
+    return;
+  }
+
+  if (stepType === 'cod_prepaid') {
+    const credSelect = WHATSAPP_CREDENTIAL_SELECT;
+    const client = await Client.findOne({ clientId }).select(credSelect).lean();
+    if (!client) {
+      journeyLogWarn('dispatch', 'client not found for cod_prepaid', dispatchMeta);
+      return;
+    }
+
+    const gate = await acquire({ client, clientId, channel: 'whatsapp' });
+    if (!gate.acquired) {
+      await enqueueSequenceStepJob({ ...job.data, channel: 'whatsapp' }, { delay: (gate.retryAfter || 2) * 1000 });
+      return;
+    }
+
+    let hbKey;
+    try {
+      const claimed = await claimStepForProcessing(sequenceId, stepIdx, step);
+      if (!claimed.ok) return;
+
+      hbKey = startHeartbeat({ workerId: WORKER_ID, type: 'sequence_step', recordId: sequenceId, stepIdx });
+
+      const { executeCodToPrepaidStep } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidExecutor');
+      const result = await executeCodToPrepaidStep({ client, clientId, step, seq, lead });
+
+      if (result.ok) {
+        await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'sent', {
+          sentAt: new Date(),
+          lockedBy: null,
+          lockedAt: null,
+          channel: 'whatsapp',
+        });
+        journeyLog('send', 'cod_prepaid step completed', {
+          ...dispatchMeta,
+          outcome: result.outcome,
+          conversionId: result.conversionId,
+        });
+      } else {
+        await markStepSkipped(sequenceId, stepIdx, step.status, result.reason || 'cod_prepaid_failed', dispatchMeta);
+        journeyLogWarn('send', 'cod_prepaid step failed', {
+          ...dispatchMeta,
+          reason: result.reason,
+        });
+      }
+      await finalizeStepAndContinue(sequenceId, clientId);
+    } catch (codErr) {
+      journeyLogError('send', 'cod_prepaid step error', { ...dispatchMeta, error: codErr.message });
+      const failResult = await tryTransitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
+        failureReason: codErr.message,
+        lockedBy: null,
+        lockedAt: null,
+      });
+      if (failResult.ok) await finalizeStepAndContinue(sequenceId, clientId);
+    } finally {
+      if (hbKey) stopHeartbeat(hbKey);
+      await release({ clientId, channel: 'whatsapp' });
+    }
     return;
   }
 
@@ -343,28 +431,21 @@ async function processSequenceDispatchJob(job) {
     if (stepChannel === 'email') {
       intent = 'marketing';
 
-      // Load order context for merge fields (sourceOrderId or latest order by phone).
       let orderFlatContext = {};
       try {
         const phoneForOrder = lead?.phoneNumber || seq?.phone || '';
         const orderDoc = await findOrderDocForSequence(clientId, seq, phoneForOrder);
-        if (orderDoc) {
-          orderFlatContext = {
-            order_id: String(orderDoc.shopifyOrderId || orderDoc.orderId || ''),
-            order_number: orderDoc.orderNumber || String(orderDoc.shopifyOrderId || ''),
-            order_total: orderDoc.totalPrice != null
-              ? `₹${Number(orderDoc.totalPrice).toLocaleString('en-IN')}`
-              : '',
-            order_currency: 'INR',
-            financial_status: orderDoc.financialStatus || '',
-            fulfillment_status: orderDoc.fulfillmentStatus || '',
-            tracking_number: orderDoc.trackingNumber || '',
-            tracking_url: orderDoc.trackingUrl || '',
-            carrier: orderDoc.carrier || '',
-          };
-        }
+        const orderPayload = orderDocToSendPayload(orderDoc);
+        orderFlatContext = await buildSendContext({
+          client,
+          phone: phoneForOrder,
+          lead,
+          order: orderPayload,
+          cart: lead?.cartSnapshot || lead?.capturedData?.cart || null,
+          sequenceContext: seq?.sequenceContext || null,
+        });
       } catch (orderErr) {
-        log.warn(`[SequenceDispatch] email order load ${sequenceId}:${stepIdx}: ${orderErr.message}`);
+        log.warn(`[SequenceDispatch] email context load ${sequenceId}:${stepIdx}: ${orderErr.message}`);
       }
 
       const merged = mergeEmailForLead(
@@ -407,11 +488,18 @@ async function processSequenceDispatchJob(job) {
             ? 'template_variables_missing'
             : buildErr.code === 'template_header_image_missing'
               ? 'template_header_image_missing'
-              : (buildErr.message || 'template_build_failed');
+              : String(buildErr.code || '').startsWith('missing_')
+                ? buildErr.code
+                : (buildErr.message || 'template_build_failed');
         journeyLogError('send', 'whatsapp payload build failed', {
           ...dispatchMeta,
           reason,
         });
+        if (String(reason).startsWith('missing_')) {
+          await markStepSkipped(sequenceId, stepIdx, step.status, reason, dispatchMeta);
+          await finalizeStepAndContinue(sequenceId, clientId);
+          return;
+        }
         await transitionSequenceStep(sequenceId, stepIdx, 'processing', 'failed', {
           failureReason: reason,
           errorLog: reason,

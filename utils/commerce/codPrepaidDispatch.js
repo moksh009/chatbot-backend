@@ -86,6 +86,35 @@ async function maybeDispatchCodPrepaidNudge({
   if (!client?.clientId || !phone) return { skipped: 'missing_context' };
   if (!isCodPrepaidEnabled(client)) return { skipped: 'feature_off' };
 
+  const numericOrderId = String(shopifyPayload?.id || orderDoc?.shopifyOrderId || '').replace(/\D/g, '');
+  if (numericOrderId) {
+    const CodToPrepaidConversion = require('../../models/CodToPrepaidConversion');
+    const journeyConversion = await CodToPrepaidConversion.findOne({
+      clientId: client.clientId,
+      originalCodOrderId: numericOrderId,
+    })
+      .select('_id')
+      .lean();
+    if (journeyConversion) return { skipped: 'journey_cod_prepaid' };
+
+    const FollowUpSequence = require('../../models/FollowUpSequence');
+    const activeJourney = await FollowUpSequence.findOne({
+      clientId: client.clientId,
+      phone,
+      status: 'active',
+      steps: {
+        $elemMatch: {
+          type: 'cod_prepaid',
+          status: { $in: ['pending', 'queued'] },
+        },
+      },
+      'sequenceContext.webhookSnapshot.shopifyOrderNumericId': numericOrderId,
+    })
+      .select('_id')
+      .lean();
+    if (activeJourney) return { skipped: 'journey_cod_prepaid' };
+  }
+
   const oid = orderDoc?._id || orderDoc?.id;
   let order = orderDoc;
   if (oid && typeof orderDoc?.codNudgeSentAt === 'undefined') {

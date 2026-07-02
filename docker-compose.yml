@@ -1,0 +1,13 @@
+# Local Redis for backend workers/queues (optional).
+# Requires Docker Desktop. Start: docker compose up -d redis
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

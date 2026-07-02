@@ -3,6 +3,7 @@
 const { VARIABLE_REGISTRY, resolveSourcePath } = require('../utils/core/variableRegistry');
 const { buildVariableContext, injectVariables } = require('../utils/core/variableInjector');
 const { formatLineItemsSummary } = require('../utils/commerce/orderLineItemEnrichment');
+const { applySequenceContextToSendContext } = require('../services/journeyBuilder/sequenceContextService');
 
 /**
  * Resolve {{variable_name}} placeholders using the master registry + live context.
@@ -16,9 +17,18 @@ async function resolveTemplateVariables(templateText, context) {
 /**
  * Build a flat context for a recipient (client + phone + optional order/cart hints).
  */
-async function buildSendContext({ client, phone, convo = null, lead = null, order = null, cart = null, extra = {} }) {
+async function buildSendContext({
+  client,
+  phone,
+  convo = null,
+  lead = null,
+  order = null,
+  cart = null,
+  extra = {},
+  sequenceContext = null,
+}) {
   const base = await buildVariableContext(client, phone, convo, lead);
-  const merged = { ...base, ...(extra || {}) };
+  let merged = { ...base, ...(extra || {}) };
 
   if (order) {
     const lineItems = order.line_items || order.lineItems || [];
@@ -78,6 +88,9 @@ async function buildSendContext({ client, phone, convo = null, lead = null, orde
       merged.store_url = merged.checkout_url;
     }
   }
+
+  // Per-enrollment session memory overrides DB-normalized values for this journey run.
+  merged = applySequenceContextToSendContext(merged, sequenceContext);
 
   return merged;
 }

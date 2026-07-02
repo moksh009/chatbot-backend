@@ -6,6 +6,9 @@ const assert = require('node:assert/strict');
 const {
   mergeFlowsListForDashboard,
   resolvePrimaryPublishedFlowId,
+  filterVisualFlowsForFlowBuilder,
+  collectJourneyFlowIds,
+  isJourneyBlueprintFlow,
 } = require('../../utils/flow/flowGraphResolver');
 
 describe('resolvePrimaryPublishedFlowId', () => {
@@ -107,6 +110,36 @@ describe('mergeFlowsListForDashboard live status', () => {
     const live = flows.filter((f) => f.isActive);
     assert.equal(live.length, 1);
     assert.equal(live[0].id, 'flow-a');
+  });
+
+  it('excludes journey blueprint ids leaked into visualFlows', () => {
+    const dbFlows = [
+      { flowId: 'wa-bot', name: 'Support bot', status: 'PUBLISHED', nodes: [], edges: [] },
+    ];
+    const visualFlows = [
+      { id: 'wa-bot', name: 'Support bot', nodes: [] },
+      { id: 'journey-cod', name: 'COD Journey', nodes: [{ id: 't', type: 'journey_trigger' }] },
+    ];
+    const journeyFlowIds = collectJourneyFlowIds({ whatsappFlows: dbFlows, visualFlows });
+    const { flows } = mergeFlowsListForDashboard(dbFlows, visualFlows, [], [], [], {
+      journeyFlowIds,
+    });
+    assert.equal(flows.length, 1);
+    assert.equal(flows[0].id, 'wa-bot');
+    const filtered = filterVisualFlowsForFlowBuilder(visualFlows, journeyFlowIds);
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].id, 'wa-bot');
+  });
+
+  it('detects corrupted standard flowType when graph has journey_trigger', () => {
+    const corrupted = {
+      flowId: 'flow_abc123',
+      flowType: 'standard',
+      nodes: [{ id: 't1', type: 'journey_trigger', data: { nodeType: 'journey_trigger' } }],
+    };
+    assert.equal(isJourneyBlueprintFlow(corrupted), true);
+    const ids = collectJourneyFlowIds({ whatsappFlows: [corrupted], visualFlows: [] });
+    assert.equal(ids.has('flow_abc123'), true);
   });
 });
 

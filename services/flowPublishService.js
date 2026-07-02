@@ -142,6 +142,11 @@ async function publishFlowForClient({
  * FB-P1-08: Align Client.visualFlows card + runtime flowNodes/flowEdges with WhatsAppFlow publish.
  */
 async function syncClientFlowGraphStores(client, flow, opts = {}) {
+  const { isJourneyBlueprintFlow } = require('../utils/flow/flowGraphResolver');
+  if (isJourneyBlueprintFlow(flow)) {
+    return;
+  }
+
   const {
     draftNodes = flow.nodes || [],
     draftEdges = flow.edges || [],

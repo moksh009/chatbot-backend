@@ -590,22 +590,25 @@ router.get('/', protect, apiCache(30), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const { resolvePrimaryPublishedFlowId } = require('../utils/flow/flowGraphResolver');
-    const [client, dbFlows] = await Promise.all([
+    const { resolvePrimaryPublishedFlowId, loadJourneyFlowIdSetForClient } = require('../utils/flow/flowGraphResolver');
+    const [client, dbFlows, journeyFlowIds] = await Promise.all([
       timer.time('getCachedClient', () => getCachedClient(clientId, 'flowFolders visualFlows clientId')),
       timer.time('WhatsAppFlow.find_lite', () =>
-        WhatsAppFlow.find({ clientId, flowType: { $nin: ['journey', 'post_purchase_journey'] } })
-          .select('flowId name platform folderId status version createdAt updatedAt nodes edges')
+        WhatsAppFlow.find({ clientId })
+          .select('flowId name platform folderId status version createdAt updatedAt nodes edges publishedNodes flowType journeyTrigger')
           .lean()
       ),
+      timer.time('journeyFlowIds', () => loadJourneyFlowIdSetForClient(clientId)),
     ]);
+
+    const botFlows = (dbFlows || []).filter((f) => f?.flowId && !journeyFlowIds.has(String(f.flowId)));
 
     const primaryId = resolvePrimaryPublishedFlowId({
       visualFlows: client?.visualFlows || [],
-      whatsappFlows: dbFlows,
+      whatsappFlows: botFlows,
     });
 
-    const flows = dbFlows
+    const flows = botFlows
       .filter((f) => f.flowId)
       .map((f) => ({
         id: f.flowId,
@@ -649,25 +652,52 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const { mergeFlowsListForDashboard } = require('../utils/flow/flowGraphResolver');
+    const {
+      mergeFlowsListForDashboard,
+      loadJourneyFlowIdSetForClient,
+      isJourneyBlueprintFlow,
+    } = require('../utils/flow/flowGraphResolver');
     const lite = req.query.lite === '1' || req.query.lite === 'true';
-    const flowFind = WhatsAppFlow.find({ clientId, flowType: { $nin: ['journey', 'post_purchase_journey'] } });
-    if (lite) {
-      flowFind.select(
-        'flowId name platform folderId status version createdAt updatedAt lastSyncedAt nodes edges publishedNodes publishedEdges'
-      );
-    }
     const clientSelect = lite
       ? 'flowFolders visualFlows clientId flowNodes flowEdges'
       : 'flowFolders flowNodes flowEdges visualFlows clientId';
-    const [client, dbFlows] = await Promise.all([
+    const [client, allDbFlows] = await Promise.all([
       timer.time('getCachedClient', () => getCachedClient(clientId, clientSelect)),
-      timer.time('WhatsAppFlow.find', () => flowFind.lean()),
+      timer.time('WhatsAppFlow.find', () =>
+        WhatsAppFlow.find({ clientId })
+          .select(
+            lite
+              ? 'flowId name platform folderId status version createdAt updatedAt lastSyncedAt nodes edges publishedNodes publishedEdges flowType journeyTrigger playbookKey'
+              : undefined
+          )
+          .lean()
+      ),
     ]);
     if (!client) {
       timer.finish('404');
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
+
+    const journeyFlowIds = await loadJourneyFlowIdSetForClient(clientId, {
+      visualFlows: client.visualFlows || [],
+    });
+
+    const pollutedVisual = (client.visualFlows || []).filter(
+      (vf) => vf?.id && journeyFlowIds.has(String(vf.id))
+    );
+    if (pollutedVisual.length) {
+      const Client = require('../models/Client');
+      const { filterVisualFlowsForFlowBuilder } = require('../utils/flow/flowGraphResolver');
+      const cleanedVisual = filterVisualFlowsForFlowBuilder(client.visualFlows || [], journeyFlowIds);
+      setImmediate(() => {
+        Client.updateOne({ clientId }, { $set: { visualFlows: cleanedVisual } }).catch((err) => {
+          console.warn(`[Flow API] visualFlows journey scrub failed for ${clientId}:`, err.message);
+        });
+      });
+      client.visualFlows = cleanedVisual;
+    }
+
+    const dbFlows = (allDbFlows || []).filter((f) => f?.flowId && !journeyFlowIds.has(String(f.flowId)));
 
     const { resolveFlowGraphByRef } = require('../utils/flow/flowGraphResolver');
     const sources = {
@@ -683,14 +713,20 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
       client.visualFlows || [],
       client.flowFolders || [],
       client.flowNodes || [],
-      client.flowEdges || []
+      client.flowEdges || [],
+      { journeyFlowIds }
     );
 
     const formattedFlows = [];
     for (const f of merged.flows || []) {
       if (!f?.id) continue;
+      if (journeyFlowIds.has(String(f.id))) continue;
+      const waDoc = dbFlows.find((d) => d.flowId === f.id)
+        || allDbFlows.find((d) => d.flowId === f.id);
       let row = {
         ...f,
+        flowType: waDoc?.flowType || 'standard',
+        isJourneyBlueprint: false,
         ...(lite
           ? {}
           : (() => {
@@ -923,6 +959,35 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
     const { flowId } = req.params;
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const {
+      isJourneyBlueprintFlow,
+      loadJourneyFlowIdSetForClient,
+    } = require('../utils/flow/flowGraphResolver');
+
+    const journeyFlowIds = await loadJourneyFlowIdSetForClient(clientId);
+    if (journeyFlowIds.has(String(flowId))) {
+      timer.finish('404 journey');
+      return res.status(404).json({
+        success: false,
+        message: 'This blueprint is a Journey — open it in Journey Hub, not Flow Builder.',
+        flowType: 'journey',
+        flowId,
+      });
+    }
+
+    const waProbe = await WhatsAppFlow.findOne({ clientId, flowId })
+      .select('flowId flowType nodes publishedNodes journeyTrigger')
+      .lean();
+    if (waProbe && isJourneyBlueprintFlow(waProbe)) {
+      timer.finish('404 journey probe');
+      return res.status(404).json({
+        success: false,
+        message: 'This blueprint is a Journey — open it in Journey Hub, not Flow Builder.',
+        flowType: waProbe.flowType || 'journey',
+        flowId,
+      });
+    }
 
     const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources, resolvePrimaryPublishedFlowId } = require('../utils/flow/flowGraphResolver');
 
@@ -961,6 +1026,21 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         lastSyncedAt: waDoc?.lastSyncedAt,
       };
       setCachedFlowGraph(clientId, flowId, flowPayload);
+    }
+
+    if (isJourneyBlueprintFlow({
+      flowId,
+      flowType: flowPayload?.flowType,
+      nodes: flowPayload?.nodes,
+      publishedNodes: flowPayload?.publishedNodes,
+    })) {
+      timer.finish('404 journey graph');
+      return res.status(404).json({
+        success: false,
+        message: 'This blueprint is a Journey — open it in Journey Hub, not Flow Builder.',
+        flowType: 'journey',
+        flowId,
+      });
     }
 
     const { countOrphanLayoutNodes } = require('../utils/flow/flowLayoutOrganize');

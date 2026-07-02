@@ -9,6 +9,10 @@ const {
   isEcoTemplateName,
   buildOrderContextForTemplate,
 } = require('../../utils/commerce/orderMessageTemplatePolicy');
+const {
+  assertOrderContextAvailable,
+  assertSequenceContextForStep,
+} = require('./sequenceContextService');
 const { getOrderMessageBlueprint } = require('../../constants/orderMessageWaBlueprints');
 const { resolveHeaderImageUrl } = require('../templateBrandOverrides');
 
@@ -238,11 +242,11 @@ function inferDefaultVariableMapping(components = []) {
 }
 
 /**
- * If the step has a URL button flagged for tracking, inject the tracked redirect
- * URL into the components array (replaces the last cta_url button component).
- * Only applies to dynamic URL buttons (variable in button URL).
+ * If the step has a URL button flagged for tracking, inject the checkout / tracked
+ * URL into button components (dynamic slots from buildMetaTemplateComponents, or
+ * static URL buttons appended from template definition).
  */
-function injectWaClickTrackingUrl(components, step, clientId, seqId) {
+function injectWaClickTrackingUrl(components, step, clientId, seqId, templateComponents = []) {
   if (!step.hasUrlButton) return components;
   const destination = step.urlButtonDestination;
   if (!destination) return components;
@@ -254,12 +258,47 @@ function injectWaClickTrackingUrl(components, step, clientId, seqId) {
     destination
   );
 
-  // Replace the URL in any cta_url button component
-  return (components || []).map((comp) => {
+  let result = (components || []).map((comp) => {
     if (String(comp.type || '').toUpperCase() !== 'BUTTON') return comp;
     if (String(comp.sub_type || '').toUpperCase() !== 'URL') return comp;
-    return { ...comp, parameters: [{ type: 'text', text: trackedUrl }] };
+    return {
+      ...comp,
+      index: comp.index != null ? String(comp.index) : '0',
+      parameters: [{ type: 'text', text: trackedUrl }],
+    };
   });
+
+  const existingIndices = new Set(
+    result
+      .filter((c) => String(c.type || '').toUpperCase() === 'BUTTON'
+        && String(c.sub_type || '').toUpperCase() === 'URL')
+      .map((c) => String(c.index ?? '0'))
+  );
+
+  for (const comp of templateComponents || []) {
+    if (String(comp.type || '').toUpperCase() !== 'BUTTONS' || !Array.isArray(comp.buttons)) {
+      continue;
+    }
+    let firstStaticInjected = false;
+    comp.buttons.forEach((btn, idx) => {
+      if (firstStaticInjected) return;
+      if (String(btn.type || '').toUpperCase() !== 'URL') return;
+      const url = String(btn.url || '');
+      if (url.includes('{{')) return;
+      const indexStr = String(idx);
+      if (existingIndices.has(indexStr)) return;
+      result.push({
+        type: 'button',
+        sub_type: 'url',
+        index: indexStr,
+        parameters: [{ type: 'text', text: trackedUrl }],
+      });
+      existingIndices.add(indexStr);
+      firstStaticInjected = true;
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -267,6 +306,13 @@ function injectWaClickTrackingUrl(components, step, clientId, seqId) {
  * Uses order/cart context when available (sourceOrderId or lead cart snapshot).
  */
 async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lead, seq }) {
+  const contextCheck = assertSequenceContextForStep(seq, step);
+  if (!contextCheck.ok) {
+    const err = new Error(contextCheck.reason || 'missing_sequence_context');
+    err.code = contextCheck.reason || 'missing_sequence_context';
+    throw err;
+  }
+
   const templateName = step.templateName;
   const { resolveTemplateForSend } = require('../templateResolver');
   const resolved = await resolveTemplateForSend(clientId, { name: templateName });
@@ -293,6 +339,7 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
   const useRegistryPath = Boolean(
     orderPayload
     || cartSnapshot
+    || seq?.sequenceContext?.webhookSnapshot
     || isEcoTemplateName(templateName)
     || mappingsNeedOrderContext(mappings)
     || mappings.header
@@ -303,6 +350,15 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
     )
   );
 
+  const orderContextCheck = assertOrderContextAvailable(seq, orderPayload, {
+    mappingsNeedOrder: mappingsNeedOrderContext(mappings),
+  });
+  if (!orderContextCheck.ok) {
+    const err = new Error(orderContextCheck.reason || 'missing_order_context');
+    err.code = orderContextCheck.reason || 'missing_order_context';
+    throw err;
+  }
+
   if (useRegistryPath) {
     const context = await buildSendContext({
       client,
@@ -310,6 +366,7 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
       lead,
       order: orderPayload,
       cart: cartSnapshot,
+      sequenceContext: seq?.sequenceContext || null,
       extra: {
         customVariableValues: step.customVariableValues || {},
         _customVariableValues: step.customVariableValues || {},
@@ -330,7 +387,7 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
       || resolveBlueprintHeaderImageUrl(templateComponents);
 
     let components = await buildMetaTemplateComponents(metaPayload, context, { headerImageUrl });
-    components = injectWaClickTrackingUrl(components, step, clientId, seq?._id);
+    components = injectWaClickTrackingUrl(components, step, clientId, seq?._id, templateComponents);
 
     if (templateRequiresImageHeader(templateComponents) && !componentHasImageHeader(components)) {
       const err = new Error('template_header_image_missing');
@@ -373,7 +430,7 @@ async function buildJourneySequenceWhatsAppPayload({ client, clientId, step, lea
   });
 
   let simpleComponents = mappedBody ? [mappedBody] : [];
-  simpleComponents = injectWaClickTrackingUrl(simpleComponents, step, clientId, seq?._id);
+  simpleComponents = injectWaClickTrackingUrl(simpleComponents, step, clientId, seq?._id, templateComponents);
 
   const expectedParams = countExpectedBodyParams(templateComponents);
   const actualParams = countBodyParameters(simpleComponents);
@@ -405,4 +462,5 @@ module.exports = {
   componentHasImageHeader,
   countExpectedBodyParams,
   countBodyParameters,
+  injectWaClickTrackingUrl,
 };

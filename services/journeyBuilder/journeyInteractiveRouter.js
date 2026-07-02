@@ -23,6 +23,7 @@
 const mongoose = require('mongoose');
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const log = require('../../utils/core/logger')('JourneyInteractiveRouter');
+const { markSequenceContextLifecycle } = require('./sequenceContextService');
 
 /** Regex for new journey button payloads: jrn_{enrollId}_{stepIdx}_{action} */
 const JRN_BUTTON_RE = /^jrn_([a-f0-9]{24})_(\d+)_([\w]+)$/i;
@@ -182,6 +183,7 @@ async function handleJourneyButtonTap(clientId, phone, buttonPayload) {
       sequence.cancelledReason = 'cod_cancelled_by_customer';
       sequence.cancelledAt = new Date();
       await sequence.save();
+      await markSequenceContextLifecycle(sequence._id, 'cancelled');
 
       log.info(`[JourneyInteractiveRouter] cod_cancel for enrollment ${enrollmentId} — order ${orderId}`);
       return { claimed: true, action: 'cod_cancel', cancelled: true };

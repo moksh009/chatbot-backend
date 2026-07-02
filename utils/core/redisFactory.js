@@ -6,18 +6,29 @@
 const Redis = require('ioredis');
 const log = require('./logger')('RedisFactory');
 
+/** Set REDIS_DISABLED=true for local API-only dev when Redis is not installed. */
+function isRedisDisabled() {
+  const flag = String(process.env.REDIS_DISABLED || '').toLowerCase();
+  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+  const url = String(process.env.REDIS_URL || '').trim().toLowerCase();
+  if (url === 'false' || url === 'disabled' || url === 'off' || url === 'none') return true;
+  return false;
+}
+
 function shouldSkipInternalRedis() {
   const url = process.env.REDIS_URL || '';
   return url.includes('red-') && !process.env.RENDER;
 }
 
 function resolveAppRedisUrl() {
+  if (isRedisDisabled()) return null;
   if (shouldSkipInternalRedis()) return null;
   if (process.env.NODE_ENV === 'production' && !process.env.REDIS_URL) return null;
   return process.env.REDIS_URL || 'redis://localhost:6379';
 }
 
 function resolveQueueRedisUrl() {
+  if (isRedisDisabled()) return null;
   if (shouldSkipInternalRedis()) return null;
   return process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 }
@@ -26,9 +37,39 @@ let appRedisSingleton = null;
 let queueRedisSingleton = null;
 let appRedisTestOverride = null;
 let queueRedisTestOverride = undefined;
+let redisDisabledLogged = false;
+const errorThrottle = new Map();
+
+function logRedisErrorThrottled(label, err) {
+  const key = `${label}:${err?.code || err?.message || 'unknown'}`;
+  const now = Date.now();
+  const last = errorThrottle.get(key) || 0;
+  if (now - last < 30_000) return;
+  errorThrottle.set(key, now);
+  const msg = err?.message || String(err);
+  if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
+    log.warn(`[Redis/${label}] Unreachable: ${msg}`);
+  } else {
+    log.warn(`[Redis/${label}] Error: ${msg}`);
+  }
+}
+
+let devRedisGiveUpLogged = false;
 
 /** Never return null — permanent reconnect (avoids stuck "Connection is closed"). */
 function sharedRetryStrategy(times) {
+  const isDev = process.env.NODE_ENV !== 'production';
+  const maxDevRetries = Math.max(3, parseInt(process.env.REDIS_DEV_MAX_RETRIES || '8', 10) || 8);
+  if (isDev && times > maxDevRetries) {
+    if (!devRedisGiveUpLogged) {
+      devRedisGiveUpLogged = true;
+      log.warn(
+        `[Redis] Stopped reconnecting after ${maxDevRetries} attempts (development). ` +
+          'Install Redis on port 6379, or set REDIS_DISABLED=true in .env for API-only local dev.'
+      );
+    }
+    return null;
+  }
   const delay = Math.min(times * 200, 10000);
   if (times > 0 && times % 15 === 0) {
     log.warn(`[Redis] Reconnect attempt #${times} (next in ${delay}ms)`);
@@ -87,11 +128,7 @@ function createRedisClient(url, label) {
   });
 
   client.on('error', (err) => {
-    if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
-      log.warn(`[Redis/${label}] Unreachable:`, err.message);
-    } else {
-      log.warn(`[Redis/${label}] Error:`, err.message);
-    }
+    logRedisErrorThrottled(label, err);
   });
 
   client.on('connect', () => {
@@ -117,6 +154,16 @@ function createRedisClient(url, label) {
 }
 
 async function logRedisHealth() {
+  if (isRedisDisabled()) {
+    if (!redisDisabledLogged) {
+      redisDisabledLogged = true;
+      log.warn(
+        '[Redis] REDIS_DISABLED=true — cache, BullMQ queues, and webhook dedup are off. ' +
+          'Fine for local API/UI dev; required for journeys, campaigns, and workers in production.'
+      );
+    }
+    return;
+  }
   const redis = getAppRedis();
   if (!redis) {
     log.warn('[Redis] App Redis not configured (REDIS_URL unset in production).');
@@ -196,6 +243,7 @@ function __setQueueRedisForTests(client) {
 
 module.exports = {
   Redis,
+  isRedisDisabled,
   shouldSkipInternalRedis,
   resolveAppRedisUrl,
   resolveQueueRedisUrl,

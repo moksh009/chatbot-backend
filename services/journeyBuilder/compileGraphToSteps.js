@@ -3,6 +3,10 @@
 const moment = require('moment');
 const { JOURNEY_NODE_TYPES, isKnownJourneyNodeType } = require('./journeyNodeContract');
 const { branchRuleToGates } = require('./branchRuleGates');
+const {
+  codPrepaidOutcomeCondition,
+  pickCodPrepaidEdge,
+} = require('./codToPrepaid/codToPrepaidBranchGates');
 const { buildWaClickTrackUrl } = require('../../utils/wa/waClickTrackingService');
 const { getEcoBodyMappingsForTemplate } = require('./journeySequenceWhatsApp');
 
@@ -175,6 +179,105 @@ function buildSendStep(node, type, ctx) {
   }
 
   return step;
+}
+
+function mergeStepsBySendAtMany(stepGroups = []) {
+  const tagged = [];
+  (stepGroups || []).forEach((group, groupIdx) => {
+    (group || []).forEach((step) => {
+      tagged.push({ ...step, __group: groupIdx });
+    });
+  });
+  tagged.sort((a, b) => {
+    const ta = new Date(a.sendAt).getTime();
+    const tb = new Date(b.sendAt).getTime();
+    if (ta !== tb) return ta - tb;
+    return a.__group - b.__group;
+  });
+  return tagged.map(({ __group, ...step }) => step);
+}
+
+function buildCodPrepaidStep(node, ctx) {
+  const d = node.data || {};
+  const delayValue = ctx.pendingDelay.value;
+  const delayUnit = ctx.pendingDelay.unit;
+  ctx.pendingDelay = { value: 0, unit: 'm' };
+
+  if (delayValue > 0) {
+    ctx.currentSendAt = ctx.currentSendAt.clone().add(delayValue, delayUnit);
+  }
+
+  const step = {
+    type: 'cod_prepaid',
+    channel: 'whatsapp',
+    delayValue,
+    delayUnit,
+    sendAt: ctx.currentSendAt.toDate(),
+    status: 'pending',
+    interactionMode: 'none',
+    expectedActions: [],
+    graphNodeId: String(node.id || ''),
+    templateName: String(d.templateName || '').trim(),
+    metaTemplateId: String(d.templateId || d.metaTemplateId || '').trim(),
+    templateCategory: d.templateCategory ? String(d.templateCategory).toUpperCase() : '',
+    freezeMode: d.freezeMode === 'by_fulfillment_status' ? 'by_fulfillment_status' : 'by_duration',
+    freezeDurationValue: Number(d.freezeDurationValue ?? d.durationValue ?? 2) || 2,
+    freezeDurationUnit: normalizeDelayUnit(d.freezeDurationUnit ?? d.durationUnit ?? 'h'),
+    requiresWebhookSnapshot: true,
+    context: { codToPrepaid: true },
+  };
+
+  if (!step.templateName) {
+    ctx.warnings.push('COD → Prepaid node missing WhatsApp template');
+  }
+  if (!d.freezeMode) {
+    ctx.warnings.push('COD → Prepaid node missing expiration rule');
+  }
+
+  return step;
+}
+
+function compileCodToPrepaidNode(node, byId, adj, ctx) {
+  const outs = adj.get(node.id) || [];
+  const codStep = buildCodPrepaidStep(node, {
+    ...ctx,
+    inheritedGate: '',
+    pendingCondition: '',
+  });
+
+  const afterCtx = {
+    ...ctx,
+    pendingDelay: { value: 0, unit: 'm' },
+    currentSendAt: moment(codStep.sendAt),
+    inheritedGate: '',
+    pendingCondition: '',
+  };
+
+  const pathDefs = [
+    { handle: 'message_sent', outcome: 'message_sent', label: 'Message Sent' },
+    { handle: 'failed', outcome: 'failed', label: 'Failed' },
+    { handle: 'converted', outcome: 'converted', label: 'Converted' },
+  ];
+
+  const groups = [[codStep]];
+
+  for (const path of pathDefs) {
+    const edge = pickCodPrepaidEdge(outs, path.handle);
+    if (!edge?.target) {
+      ctx.warnings.push(`COD → Prepaid "${path.label}" path is not connected`);
+      groups.push([]);
+      continue;
+    }
+    const gate = codPrepaidOutcomeCondition(path.outcome, node.id);
+    const sub = compileSubtree(edge.target, byId, adj, {
+      ...afterCtx,
+      inheritedGate: gate,
+      pendingCondition: '',
+    });
+    groups.push(sub.steps);
+  }
+
+  return mergeStepsBySendAtMany(groups);
 }
 
 function buildHandoffStep(node, ctx) {
@@ -412,6 +515,19 @@ function compileGraphToSteps({ nodes = [], edges = [], anchorTime = new Date() }
         currentSendAt: currentSendAt.clone(),
       });
       steps.push(...branchSteps);
+      pendingDelay = { value: 0, unit: 'm' };
+      pendingCondition = '';
+      break;
+    }
+
+    if (type === JOURNEY_NODE_TYPES.COD_TO_PREPAID) {
+      const codSteps = compileCodToPrepaidNode(node, byId, adj, {
+        ...ctxBase(),
+        pendingDelay: { ...pendingDelay },
+        pendingCondition,
+        currentSendAt: currentSendAt.clone(),
+      });
+      steps.push(...codSteps);
       pendingDelay = { value: 0, unit: 'm' };
       pendingCondition = '';
       break;

@@ -112,3 +112,8 @@ public.pem
 !booked-slots.json
 !flowTemplates.js
 !constants/templateCatalog/template-catalog.json
+
+# Portable local Redis binaries (download via scripts/start-local-full.ps1)
+tools/redis/*
+!tools/redis/redis.local.conf
+!tools/redis/.gitkeep

@@ -31,10 +31,16 @@ const FollowUpSequenceSchema = new mongoose.Schema({
   cancelOnReply: { type: Boolean, default: true },
   cancelledReason: { type: String },
   cancelledAt: { type: Date },
+  /**
+   * Isolated per-enrollment session memory (FollowUpSequence._id scope only).
+   * Holds entry webhookSnapshot + runtime action outputs (e.g. draft order URL).
+   * Never synced to AdLead — frozen when sequence completes/cancels.
+   */
+  sequenceContext: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   steps: [{
     type: {
       type: String,
-      enum: ['whatsapp', 'email', 'review_request', 'warranty_resend', 'flow_handoff'],
+      enum: ['whatsapp', 'email', 'review_request', 'warranty_resend', 'flow_handoff', 'cod_prepaid'],
       default: 'whatsapp',
     },
     /** Journey chatbot handoff — published Flow Builder flow id */

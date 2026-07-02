@@ -22,6 +22,10 @@ function registerCoordinatedCrons() {
     wrapCron("Coordinator/2min scheduled messages", async () => {
       const scheduleScheduled = require("./scheduledMessageCron");
       if (scheduleScheduled.runTick) await scheduleScheduled.runTick();
+      try {
+        const codExpire = require("./codToPrepaidExpirationCron");
+        if (codExpire.runTick) await codExpire.runTick();
+      } catch (_) {}
     })
   );
 

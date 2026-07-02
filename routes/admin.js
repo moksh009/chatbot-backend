@@ -1396,7 +1396,19 @@ router.patch('/my-settings', protect, async (req, res) => {
           ...(f.color ? { color: String(f.color).slice(0, 32) } : {}),
         }));
     }
-    if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
+    if (visualFlows !== undefined) {
+      const {
+        filterVisualFlowsForFlowBuilder,
+        loadJourneyFlowIdSetForClient,
+      } = require('../utils/flow/flowGraphResolver');
+      const journeyIds = await loadJourneyFlowIdSetForClient(targetClientId, {
+        visualFlows: Array.isArray(visualFlows) ? visualFlows : [],
+      });
+      updateFields.visualFlows = filterVisualFlowsForFlowBuilder(
+        Array.isArray(visualFlows) ? visualFlows : [],
+        journeyIds
+      );
+    }
     if (websiteChatWidgetConfig !== undefined) {
       const { mergeWebsiteWidgetConfig } = require('../utils/core/websiteWidgetDefaults');
       updateFields.websiteChatWidgetConfig = mergeWebsiteWidgetConfig(websiteChatWidgetConfig);
@@ -1431,9 +1443,30 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
     if (flowDraft && flowDraft.flowId) {
+      const {
+        isJourneyBlueprintFlow,
+        loadJourneyFlowIdSetForClient,
+      } = require('../utils/flow/flowGraphResolver');
+      const journeyIds = await loadJourneyFlowIdSetForClient(targetClientId);
+      const draftFlowId = String(flowDraft.flowId);
+      if (journeyIds.has(draftFlowId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Journey blueprints cannot be edited via Flow Builder autosave. Use Journey Hub.',
+          flowId: draftFlowId,
+        });
+      }
+
       const WhatsAppFlow = require('../models/WhatsAppFlow');
       const { flattenFlowNodes } = require('../utils/flow/flowGraphResolver');
       const { flowId, nodes = [], edges = [] } = flowDraft;
+      if (isJourneyBlueprintFlow({ flowId, nodes })) {
+        return res.status(400).json({
+          success: false,
+          message: 'Graph contains journey nodes — save from Journey Hub instead.',
+          flowId: draftFlowId,
+        });
+      }
       const flatSteps = flattenFlowNodes(nodes).length;
       const linkCount = Array.isArray(edges) ? edges.length : 0;
       const wfExisting = await WhatsAppFlow.findOne({ clientId: targetClientId, flowId }).lean();
@@ -1780,14 +1813,24 @@ router.patch('/my-settings', protect, async (req, res) => {
     // PHASE: Migrate and Sync visualFlows to the new WhatsAppFlow schema
     if (visualFlows !== undefined && Array.isArray(visualFlows)) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
-      for (const f of visualFlows) {
+      const {
+        isJourneyBlueprintFlow,
+        loadJourneyFlowIdSetForClient,
+      } = require('../utils/flow/flowGraphResolver');
+      const journeyIds = await loadJourneyFlowIdSetForClient(targetClientId, { visualFlows });
+      const builderFlows = visualFlows.filter((f) => f?.id && !journeyIds.has(String(f.id)));
+
+      for (const f of builderFlows) {
         if (!f?.id) continue;
         const existing = await WhatsAppFlow.findOne({
           flowId: f.id,
           clientId: targetClientId,
         })
-          .select('nodes edges publishedNodes publishedEdges')
+          .select('nodes edges publishedNodes publishedEdges flowType journeyTrigger')
           .lean();
+
+        if (existing && isJourneyBlueprintFlow(existing)) continue;
+        if (isJourneyBlueprintFlow({ ...f, flowId: f.id })) continue;
 
         const incomingNodes = Array.isArray(f.nodes) ? f.nodes : [];
         const incomingEdges = Array.isArray(f.edges) ? f.edges : [];

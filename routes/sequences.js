@@ -928,6 +928,8 @@ router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
       }
     });
     await seq.save();
+    const { markSequenceContextLifecycle } = require('../services/journeyBuilder/sequenceContextService');
+    await markSequenceContextLifecycle(seq._id, 'cancelled');
     if (seq.leadId) await syncLeadHasActiveSequence(clientId, seq.leadId);
 
     res.json({ success: true, sequence: seq });

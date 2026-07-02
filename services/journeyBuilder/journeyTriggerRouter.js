@@ -24,11 +24,67 @@ const OrderStatusSent = require('../../models/OrderStatusSent');
 const AdLead = require('../../models/AdLead');
 const { compileGraphToSteps } = require('./compileGraphToSteps');
 const { evaluateTriggerRules } = require('./journeyTriggerEvaluator');
+const { buildInitialSequenceContext } = require('./sequenceContextService');
 const { enqueueDueStepsForSequence } = require('../../utils/messaging/sequenceStepEnqueue');
 const { checkJourneyEnrollmentAllowed } = require('./journeyPolicyService');
 const log = require('../../utils/core/logger')('JourneyTriggerRouter');
 
 const MAX_ACTIVE_SEQUENCES = 2;
+
+const COD_PREPAID_ACTIVE_STATUSES = [
+  'draft_order_pending',
+  'draft_order_created',
+  'message_sent',
+];
+
+function extractShopifyNumericOrderId(payload) {
+  const raw = payload?.id || payload?.order_id || '';
+  if (/^\d+$/.test(String(raw))) return String(raw);
+  const fromName = String(payload?.name || '').replace(/\D/g, '');
+  return fromName || '';
+}
+
+async function hasActiveCodPrepaidForOrder(clientId, numericOrderId) {
+  if (!clientId || !numericOrderId) return false;
+  const CodToPrepaidConversion = require('../../models/CodToPrepaidConversion');
+  const row = await CodToPrepaidConversion.findOne({
+    clientId,
+    originalCodOrderId: String(numericOrderId),
+    status: { $in: COD_PREPAID_ACTIVE_STATUSES },
+  })
+    .select('_id')
+    .lean();
+  return !!row;
+}
+
+async function hasActiveCodPrepaidForContactAndOrder(clientId, phone, numericOrderId) {
+  if (!clientId || !phone || !numericOrderId) return false;
+  const normalizedPhone = String(phone).replace(/\D/g, '');
+  if (!normalizedPhone) return false;
+  const CodToPrepaidConversion = require('../../models/CodToPrepaidConversion');
+  const row = await CodToPrepaidConversion.findOne({
+    clientId,
+    contactPhone: normalizedPhone,
+    originalCodOrderId: String(numericOrderId),
+    status: { $in: COD_PREPAID_ACTIVE_STATUSES },
+  })
+    .select('_id')
+    .lean();
+  return !!row;
+}
+
+async function hasActiveEnrollmentInJourney(clientId, flowId, phone) {
+  if (!clientId || !flowId || !phone) return false;
+  const row = await FollowUpSequence.findOne({
+    clientId,
+    phone: String(phone),
+    sourceFlowId: String(flowId),
+    status: 'active',
+  })
+    .select('_id')
+    .lean();
+  return !!row;
+}
 
 /** Map from internal journey trigger type → OrderStatusSent statusKey for dedup. */
 const TRIGGER_STATUS_KEY_MAP = {
@@ -344,6 +400,32 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
       continue;
     }
 
+    if (isOrderTrigger) {
+      const numericOrderId = extractShopifyNumericOrderId(payload);
+      if (
+        numericOrderId
+        && (await hasActiveCodPrepaidForContactAndOrder(clientId, phone, numericOrderId))
+      ) {
+        skipped.push(`${flowId}:cod_prepaid_active`);
+        log.info('[JourneyTriggerRouter] skipped cod_prepaid_active', {
+          clientId,
+          flowId,
+          orderId: numericOrderId,
+          phoneTail: phone.slice(-4),
+        });
+        continue;
+      }
+      if (await hasActiveEnrollmentInJourney(clientId, flowId, phone)) {
+        skipped.push(`${flowId}:active_enrollment`);
+        log.info('[JourneyTriggerRouter] skipped active_enrollment', {
+          clientId,
+          flowId,
+          phoneTail: phone.slice(-4),
+        });
+        continue;
+      }
+    }
+
     const activeCount = await countActiveSequencesForLead(clientId, leadId);
     if (activeCount >= MAX_ACTIVE_SEQUENCES) {
       skipped.push(`${flowId}:active_sequence_limit`);
@@ -369,6 +451,13 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
     // Enroll — create the sequence FIRST, then write the dedup row
     try {
       const mappedSteps = compiled.steps.map((s) => ({ ...s, status: 'pending' }));
+      const sequenceContext = buildInitialSequenceContext({
+        triggerType,
+        rawPayload: isOrderTrigger ? payload : null,
+        leadPayload: isOrderTrigger ? null : payload,
+        blueprintFlowId: flowId,
+        normalizedPhone: phone,
+      });
       const sequence = await FollowUpSequence.create({
         clientId,
         leadId,
@@ -380,6 +469,7 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
         sourceFlowId: flowId,
         playbookKey: blueprint.playbookKey || '',
         sourceOrderId: orderId,
+        sequenceContext,
         enrollment: {
           mode: 'blueprint',
           blueprint: { flowId, name: blueprint.name },
@@ -428,4 +518,8 @@ async function routeToJourneyBlueprints(clientId, triggerType, payload) {
 module.exports = {
   routeToJourneyBlueprints,
   anyOrderPlacedJourneyWouldMatch,
+  hasActiveEnrollmentInJourney,
+  hasActiveCodPrepaidForOrder,
+  hasActiveCodPrepaidForContactAndOrder,
+  COD_PREPAID_ACTIVE_STATUSES,
 };

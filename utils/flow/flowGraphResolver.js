@@ -441,6 +441,92 @@ async function resolvePrimaryFlowGraph(clientId, options = {}) {
   return { id: null, name: "", nodes: [], edges: [] };
 }
 
+const JOURNEY_FLOW_TYPES = new Set(['journey', 'post_purchase_journey']);
+const JOURNEY_ID_PREFIX_RE = /^journey_/i;
+
+function nodeTypeOf(n) {
+  return String(n?.type || n?.data?.nodeType || '').toLowerCase();
+}
+
+function graphHasJourneyTrigger(nodes = []) {
+  if (!Array.isArray(nodes) || !nodes.length) return false;
+  const flat = flattenFlowNodes(nodes);
+  return flat.some((n) => nodeTypeOf(n) === 'journey_trigger');
+}
+
+/**
+ * Detect Journey / PPJ blueprints even when flowType was corrupted to `standard`
+ * or the flow only exists in Client.visualFlows.
+ */
+function isJourneyBlueprintFlow(meta = {}) {
+  const flowType = String(meta.flowType || '');
+  if (JOURNEY_FLOW_TYPES.has(flowType)) return true;
+
+  const flowId = String(meta.flowId || meta.id || '');
+  if (flowId && JOURNEY_ID_PREFIX_RE.test(flowId)) return true;
+
+  const jt = meta.journeyTrigger;
+  if (jt && typeof jt === 'object' && jt.type) return true;
+
+  if (graphHasJourneyTrigger(meta.nodes) || graphHasJourneyTrigger(meta.publishedNodes)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Union of all journey blueprint flow ids for a tenant (DB + visualFlows cards).
+ */
+function collectJourneyFlowIds({ whatsappFlows = [], visualFlows = [] } = {}) {
+  const ids = new Set();
+
+  const consider = (rawId, meta = {}) => {
+    const flowId = String(rawId || '').trim();
+    if (!flowId) return;
+    if (isJourneyBlueprintFlow({ ...meta, flowId, id: flowId })) {
+      ids.add(flowId);
+    }
+  };
+
+  for (const f of whatsappFlows || []) {
+    consider(f.flowId || f.id, f);
+  }
+  for (const vf of visualFlows || []) {
+    consider(vf.id, vf);
+  }
+
+  return ids;
+}
+
+async function loadJourneyFlowIdSetForClient(clientId, { visualFlows = null } = {}) {
+  if (!clientId) return new Set();
+
+  let vfs = visualFlows;
+  if (!Array.isArray(vfs)) {
+    const client = await Client.findOne({ clientId }).select('visualFlows').lean();
+    vfs = client?.visualFlows || [];
+  }
+
+  const whatsappFlows = await WhatsAppFlow.find({ clientId })
+    .select('flowId flowType nodes publishedNodes journeyTrigger playbookKey name')
+    .lean();
+
+  return collectJourneyFlowIds({ whatsappFlows, visualFlows: vfs });
+}
+
+/**
+ * Journey blueprints must never appear in Flow Builder lists — only in Journey Hub.
+ */
+function filterVisualFlowsForFlowBuilder(visualFlows = [], journeyFlowIds = null) {
+  const exclude =
+    journeyFlowIds instanceof Set
+      ? journeyFlowIds
+      : new Set((journeyFlowIds || []).map((id) => String(id)).filter(Boolean));
+  if (!exclude.size) return visualFlows || [];
+  return (visualFlows || []).filter((vf) => vf?.id && !exclude.has(String(vf.id)));
+}
+
 /**
  * Merge WhatsAppFlow rows + visualFlows-only entries for Flow Builder list API.
  */
@@ -449,16 +535,19 @@ function mergeFlowsListForDashboard(
   visualFlows = [],
   flowFolders = [],
   legacyNodes = [],
-  legacyEdges = []
+  legacyEdges = [],
+  options = {}
 ) {
+  const journeyExclude = options.journeyFlowIds || options.excludeFlowIds;
+  const filteredVisual = filterVisualFlowsForFlowBuilder(visualFlows, journeyExclude);
   const primaryId = resolvePrimaryPublishedFlowId({
-    visualFlows,
+    visualFlows: filteredVisual,
     whatsappFlows: dbFlows,
   });
 
   const byId = new Map();
   const vfById = new Map(
-    (visualFlows || [])
+    (filteredVisual || [])
       .filter((v) => v?.id)
       .map((v) => [String(v.id), v])
   );
@@ -493,7 +582,7 @@ function mergeFlowsListForDashboard(
     });
   }
 
-  for (const vf of visualFlows || []) {
+  for (const vf of filteredVisual || []) {
     const id = vf.id;
     if (!id) continue;
     const counts = resolveFlowListCounts(vf.nodes, null, vf.edges, null, vf);
@@ -542,6 +631,12 @@ function mergeFlowsListForDashboard(
 }
 
 module.exports = {
+  JOURNEY_FLOW_TYPES: [...JOURNEY_FLOW_TYPES],
+  nodeTypeOf,
+  graphHasJourneyTrigger,
+  isJourneyBlueprintFlow,
+  collectJourneyFlowIds,
+  loadJourneyFlowIdSetForClient,
   flattenFlowNodes,
   pickGraphFromFlowDoc,
   resolveFlowListCounts,
@@ -551,5 +646,6 @@ module.exports = {
   resolveFlowGraphByRef,
   resolvePrimaryFlowGraph,
   resolvePrimaryPublishedFlowId,
+  filterVisualFlowsForFlowBuilder,
   mergeFlowsListForDashboard,
 };

@@ -418,6 +418,28 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                   }
                 }
                 break;
+            case 'orders/paid': {
+                const { handleCodToPrepaidPaidOrder } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidWebhookHandler');
+                await handleCodToPrepaidPaidOrder({
+                    clientId: client.clientId,
+                    shopifyOrder: data,
+                }).catch((e) =>
+                    log.warn(`[ShopifyWebhook] COD→Prepaid orders/paid skipped: ${e.message}`)
+                );
+                await processOrderStatusAutomations({
+                  client,
+                  payload: data,
+                  source: 'shopify_webhook:orders/paid',
+                }).catch((e) => log.error(`OrderStatus automation orders/paid failed: ${e.message}`));
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
+                {
+                    const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
+                    await processWarrantyAutoAssignment(client, data).catch((e) =>
+                        log.error('[Warranty] Auto-assignment orders/paid failed:', e.message)
+                    );
+                }
+                break;
+            }
             case 'orders/updated':
                 /** WS-2 fix: AWAIT before any legacy paths inside reconcile fire,
                  *  to keep the `OrderStatusSent` ledger authoritative. */
@@ -434,6 +456,13 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                         const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
                         await processWarrantyAutoAssignment(client, data).catch((e) =>
                             log.error('[Warranty] Auto-assignment orders/updated failed:', e.message)
+                        );
+                        const { handleCodToPrepaidPaidOrder } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidWebhookHandler');
+                        await handleCodToPrepaidPaidOrder({
+                            clientId: client.clientId,
+                            shopifyOrder: data,
+                        }).catch((e) =>
+                            log.warn(`[ShopifyWebhook] COD→Prepaid paid update skipped: ${e.message}`)
                         );
                     }
                 }
@@ -460,6 +489,14 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                                 data.status ||
                                 ''
                             ).toLowerCase();
+                            const { handleCodToPrepaidFulfillmentExpiry } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidWebhookHandler');
+                            await handleCodToPrepaidFulfillmentExpiry({
+                                clientId: client.clientId,
+                                orderId: fulfillmentOrderId,
+                                fulfillmentStatus: shipmentStatus,
+                            }).catch((e) =>
+                                log.warn(`[ShopifyWebhook] COD→Prepaid fulfillment expiry skipped: ${e.message}`)
+                            );
                             const { routeToJourneyBlueprints: _routeJourneyFulfillment } = require('../services/journeyBuilder/journeyTriggerRouter');
                             const journeyTriggerType =
                                 shipmentStatus === 'delivered' || shipmentStatus === 'delivery'
@@ -541,6 +578,19 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                     log.error(`OrderStatus automation orders/fulfilled failed: ${e.message}`)
                 );
                 await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
+                {
+                    const fulfillmentStatus = String(
+                        data.fulfillment_status || data.fulfillmentStatus || ''
+                    ).toLowerCase();
+                    const { handleCodToPrepaidFulfillmentExpiry } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidWebhookHandler');
+                    await handleCodToPrepaidFulfillmentExpiry({
+                        clientId: client.clientId,
+                        orderId: data.id,
+                        fulfillmentStatus,
+                    }).catch((e) =>
+                        log.warn(`[ShopifyWebhook] COD→Prepaid orders/fulfilled expiry skipped: ${e.message}`)
+                    );
+                }
                 const { schedulePostPurchaseEnrollment } = require('../services/postPurchaseJourneys/enroll');
                 schedulePostPurchaseEnrollment({
                   client,
@@ -1138,6 +1188,15 @@ async function handleOrder(client, data, storeKey = '') {
             source: 'shopify_webhook:orders/create',
             options: { force: true },
           });
+        }
+        if (fin === 'paid' || fin === 'partially_paid') {
+          const { handleCodToPrepaidPaidOrder } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidWebhookHandler');
+          await handleCodToPrepaidPaidOrder({
+            clientId: client.clientId,
+            shopifyOrder: data,
+          }).catch((e) =>
+            log.warn(`[ShopifyWebhook] COD→Prepaid conversion handler skipped: ${e.message}`)
+          );
         }
       } catch (dispatchErr) {
         log.warn(`[ShopifyWebhook] paid order status dispatch skipped: ${dispatchErr.message}`);

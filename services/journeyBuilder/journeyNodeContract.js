@@ -9,6 +9,7 @@ const JOURNEY_NODE_TYPES = Object.freeze({
   WAIT: 'wait',
   CONDITION: 'condition',
   CONDITIONAL_SPLIT: 'conditional_split',
+  COD_TO_PREPAID: 'cod_to_prepaid',
   END: 'end',
 });
 
@@ -20,6 +21,7 @@ const PHASE1_NODE_TYPES = Object.freeze([
   JOURNEY_NODE_TYPES.WAIT,
   JOURNEY_NODE_TYPES.CONDITION,
   JOURNEY_NODE_TYPES.CONDITIONAL_SPLIT,
+  JOURNEY_NODE_TYPES.COD_TO_PREPAID,
   JOURNEY_NODE_TYPES.END,
 ]);
 

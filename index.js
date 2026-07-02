@@ -1,6 +1,8 @@
 const express = require('express');
 const dotenv = require('dotenv');
+const path = require('path');
 const dotenvResult = dotenv.config();
+dotenv.config({ path: path.join(__dirname, '.env.local'), override: true });
 if (process.env.SENTRY_DSN) {
   try {
     const Sentry = require('@sentry/node');
@@ -75,7 +77,6 @@ function resolveWhatsAppConfig() {
   }
 })();
 
-const path = require('path');
 const { protect } = require('./middleware/auth');
 const { requireJwtSecret } = require('./middleware/productionSecurity');
 

@@ -3,6 +3,7 @@
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const AdLead = require('../../models/AdLead');
 const log = require('../core/logger')('CancelSequencesOnReply');
+const { markSequenceContextLifecycleBulk } = require('../../services/journeyBuilder/sequenceContextService');
 
 function phoneVariants(phone) {
   const raw = String(phone || '').replace(/\D/g, '');
@@ -57,6 +58,7 @@ async function cancelSequencesOnInboundReply({ clientId, phone, reason = 'custom
     },
     { arrayFilters: [{ 'pending.status': { $in: ['pending', 'queued', 'retrying'] } }] }
   );
+  await markSequenceContextLifecycleBulk(ids, 'cancelled');
 
   const leadIds = [...new Set(active.map((s) => String(s.leadId)).filter(Boolean))];
   for (const leadId of leadIds) {

@@ -8,6 +8,7 @@
 const mongoose = require('mongoose');
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const WhatsAppFlow = require('../../models/WhatsAppFlow');
+const { markSequenceContextLifecycle } = require('./sequenceContextService');
 const AdLead = require('../../models/AdLead');
 const log = require('../../utils/core/logger')('JourneyPolicyService');
 
@@ -266,6 +267,7 @@ async function cancelJourneyEnrollmentsForOrder({ clientId, orderId, reason = 'o
         },
       }
     );
+    await markSequenceContextLifecycle(seq._id, 'cancelled');
     cancelled += 1;
 
     if (seq.leadId) {

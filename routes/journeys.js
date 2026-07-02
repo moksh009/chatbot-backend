@@ -16,6 +16,12 @@ const { JOURNEY_NODE_TYPES, normalizeEntryType } = require('../services/journeyB
 const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const { enqueueDueStepsForSequence } = require('../utils/messaging/sequenceStepEnqueue');
+const { buildInitialSequenceContext, markSequenceContextLifecycleBulk } = require('../services/journeyBuilder/sequenceContextService');
+const { templateHasCheckoutUrlButton } = require('../utils/meta/codPrepaidTemplateEligibility');
+const {
+  hasActiveEnrollmentInJourney,
+  hasActiveCodPrepaidForContactAndOrder,
+} = require('../services/journeyBuilder/journeyTriggerRouter');
 
 const MAX_ACTIVE_SEQUENCES = 2;
 
@@ -75,6 +81,32 @@ async function validateCompiledSteps(steps, syncedMetaTemplates = [], clientId =
     if (type === 'flow_handoff') {
       if (!String(step?.targetFlowId || '').trim()) {
         failures.push({ step: idx + 1, type: 'flow_handoff', reasons: ['Select a published flow for chatbot handoff'] });
+      }
+      continue;
+    }
+    if (type === 'cod_prepaid') {
+      if (!String(step?.templateName || '').trim()) {
+        failures.push({ step: idx + 1, type: 'cod_prepaid', reasons: ['WhatsApp template is required'] });
+      }
+      if (!step?.freezeMode) {
+        failures.push({ step: idx + 1, type: 'cod_prepaid', reasons: ['Expiration rule is required'] });
+      }
+      if (step?.freezeMode === 'by_duration' && Number(step?.freezeDurationValue) < 1) {
+        failures.push({ step: idx + 1, type: 'cod_prepaid', reasons: ['Expiration duration must be at least 1'] });
+      }
+      const templateName = step?.templateName;
+      if (templateName) {
+        const template = await resolveOne(templateName);
+        if (!template) {
+          failures.push({ step: idx + 1, type: 'cod_prepaid', templateName, reasons: ['Template not found'] });
+        } else if (!templateHasCheckoutUrlButton(template)) {
+            failures.push({
+              step: idx + 1,
+              type: 'cod_prepaid',
+              templateName,
+              reasons: ['Template must contain a URL button for checkout link injection'],
+            });
+          }
       }
       continue;
     }
@@ -145,6 +177,7 @@ function scanChannels(...nodeLists) {
       const t = String(n?.type || n?.data?.nodeType || '');
       if (t === JOURNEY_NODE_TYPES.SEND_WHATSAPP) channels.add('whatsapp');
       if (t === JOURNEY_NODE_TYPES.SEND_EMAIL) channels.add('email');
+      if (t === JOURNEY_NODE_TYPES.COD_TO_PREPAID) channels.add('whatsapp');
     }
   }
   return [...channels];
@@ -581,6 +614,10 @@ router.delete('/:clientId/:flowId', protect, async (req, res) => {
           },
         }
       );
+      await markSequenceContextLifecycleBulk(
+        activeSeqs.map((s) => s._id),
+        'cancelled'
+      );
 
       const leadIds = [...new Set(activeSeqs.map((s) => String(s.leadId)).filter(Boolean))];
       await Promise.all(
@@ -959,6 +996,37 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
       }
 
       const normalizedPhone = String(phone || '').replace(/\D/g, '');
+      if (
+        normalizedPhone
+        && (await hasActiveEnrollmentInJourney(clientId, String(flow._id), normalizedPhone))
+      ) {
+        errors.push({
+          leadId,
+          message: 'Already enrolled in this journey',
+          code: 'active_enrollment',
+        });
+        continue;
+      }
+
+      const sourceOrderNumeric = String(leadInput.sourceOrderId || '')
+        .replace(/\D/g, '');
+      if (
+        normalizedPhone
+        && sourceOrderNumeric
+        && (await hasActiveCodPrepaidForContactAndOrder(
+          clientId,
+          normalizedPhone,
+          sourceOrderNumeric
+        ))
+      ) {
+        errors.push({
+          leadId,
+          message: 'COD to Prepaid conversion already in progress for this order',
+          code: 'cod_prepaid_active',
+        });
+        continue;
+      }
+
       const normalizedEmail = String(email || '').trim();
       if (!hasEmailSteps && hasWaSteps && normalizedPhone.length < 10) {
         errors.push({ leadId, message: 'Contact has no valid phone number' });
@@ -980,6 +1048,13 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
         || latestOrder?.orderId
         || undefined;
 
+      const sequenceContext = buildInitialSequenceContext({
+        triggerType: 'manual',
+        leadPayload: leadDoc || { phoneNumber: phone, email, name: displayName },
+        blueprintFlowId: flow.flowId,
+        normalizedPhone,
+      });
+
       const sequence = new FollowUpSequence({
         clientId,
         leadId,
@@ -991,6 +1066,7 @@ router.post('/:clientId/:flowId/enroll', protect, async (req, res) => {
         sourceFlowId: flow.flowId,
         sourceOrderId,
         playbookKey: flow.playbookKey || '',
+        sequenceContext,
         enrollment: { mode: 'blueprint', blueprint: { flowId: flow.flowId, name: flow.name } },
         steps: mappedSteps,
       });

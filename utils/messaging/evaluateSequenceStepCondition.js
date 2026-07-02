@@ -132,6 +132,10 @@ async function evaluateSequenceStepCondition({ clientId, phone, step, sequence }
   const condition = normalizeCondition(step?.condition);
   if (!condition) return { proceed: true };
 
+  const { evaluateCodPrepaidOutcomeCondition } = require('../services/journeyBuilder/codToPrepaid/codToPrepaidJourneyAdvance');
+  const codOutcome = evaluateCodPrepaidOutcomeCondition(sequence, condition);
+  if (codOutcome) return codOutcome;
+
   const isNegated = condition.startsWith('not_');
   const innerCondition = isNegated ? condition.slice(4) : condition;
   const result = await evaluatePositiveCondition({
