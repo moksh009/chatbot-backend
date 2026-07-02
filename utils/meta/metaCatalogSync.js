@@ -500,6 +500,15 @@ async function runMetaCatalogImport(clientId, opts = {}) {
 
     log.info(`[MetaCatalogImport] Done ${clientId}: ${synced} products, ${syncedCollections} collections`);
 
+    if (client.shopDomain && client.shopifyAccessToken) {
+      setImmediate(() => {
+        const { reconcileCollectionMembership } = require("../commerce/catalogPickerService");
+        reconcileCollectionMembership(clientId).catch((err) => {
+          log.warn(`[MetaCatalogImport] Shopify collection reconcile skipped: ${err.message}`);
+        });
+      });
+    }
+
     return { synced, collections: syncedCollections, catalogId, source: "meta_catalog" };
   } catch (err) {
     const msg = graphErrorMessage(err);
