@@ -451,6 +451,9 @@ async function handleGetTemplateList(req, res) {
             merged = filterTemplatesForOrderMessagesList(merged);
           } else if (contextPurpose === 'flow') {
             merged = filterTemplatesForFlowPicker(merged);
+          } else if (contextPurpose === 'cod_prepaid') {
+            const { filterTemplatesForCodPrepaidPicker } = require('../utils/meta/codPrepaidTemplatePolicy');
+            merged = filterTemplatesForCodPrepaidPicker(merged);
           } else {
             merged = merged.filter((tpl) => {
               const primary = normalizePurpose(tpl.primaryPurpose || 'utility');

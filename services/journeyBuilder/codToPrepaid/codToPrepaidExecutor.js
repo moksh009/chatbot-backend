@@ -7,6 +7,7 @@ const {
   deleteDraftOrder,
   gidToNumericId,
 } = require('./codToPrepaidShopify');
+const { buildCodPrepaidAppliedDiscount } = require('./codToPrepaidDiscount');
 const { updateSequenceContext, assertCodPrepaidEnrollmentContext } = require('../sequenceContextService');
 const { buildJourneySequenceWhatsAppPayload } = require('../journeySequenceWhatsApp');
 const { sendEnvelope } = require('../../../utils/messaging/sendEnvelope');
@@ -34,7 +35,7 @@ function extractNumericOrderId(snap = {}) {
   return fromGid || '';
 }
 
-function buildDraftOrderInput(snap = {}) {
+function buildDraftOrderInput(snap = {}, discountConfig = {}) {
   const numericId = extractNumericOrderId(snap);
   const tag = numericId ? `Converted_From_COD_${numericId}` : '';
 
@@ -47,7 +48,6 @@ function buildDraftOrderInput(snap = {}) {
       return {
         variantId: variantGid,
         quantity: Number(li.quantity) || 1,
-        // appliedDiscount: reserved for future merchant discount config on the node
       };
     })
     .filter(Boolean);
@@ -56,6 +56,11 @@ function buildDraftOrderInput(snap = {}) {
     lineItems,
     tags: tag ? [tag] : [],
   };
+
+  const appliedDiscount = buildCodPrepaidAppliedDiscount(discountConfig);
+  if (appliedDiscount) {
+    input.appliedDiscount = appliedDiscount;
+  }
 
   if (snap.customerGid) {
     input.customerId = snap.customerGid;
@@ -197,7 +202,11 @@ async function executeCodToPrepaidStep({ client, clientId, step, seq, lead }) {
     status: 'draft_order_pending',
   });
 
-  const { input } = buildDraftOrderInput(snap);
+  const { input } = buildDraftOrderInput(snap, {
+    discountValue: step.discountValue,
+    discountValueType: step.discountValueType,
+    discountName: step.discountName,
+  });
 
   let draftResult;
   try {

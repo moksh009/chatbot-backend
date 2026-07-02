@@ -3,7 +3,7 @@
 /** Meta sample / system templates — never offer in merchant pickers */
 const SYSTEM_EXCLUDED_NAMES = new Set(['hello_world', 'hello world']);
 
-const PURPOSES = ['campaign', 'sequence', 'order_status', 'cart_recovery', 'bot_reply', 'flow', 'ig', 'utility'];
+const PURPOSES = ['campaign', 'sequence', 'order_status', 'cart_recovery', 'bot_reply', 'flow', 'ig', 'utility', 'cod_prepaid'];
 
 function normalizePurpose(input, fallback = 'utility') {
   const value = String(input || fallback).trim().toLowerCase();
@@ -99,6 +99,9 @@ function filterTemplatesForContext(templates, contextPurpose) {
     if (!eligible.length) {
       eligible = list.filter((t) => !isSystemExcluded(t) && isCartRecoveryEligible(t));
     }
+  } else if (purpose === 'cod_prepaid') {
+    const { filterTemplatesForCodPrepaidPicker } = require('./codPrepaidTemplatePolicy');
+    eligible = filterTemplatesForCodPrepaidPicker(list);
   } else {
     eligible = approved.filter((t) => hasPurpose(t, purpose) || primaryPurpose(t) === purpose);
   }

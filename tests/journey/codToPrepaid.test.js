@@ -77,6 +77,26 @@ describe('codToPrepaid draft order input', () => {
     assert.equal(input.lineItems[0].variantId, 'gid://shopify/ProductVariant/111');
     assert.equal(input.lineItems[0].quantity, 2);
     assert.equal(input.shippingAddress.city, 'Mumbai');
+    assert.equal(input.appliedDiscount, undefined);
+  });
+
+  it('includes appliedDiscount from node discount config', () => {
+    const { input } = buildDraftOrderInput(
+      {
+        shopifyOrderNumericId: '99',
+        lineItems: [{ variantGid: 'gid://shopify/ProductVariant/1', quantity: 1 }],
+      },
+      {
+        discountName: 'COD Saver',
+        discountValue: 150,
+        discountValueType: 'FIXED_AMOUNT',
+      }
+    );
+    assert.deepEqual(input.appliedDiscount, {
+      description: 'COD Saver',
+      value: 150,
+      valueType: 'FIXED_AMOUNT',
+    });
   });
 });
 

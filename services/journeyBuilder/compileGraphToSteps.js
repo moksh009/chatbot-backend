@@ -223,6 +223,9 @@ function buildCodPrepaidStep(node, ctx) {
     freezeMode: d.freezeMode === 'by_fulfillment_status' ? 'by_fulfillment_status' : 'by_duration',
     freezeDurationValue: Number(d.freezeDurationValue ?? d.durationValue ?? 2) || 2,
     freezeDurationUnit: normalizeDelayUnit(d.freezeDurationUnit ?? d.durationUnit ?? 'h'),
+    discountValue: Number(d.discountValue) || 0,
+    discountValueType: d.discountValueType === 'PERCENTAGE' ? 'PERCENTAGE' : 'FIXED_AMOUNT',
+    discountName: String(d.discountName ?? '').trim(),
     requiresWebhookSnapshot: true,
     context: { codToPrepaid: true },
   };
