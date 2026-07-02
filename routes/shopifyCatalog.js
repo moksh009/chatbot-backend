@@ -10,6 +10,10 @@ const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion'
 const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 const log = require('../utils/core/logger')("ShopifyCatalog");
 const { generateCheckoutForOrder } = require('../utils/commerce/commerceCheckoutService');
+const {
+  importShopifyCollectionsFromApi,
+  reconcileCollectionMembership,
+} = require('../utils/commerce/catalogPickerService');
 
 const SYNC_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -79,77 +83,9 @@ async function runShopifyCatalogSync(clientId) {
         if (products.length < 250) break;
       }
 
-      const customCols =
-        (await shop.get("/custom_collections.json?limit=250")).data?.custom_collections || [];
-      const smartCols =
-        (await shop.get("/smart_collections.json?limit=250")).data?.smart_collections || [];
-
-      const allCols = [
-        ...customCols.map((c) => ({ ...c, _ctype: "custom" })),
-        ...smartCols.map((c) => ({ ...c, _ctype: "smart" })),
-      ];
-
-      for (const c of allCols) {
-        await ShopifyCollection.findOneAndUpdate(
-          { clientId, shopifyCollectionId: String(c.id) },
-          {
-            $set: {
-              clientId,
-              shopifyCollectionId: String(c.id),
-              title: c.title || "",
-              handle: c.handle || "",
-              description: c.body_html || "",
-              imageUrl: c.image?.src || "",
-              collectionType: c._ctype === "smart" ? "smart" : "custom",
-              lastSyncedAt: new Date(),
-            },
-          },
-          { upsert: true }
-        );
-        syncedCollections++;
-
-        let colSince = null;
-        const memberVariantIds = new Set();
-        for (;;) {
-          let ppath = `/collections/${c.id}/products.json?limit=250`;
-          if (colSince) ppath += `&since_id=${colSince}`;
-          let pres;
-          try {
-            pres = await shop.get(ppath);
-          } catch (err) {
-            log.warn(`collection ${c.id} products fetch: ${err.message}`);
-            break;
-          }
-          const cprods = pres.data?.products || [];
-          if (!cprods.length) break;
-
-          for (const p of cprods) {
-            for (const v of p.variants || []) {
-              memberVariantIds.add(String(v.id));
-            }
-          }
-
-          colSince = cprods[cprods.length - 1].id;
-          if (cprods.length < 250) break;
-        }
-
-        await ShopifyCollection.updateOne(
-          { clientId, shopifyCollectionId: String(c.id) },
-          { $set: { productsCount: memberVariantIds.size } }
-        );
-
-        for (const vid of memberVariantIds) {
-          await ShopifyProduct.updateOne(
-            { clientId, shopifyVariantId: vid },
-            {
-              $addToSet: {
-                collectionIds: String(c.id),
-                collectionTitles: c.title || "",
-              },
-            }
-          );
-        }
-      }
+      const colCount = await importShopifyCollectionsFromApi(clientId, shop);
+      syncedCollections = colCount;
+      await reconcileCollectionMembership(clientId, shop);
     });
 
     await Client.updateOne(

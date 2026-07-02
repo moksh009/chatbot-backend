@@ -67,41 +67,10 @@ router.get("/:clientId", verifyToken, apiCache(30), async (req, res) => {
 });
 
 // ─── GET /api/catalog/:clientId/picker — unified product/collection picker BFF ─
-const SAMPLE_PICKER_PRODUCTS = [
-  { id: "sample_1", shopifyProductId: "sample_1", retailerId: "sample_1", title: "Cotton Kurta — Ivory", price: 2499, currency: "INR", imageUrl: "", inStock: true, collectionIds: ["sample_col_1"] },
-  { id: "sample_2", shopifyProductId: "sample_2", retailerId: "sample_2", title: "Linen Shirt — Sage", price: 1899, currency: "INR", imageUrl: "", inStock: true, collectionIds: ["sample_col_1"] },
-  { id: "sample_3", shopifyProductId: "sample_3", retailerId: "sample_3", title: "Palazzo Set — Rose", price: 3299, currency: "INR", imageUrl: "", inStock: true, collectionIds: ["sample_col_2"] },
-  { id: "sample_4", shopifyProductId: "sample_4", retailerId: "sample_4", title: "Gift Card ₹500", price: 500, currency: "INR", imageUrl: "", inStock: true, collectionIds: [] },
-];
-
-const SAMPLE_PICKER_COLLECTIONS = [
-  { id: "sample_col_1", title: "Best Sellers", productsCount: 12, imageUrl: "" },
-  { id: "sample_col_2", title: "New Arrivals", productsCount: 8, imageUrl: "" },
-  { id: "sample_col_3", title: "Home page", productsCount: 24, imageUrl: "" },
-];
-
-function mapPickerProduct(row) {
-  return {
-    id: String(row.shopifyProductId || row.shopifyVariantId || ""),
-    shopifyProductId: String(row.shopifyProductId || ""),
-    retailerId: String(row.shopifyVariantId || row.shopifyProductId || ""),
-    title: row.title || "",
-    price: row.price ?? 0,
-    currency: row.currency || "INR",
-    imageUrl: row.imageUrl || "",
-    inStock: row.inStock !== false,
-    collectionIds: Array.isArray(row.collectionIds) ? row.collectionIds.map(String) : [],
-  };
-}
-
-function mapPickerCollection(row) {
-  return {
-    id: String(row.shopifyCollectionId || ""),
-    title: row.title || "",
-    productsCount: row.productsCount ?? 0,
-    imageUrl: row.imageUrl || "",
-  };
-}
+const {
+  listPickerCollections,
+  listPickerProducts,
+} = require("../utils/commerce/catalogPickerService");
 
 router.get("/:clientId/picker", verifyToken, apiCache(15), async (req, res) => {
   try {
@@ -112,94 +81,15 @@ router.get("/:clientId/picker", verifyToken, apiCache(15), async (req, res) => {
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const skip = Math.max(0, parseInt(req.query.cursor, 10) || 0);
 
-    const client = await getCachedClient(
-      clientId,
-      "waCatalogId facebookCatalogId shopDomain shopifyAccessToken catalogSyncedAt shopifyLastProductSync"
-    );
-    if (!client) {
-      return res.status(404).json({ success: false, message: "Client not found" });
+    const result =
+      type === "collections"
+        ? await listPickerCollections(clientId, { search, skip, limit })
+        : await listPickerProducts(clientId, { search, collectionId, skip, limit });
+
+    if (result.error) {
+      return res.status(result.error.status).json({ success: false, message: result.error.message });
     }
-
-    const catalogLinked = !!resolveCatalogId(client);
-    const shopifyConnected = !!(client.shopDomain && client.shopifyAccessToken);
-    const syncedAt = client.catalogSyncedAt || client.shopifyLastProductSync || null;
-
-    if (!shopifyConnected) {
-      const sampleProducts = SAMPLE_PICKER_PRODUCTS.filter((p) => {
-        if (collectionId && !p.collectionIds.includes(collectionId)) return false;
-        if (!search) return true;
-        const q = search.toLowerCase();
-        return p.title.toLowerCase().includes(q);
-      });
-      const sampleCollections = SAMPLE_PICKER_COLLECTIONS.filter((c) => {
-        if (!search) return true;
-        return c.title.toLowerCase().includes(search.toLowerCase());
-      });
-      return res.json({
-        success: true,
-        sample: true,
-        catalogLinked,
-        syncedAt,
-        items: type === "products" ? sampleProducts.slice(skip, skip + limit) : [],
-        collections: type === "collections" ? sampleCollections.slice(skip, skip + limit) : sampleCollections,
-        nextCursor: null,
-      });
-    }
-
-    if (type === "collections") {
-      const filter = { clientId };
-      if (search) {
-        filter.title = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-      }
-      const [rows, total] = await Promise.all([
-        ShopifyCollection.find(filter)
-          .select("shopifyCollectionId title productsCount imageUrl")
-          .sort({ sortOrder: 1, title: 1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-        ShopifyCollection.countDocuments(filter),
-      ]);
-      return res.json({
-        success: true,
-        sample: false,
-        catalogLinked,
-        syncedAt,
-        items: [],
-        collections: rows.map(mapPickerCollection),
-        nextCursor: skip + rows.length < total ? String(skip + rows.length) : null,
-      });
-    }
-
-    const filter = { clientId, inStock: { $ne: false } };
-    if (collectionId) filter.collectionIds = collectionId;
-    if (search) {
-      filter.$or = [
-        { title: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
-        { shopifyVariantId: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
-      ];
-    }
-
-    const [rows, total] = await Promise.all([
-      ShopifyProduct.find(filter)
-        .select("shopifyProductId shopifyVariantId title price currency imageUrl collectionIds inStock")
-        .sort({ title: 1 })
-        .skip(skip)
-        .limit(limit)
-        .maxTimeMS(CATALOG_PRODUCTS_MAX_MS)
-        .lean(),
-      ShopifyProduct.countDocuments(filter),
-    ]);
-
-    res.json({
-      success: true,
-      sample: false,
-      catalogLinked,
-      syncedAt,
-      items: rows.map(mapPickerProduct).filter((p) => p.retailerId),
-      collections: [],
-      nextCursor: skip + rows.length < total ? String(skip + rows.length) : null,
-    });
+    res.json(result.body);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
