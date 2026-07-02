@@ -21,7 +21,7 @@
  *   node.type ∈ { message | interactive | template | trigger | logic |
  *                 capture_input | shopify_call | delay | admin_alert | schedule |
  *                 review | cod_prepaid |
- *                 warranty_check | tag_lead | http_request }
+ *                 warranty_check | tag_lead }
  *   edge.{ id, source, target, sourceHandle? }
  *
  * @param {Object} client     - Mongoose Client doc

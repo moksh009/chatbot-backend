@@ -40,13 +40,10 @@ const NODE_TYPES = {
   catalog:        { handles: { in: ['top'], out: ['bottom','cart'] }, desc: 'WhatsApp catalog. data: { catalogType, body/text }' },
   shopify_call:   { handles: { in: ['top'], out: ['bottom','success','not_found'] }, desc: 'Shopify action. data: { action }' },
   cart_handler:   { handles: { in: ['top'], out: ['a'] }, desc: 'Checkout link after catalog cart.' },
-  livechat:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Human agent handoff.' },
+  livechat:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Team alert or human handoff (dashboard + email).' },
   warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Warranty lookup by phone.' },
   persona:        { handles: { in: ['top'], out: ['a'] }, desc: 'AI reply from knowledge base.' },
-  admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email admin alert (no WhatsApp).' },
   tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'CRM tag. data: { tag, action: "add"|"remove" }' },
-  webhook:        { handles: { in: ['top'], out: ['success','error'] }, desc: 'HTTPS webhook.' },
-  http_request:   { handles: { in: ['top'], out: ['success','error'] }, desc: 'HTTP request.' },
   automation:     { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automation trigger helper.' },
   template:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Approved Meta template (prefer message for AI drafts).' },
   folder:         { handles: {}, desc: 'Layout folder only — do not use in AI-generated flows.' },
@@ -63,7 +60,7 @@ You are a WhatsApp Flow Architect. Convert business requirements into production
 1. Use ONLY these exact "type" strings: ${SUPPORTED_TYPES.join(', ')}
 2. Every node MUST have: id (string), type (one of above), position {x, y}, data {}
 3. Every flow MUST start with exactly one "trigger" type node
-4. Edges: { id, source, target, sourceHandle? } — sourceHandle required for interactive, logic, ab_test, schedule, webhook, http_request
+4. Edges: { id, source, target, sourceHandle? } — sourceHandle required for interactive, logic, ab_test, schedule
 5. Positions: start at x=300,y=50 for trigger; add y+220 per step; branches split x±300
 6. Return RAW JSON ONLY: { "nodes": [...], "edges": [...] } — no markdown, no explanation
 7. Minimum 6 nodes, maximum 25 nodes

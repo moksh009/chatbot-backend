@@ -590,8 +590,9 @@ router.get('/', protect, apiCache(30), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const { resolvePrimaryPublishedFlowId } = require('../utils/flow/flowGraphResolver');
     const [client, dbFlows] = await Promise.all([
-      timer.time('getCachedClient', () => getCachedClient(clientId, 'flowFolders clientId')),
+      timer.time('getCachedClient', () => getCachedClient(clientId, 'flowFolders visualFlows clientId')),
       timer.time('WhatsAppFlow.find_lite', () =>
         WhatsAppFlow.find({ clientId, flowType: { $nin: ['journey', 'post_purchase_journey'] } })
           .select('flowId name platform folderId status version createdAt updatedAt nodes edges')
@@ -599,13 +600,18 @@ router.get('/', protect, apiCache(30), async (req, res) => {
       ),
     ]);
 
+    const primaryId = resolvePrimaryPublishedFlowId({
+      visualFlows: client?.visualFlows || [],
+      whatsappFlows: dbFlows,
+    });
+
     const flows = dbFlows
       .filter((f) => f.flowId)
       .map((f) => ({
         id: f.flowId,
         name: f.name,
         platform: f.platform || 'whatsapp',
-        isActive: f.status === 'PUBLISHED',
+        isActive: primaryId != null && String(f.flowId) === String(primaryId),
         folderId: f.folderId || '',
         nodeCount: Array.isArray(f.nodes) ? f.nodes.length : 0,
         edgeCount: Array.isArray(f.edges) ? f.edges.length : 0,
@@ -681,7 +687,8 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
     );
 
     const formattedFlows = [];
-    for (const f of merged.flows) {
+    for (const f of merged.flows || []) {
+      if (!f?.id) continue;
       let row = {
         ...f,
         ...(lite
@@ -917,14 +924,20 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
     }
     const { flowId } = req.params;
 
-    const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flow/flowGraphResolver');
+    const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources, resolvePrimaryPublishedFlowId } = require('../utils/flow/flowGraphResolver');
+
+    const sources = await loadClientFlowSources(clientId);
+    const primaryId = resolvePrimaryPublishedFlowId({
+      visualFlows: sources.visualFlows,
+      whatsappFlows: sources.whatsappFlows,
+    });
+    const isLive = primaryId != null && String(flowId) === String(primaryId);
 
     let flowPayload = await timer.time('flow_graph_cache', () =>
       getCachedFlowGraphAsync(clientId, flowId)
     );
 
     if (!flowPayload?.nodes?.length) {
-      const sources = await loadClientFlowSources(clientId);
       const resolved = await resolveFlowGraphByRef(clientId, flowId, { sources });
       if (!resolved?.nodes?.length) {
         timer.finish('404');
@@ -938,7 +951,8 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         name: resolved.name || waDoc?.name || vf?.name || 'Flow',
         platform: waDoc?.platform || vf?.platform || 'whatsapp',
         folderId: waDoc?.folderId || vf?.folderId || '',
-        status: resolved.status || waDoc?.status || (vf?.isActive ? 'PUBLISHED' : 'DRAFT'),
+        status: isLive ? 'PUBLISHED' : waDoc?.status || resolved.status || 'DRAFT',
+        isActive: isLive,
         version: waDoc?.version || vf?.version || 1,
         nodes: flatNodes,
         edges: resolved.edges || [],
@@ -962,8 +976,8 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         name: flowPayload.name,
         platform: flowPayload.platform || 'whatsapp',
         folderId: flowPayload.folderId || '',
-        isActive: flowPayload.status === 'PUBLISHED',
-        status: flowPayload.status || 'DRAFT',
+        isActive: isLive,
+        status: isLive ? 'PUBLISHED' : flowPayload.status === 'ARCHIVED' ? 'ARCHIVED' : 'DRAFT',
         version: flowPayload.version || 1,
         nodes: displayNodes,
         edges: displayEdges,

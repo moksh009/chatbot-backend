@@ -173,3 +173,58 @@ test('removed attributes stripped on normalize', () => {
   assert.ok(rules.some((r) => r.attribute === 'order_tags'));
   assert.ok(rules.some((r) => r.attribute === 'payment_method'));
 });
+
+// --- Collection trigger filters (async ShopifyProduct lookup) ---
+const ShopifyProduct = require('../../models/ShopifyProduct');
+const originalCountDocuments = ShopifyProduct.countDocuments;
+
+test('collections includes_any matches order in collection', async () => {
+  ShopifyProduct.countDocuments = async () => 1;
+  try {
+    const { match } = await evaluateTriggerRules({
+      clientId: 'client_test',
+      triggerType: 'order_placed',
+      payload: COD_ORDER,
+      filters: {
+        rules: [{ attribute: 'collections', operator: 'includes_any', value: ['col_hydrogen'] }],
+      },
+    });
+    assert.equal(match, true);
+  } finally {
+    ShopifyProduct.countDocuments = originalCountDocuments;
+  }
+});
+
+test('collections_exclude blocks matching collection', async () => {
+  ShopifyProduct.countDocuments = async () => 1;
+  try {
+    const { match } = await evaluateTriggerRules({
+      clientId: 'client_test',
+      triggerType: 'order_placed',
+      payload: COD_ORDER,
+      filters: {
+        rules: [{ attribute: 'collections_exclude', operator: 'includes_any', value: ['col_hydrogen'] }],
+      },
+    });
+    assert.equal(match, false);
+  } finally {
+    ShopifyProduct.countDocuments = originalCountDocuments;
+  }
+});
+
+test('cart_collections matches abandoned cart products', async () => {
+  ShopifyProduct.countDocuments = async () => 1;
+  try {
+    const { match } = await evaluateTriggerRules({
+      clientId: 'client_test',
+      triggerType: 'cart_abandoned',
+      payload: CART_LEAD,
+      filters: {
+        rules: [{ attribute: 'cart_collections', operator: 'includes_any', value: ['col_sale'] }],
+      },
+    });
+    assert.equal(match, true);
+  } finally {
+    ShopifyProduct.countDocuments = originalCountDocuments;
+  }
+});

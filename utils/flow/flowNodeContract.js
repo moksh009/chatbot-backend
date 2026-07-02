@@ -17,8 +17,10 @@ const NODE_TYPE_ALIASES = {
   captureNode: 'capture_input',
   capturenode: 'capture_input',
   capture: 'capture_input',
-  webhooknode: 'http_request',
+  webhooknode: 'webhook',
   human_handoff: 'livechat',
+  admin_alert: 'livechat',
+  AdminAlertNode: 'livechat',
   escalateNode: 'escalate',
   escalate: 'livechat',
   triggernode: 'trigger',
@@ -49,10 +51,7 @@ const V1_SHIPPABLE_NODE_TYPES = new Set([
   'livechat',
   'warranty_check',
   'persona',
-  'admin_alert',
   'tag_lead',
-  'webhook',
-  'http_request',
   'install_guide_entry',
   'template',
   'folder',
@@ -63,6 +62,7 @@ const V1_SHIPPABLE_NODE_TYPES = new Set([
 /** Palette-only or legacy — not emitted by generator/AI in V1. */
 const V1_PALETTE_ONLY_TYPES = new Set([
   'cod_prepaid',
+  'catalog_branch', // deprecated Jun 2026 — unified Catalogue node; legacy graphs only
 ]);
 
 /**
@@ -80,6 +80,12 @@ const V1_FORBIDDEN_NODE_TYPES = new Set([
   'cod_prepaid',
   'automation',
   'abandoned_cart',
+  'http_request',
+  'HttpRequestNode',
+  'webhook',
+  'WebhookNode',
+  'admin_alert',
+  'AdminAlertNode',
 ]);
 
 /**

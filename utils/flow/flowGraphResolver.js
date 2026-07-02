@@ -36,13 +36,19 @@ function migrateLegacyNodeTypes(nodes) {
       };
     }
 
-    if (node.type === 'http_request' || node.type === 'HttpRequestNode') {
-      const data = { ...(node.data || {}) };
-      if (!String(data.body || '').trim() && String(data.bodyJSON || '').trim()) {
-        data.body = data.bodyJSON;
-      }
-      delete data.bodyJSON;
-      return { ...node, data };
+    if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
+      return {
+        ...node,
+        type: 'livechat',
+        data: {
+          ...(node.data || {}),
+          alertOnly: true,
+          notifyChannels: Array.isArray(node.data?.notifyChannels) && node.data.notifyChannels.length
+            ? node.data.notifyChannels
+            : ['Dashboard', 'Email'],
+          label: node.data?.label || 'Team alert',
+        },
+      };
     }
 
     return node;
@@ -195,8 +201,38 @@ function buildSlimRoutingBundles(flows) {
  */
 async function loadRoutingIndexForClient(clientId) {
   const sources = await loadClientFlowSources(clientId);
-  const published = sources.whatsappFlows.filter((f) => f.status === "PUBLISHED");
-  let pool = published.length ? published : sources.whatsappFlows;
+  const primaryId = resolvePrimaryPublishedFlowId({
+    visualFlows: sources.visualFlows,
+    whatsappFlows: sources.whatsappFlows,
+  });
+
+  let pool = [];
+  if (primaryId) {
+    const waMatch = sources.whatsappFlows.filter(
+      (f) => String(f.flowId || f._id) === primaryId
+    );
+    if (waMatch.length) {
+      pool = waMatch;
+    } else {
+      const vf = sources.visualFlows.find((f) => String(f.id) === primaryId);
+      if (vf) {
+        pool = [
+          {
+            flowId: vf.id,
+            id: vf.id,
+            name: vf.name,
+            platform: vf.platform || "whatsapp",
+            folderId: vf.folderId || "",
+            status: "PUBLISHED",
+            nodes: vf.nodes,
+            edges: vf.edges,
+            isAutomation: !!vf.isAutomation,
+            triggerConfig: vf.triggerConfig,
+          },
+        ];
+      }
+    }
+  }
 
   let bundles = buildSlimRoutingBundles(pool);
 
@@ -282,10 +318,13 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
     }
   }
 
-  const isActiveRef =
-    !!vf?.isActive || matchedWaDoc?.status === "PUBLISHED";
+  const primaryId = resolvePrimaryPublishedFlowId({
+    visualFlows: sources.visualFlows,
+    whatsappFlows: sources.whatsappFlows,
+  });
+  const isPrimaryRef = primaryId != null && String(ref) === String(primaryId);
 
-  if (isActiveRef && sources.legacyNodes.length) {
+  if (isPrimaryRef && sources.legacyNodes.length) {
     return {
       id: ref,
       name: vf?.name || matchedWaDoc?.name || "Main automation",
@@ -324,63 +363,68 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
   return null;
 }
 
+/**
+ * SSOT: exactly one live WhatsApp flow per tenant for list UI + runtime routing.
+ * Live = visualFlows.isActive winner, else sole PUBLISHED WhatsAppFlow, else latest PUBLISHED if corrupted.
+ */
+function resolvePrimaryPublishedFlowId({ visualFlows = [], whatsappFlows = [] } = {}) {
+  const vfs = Array.isArray(visualFlows) ? visualFlows : [];
+  const wa = Array.isArray(whatsappFlows) ? whatsappFlows : [];
+
+  const activeVf = vfs.find((f) => f?.id && f.isActive === true);
+  if (activeVf) return String(activeVf.id);
+
+  const published = wa.filter((f) => f?.status === "PUBLISHED" && (f.flowId || f.id));
+  if (published.length === 1) {
+    return String(published[0].flowId || published[0].id);
+  }
+  if (published.length > 1) {
+    const sorted = [...published].sort(
+      (a, b) =>
+        new Date(b.lastSyncedAt || b.updatedAt || 0).getTime() -
+        new Date(a.lastSyncedAt || a.updatedAt || 0).getTime()
+    );
+    return String(sorted[0].flowId || sorted[0].id);
+  }
+
+  return null;
+}
+
 /** Primary live graph when conversation has no activeFlowId. */
 async function resolvePrimaryFlowGraph(clientId, options = {}) {
   const sources = options.sources || (await loadClientFlowSources(clientId));
+  const primaryId = resolvePrimaryPublishedFlowId({
+    visualFlows: sources.visualFlows,
+    whatsappFlows: sources.whatsappFlows,
+  });
 
-  const activeVf = sources.visualFlows.find((f) => f.isActive && f.nodes?.length);
-  if (activeVf) {
-    const g = pickGraphFromVisualEntry(activeVf);
-    if (g) {
-      return {
-        id: activeVf.id,
-        name: activeVf.name || "",
-        nodes: flattenFlowNodes(g.nodes),
-        edges: g.edges,
-      };
+  if (primaryId) {
+    const vf = sources.visualFlows.find((f) => String(f.id) === primaryId);
+    if (vf?.isActive) {
+      const g = pickGraphFromVisualEntry(vf);
+      if (g?.nodes?.length) {
+        return {
+          id: vf.id,
+          name: vf.name || "",
+          nodes: flattenFlowNodes(g.nodes),
+          edges: g.edges,
+        };
+      }
     }
-  }
 
-  const publishedDoc = sources.whatsappFlows.find(
-    (f) => f.status === "PUBLISHED" && (f.publishedNodes?.length || f.nodes?.length)
-  );
-  if (publishedDoc) {
-    const g = pickGraphFromFlowDoc(publishedDoc);
-    if (g) {
-      return {
-        id: publishedDoc.flowId || String(publishedDoc._id),
-        name: publishedDoc.name || "",
-        nodes: flattenFlowNodes(g.nodes),
-        edges: g.edges,
-      };
-    }
-  }
-
-  const anyDoc = sources.whatsappFlows.find(
-    (f) => f.publishedNodes?.length || f.nodes?.length
-  );
-  if (anyDoc) {
-    const g = pickGraphFromFlowDoc(anyDoc);
-    if (g) {
-      return {
-        id: anyDoc.flowId || String(anyDoc._id),
-        name: anyDoc.name || "",
-        nodes: flattenFlowNodes(g.nodes),
-        edges: g.edges,
-      };
-    }
-  }
-
-  const vfWithNodes = sources.visualFlows.find((f) => f.nodes?.length);
-  if (vfWithNodes) {
-    const g = pickGraphFromVisualEntry(vfWithNodes);
-    if (g) {
-      return {
-        id: vfWithNodes.id,
-        name: vfWithNodes.name || "",
-        nodes: flattenFlowNodes(g.nodes),
-        edges: g.edges,
-      };
+    const publishedDoc = sources.whatsappFlows.find(
+      (f) => String(f.flowId || f._id) === primaryId && f.status === "PUBLISHED"
+    );
+    if (publishedDoc) {
+      const g = pickGraphFromFlowDoc(publishedDoc);
+      if (g?.nodes?.length) {
+        return {
+          id: publishedDoc.flowId || String(publishedDoc._id),
+          name: publishedDoc.name || "",
+          nodes: flattenFlowNodes(g.nodes),
+          edges: g.edges,
+        };
+      }
     }
   }
 
@@ -407,6 +451,11 @@ function mergeFlowsListForDashboard(
   legacyNodes = [],
   legacyEdges = []
 ) {
+  const primaryId = resolvePrimaryPublishedFlowId({
+    visualFlows,
+    whatsappFlows: dbFlows,
+  });
+
   const byId = new Map();
   const vfById = new Map(
     (visualFlows || [])
@@ -418,9 +467,8 @@ function mergeFlowsListForDashboard(
     const id = f.flowId || f.id;
     if (!id) continue;
     const vf = vfById.get(String(id));
-    const hasPublishedGraph = (f.publishedNodes?.length || 0) > 0;
-    const vfActive = !!vf?.isActive;
-    const isLive = f.status === "PUBLISHED" || hasPublishedGraph || vfActive;
+    const isLive = primaryId != null && String(id) === String(primaryId);
+    const dbStatus = String(f.status || "DRAFT").toUpperCase();
     const counts = resolveFlowListCounts(
       f.nodes,
       f.publishedNodes,
@@ -434,13 +482,14 @@ function mergeFlowsListForDashboard(
       platform: f.platform || "whatsapp",
       folderId: f.folderId || "",
       isActive: isLive,
-      status: isLive ? "PUBLISHED" : "DRAFT",
+      status: isLive ? "PUBLISHED" : dbStatus === "ARCHIVED" ? "ARCHIVED" : "DRAFT",
       version: f.version || 1,
       ...counts,
       createdAt: f.createdAt,
       updatedAt: f.updatedAt,
       lastSyncedAt: f.lastSyncedAt,
       source: "whatsapp_flow",
+      hadPublishedGraph: (f.publishedNodes?.length || 0) > 0,
     });
   }
 
@@ -448,24 +497,22 @@ function mergeFlowsListForDashboard(
     const id = vf.id;
     if (!id) continue;
     const counts = resolveFlowListCounts(vf.nodes, null, vf.edges, null, vf);
+    const isLive = primaryId != null && String(id) === String(primaryId);
     if (byId.has(String(id))) {
       const row = byId.get(String(id));
       row.nodeCount = Math.max(row.nodeCount || 0, counts.nodeCount);
       row.edgeCount = Math.max(row.edgeCount || 0, counts.edgeCount);
-      if (!row.isActive && vf.isActive) {
-        row.isActive = true;
-        row.status = "PUBLISHED";
-      }
+      row.isActive = isLive;
+      row.status = isLive ? "PUBLISHED" : row.status === "ARCHIVED" ? "ARCHIVED" : "DRAFT";
       continue;
     }
-    const vfLive = !!vf.isActive;
     byId.set(String(id), {
       id,
       name: vf.name || "Untitled flow",
       platform: vf.platform || "whatsapp",
       folderId: vf.folderId || "",
-      isActive: vfLive,
-      status: vfLive ? "PUBLISHED" : "DRAFT",
+      isActive: isLive,
+      status: isLive ? "PUBLISHED" : "DRAFT",
       version: vf.version || 1,
       ...counts,
       createdAt: vf.createdAt,
@@ -503,5 +550,6 @@ module.exports = {
   loadRoutingIndexForClient,
   resolveFlowGraphByRef,
   resolvePrimaryFlowGraph,
+  resolvePrimaryPublishedFlowId,
   mergeFlowsListForDashboard,
 };

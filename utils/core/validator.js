@@ -445,23 +445,12 @@ function validateFlowNode(node, client) {
     }
 
     case 'http_request': {
-      const url = node.data?.url;
-      if (!url) {
-        errors.push({
-          code:    'NODE_NO_URL',
-          nodeId:  node.id,
-          message: 'Webhook node has no URL.',
-          fix:     'Add the external URL to call.'
-        });
-      }
-      if (url && !String(url).startsWith('https://')) {
-        warnings.push({
-          code:    'NODE_HTTP_URL',
-          nodeId:  node.id,
-          message: 'Webhook URL uses HTTP instead of HTTPS.',
-          fix:     'Use HTTPS for security. Many servers reject HTTP requests.'
-        });
-      }
+      errors.push({
+        code:    'NODE_TYPE_REMOVED',
+        nodeId:  node.id,
+        message: 'HTTP request nodes are no longer supported.',
+        fix:     'Delete this node and reconnect the flow.',
+      });
       break;
     }
 

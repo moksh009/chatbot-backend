@@ -12,10 +12,11 @@
  *   MONGODB_URI=... node scripts/repairTenantFlowRouting.js --clientId=shubhampatelsbusiness_1cfb2b
  *   node scripts/repairTenantFlowRouting.js delitech_smarthomes --flowId=flow_wizard_1781340681165_0_main_commerce
  *   node scripts/repairTenantFlowRouting.js delitech_smarthomes --dry-run
+ *   node scripts/repairTenantFlowRouting.js delitech_smarthomes --quiet
  */
 
 const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+require("dotenv").config({ path: path.join(__dirname, "..", ".env"), quiet: true });
 
 const mongoose = require("mongoose");
 const Client = require("../models/Client");
@@ -131,6 +132,10 @@ async function run() {
   const clientId = resolveClientId();
   const flowIdHint = resolveFlowId();
   const dryRun = process.argv.includes("--dry-run");
+  const quiet = process.argv.includes("--quiet") || process.env.REPAIR_QUIET === "1";
+  const log = (...args) => {
+    if (!quiet) console.log(...args);
+  };
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
   if (!uri) throw new Error("MONGODB_URI required");
 
@@ -145,19 +150,19 @@ async function run() {
     process.exit(1);
   }
 
-  console.log(`[repair] ${clientId} — using graph from ${best.from} (${best.nodes.length} nodes, ${(best.edges || []).length} edges)`);
+  log(`[repair] ${clientId} — using graph from ${best.from} (${best.nodes.length} nodes, ${(best.edges || []).length} edges)`);
 
   if (dryRun) {
-    console.log("[repair] Dry run — no writes.");
+    log("[repair] Dry run — no writes.");
     process.exit(0);
   }
 
   const now = new Date();
   const flowId = best.flowId === "legacy_main" ? `flow_${clientId}_main` : best.flowId;
 
-  await WhatsAppFlow.updateMany(
+  const demotedWa = await WhatsAppFlow.updateMany(
     { clientId, platform: "whatsapp", flowId: { $ne: flowId } },
-    { $set: { status: "DRAFT" } }
+    { $set: { status: "ARCHIVED" } }
   );
 
   await WhatsAppFlow.findOneAndUpdate(
@@ -193,24 +198,42 @@ async function run() {
     updatedAt: now,
   };
 
+  const clientFresh = await Client.findOne({ clientId }).lean();
+  let visualFlows = (clientFresh?.visualFlows || []).map((vf) => ({
+    ...vf,
+    isActive: String(vf.id) === String(flowId),
+  }));
+  if (!visualFlows.some((vf) => String(vf.id) === String(flowId))) {
+    visualFlows = [...visualFlows, visualEntry];
+  } else {
+    visualFlows = visualFlows.map((vf) =>
+      String(vf.id) === String(flowId)
+        ? { ...vf, ...visualEntry, isActive: true }
+        : vf
+    );
+  }
+
   await Client.updateOne(
     { clientId },
     {
       $set: {
+        visualFlows,
         flowNodes: best.nodes,
         flowEdges: best.edges || [],
         wizardCompleted: true,
       },
-      $pull: { visualFlows: { id: flowId } },
     }
   );
-  await Client.updateOne({ clientId }, { $push: { visualFlows: visualEntry } });
 
   clearTriggerCache(clientId);
   invalidateFlowGraphCache(clientId);
   invalidateClientCache(clientId);
 
-  console.log(`[repair] Done. Published flowId=${flowId}. Restart API and send "hi" on WhatsApp to verify.`);
+  console.log(
+    quiet
+      ? `ok ${flowId} demoted=${demotedWa.modifiedCount}`
+      : `[repair] Done. Published flowId=${flowId}; demoted ${demotedWa.modifiedCount} WhatsAppFlow row(s).`
+  );
   await mongoose.disconnect();
   process.exit(0);
 }

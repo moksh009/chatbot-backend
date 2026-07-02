@@ -173,18 +173,6 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
       });
     }
 
-    if (type === 'webhook') {
-      const url = String(node.data?.webhookUrl || node.data?.url || '').trim();
-      if (!url) {
-        errors.push({
-          code: 'WEBHOOK_URL_MISSING',
-          nodeId: node.id,
-          message: `Webhook node "${node?.id || ''}" has no URL.`,
-          fix: 'Set an https:// endpoint or remove the node.'
-        });
-      }
-    }
-
     if (type === 'loyalty_action' || type === 'loyalty') {
       errors.push({
         code: 'LOYALTY_NODE_REMOVED',

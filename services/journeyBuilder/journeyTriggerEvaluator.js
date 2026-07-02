@@ -1,12 +1,14 @@
 'use strict';
 
 const Order = require('../../models/Order');
+const ShopifyProduct = require('../../models/ShopifyProduct');
 const { isCodShopifyOrder } = require('../../utils/commerce/canonicalOrderMessages');
 const {
   normalizeTriggerRules,
   ORDER_EVENTS,
   CART_EVENTS,
   productRuleIds,
+  collectionRuleIds,
 } = require('./triggerFilterCatalog');
 const log = require('../../utils/core/logger')('JourneyTriggerEvaluator');
 
@@ -73,6 +75,20 @@ function lineItemCount(payload) {
   const items = payload?.line_items;
   return Array.isArray(items) ? items.length : 0;
 }
+
+async function productIdsMatchCollections(clientId, shopifyProductIds, collectionIds) {
+  const pids = (Array.isArray(shopifyProductIds) ? shopifyProductIds : []).map(String).filter(Boolean);
+  const cids = (Array.isArray(collectionIds) ? collectionIds : []).map(String).filter(Boolean);
+  if (!pids.length || !cids.length || !clientId) return false;
+  const hit = await ShopifyProduct.countDocuments({
+    clientId,
+    shopifyProductId: { $in: pids },
+    collectionIds: { $in: cids },
+  });
+  return hit > 0;
+}
+
+const ASYNC_COLLECTION_ATTRS = new Set(['collections', 'collections_exclude', 'cart_collections']);
 
 function tagListMatch(wanted, haystack) {
   const w = (Array.isArray(wanted) ? wanted : []).map((t) => String(t).trim().toLowerCase()).filter(Boolean);
@@ -178,6 +194,29 @@ async function evaluateAsyncRule(rule, clientId, triggerType, payload) {
     if (rule.value === 'returning') return !isFirst;
     return true;
   }
+
+  if (rule.attribute === 'collections' && ORDER_EVENTS.includes(triggerType)) {
+    const wanted = collectionRuleIds(rule.value);
+    if (!wanted.length) return true;
+    const orderIds = extractLineProductIds(payload);
+    return productIdsMatchCollections(clientId, orderIds, wanted);
+  }
+
+  if (rule.attribute === 'collections_exclude' && ORDER_EVENTS.includes(triggerType)) {
+    const blocked = collectionRuleIds(rule.value);
+    if (!blocked.length) return true;
+    const orderIds = extractLineProductIds(payload);
+    const hit = await productIdsMatchCollections(clientId, orderIds, blocked);
+    return !hit;
+  }
+
+  if (rule.attribute === 'cart_collections' && CART_EVENTS.includes(triggerType)) {
+    const wanted = collectionRuleIds(rule.value);
+    if (!wanted.length) return true;
+    const ids = cartProductIdsFromPayload(payload);
+    return productIdsMatchCollections(clientId, ids, wanted);
+  }
+
   return evaluateSyncRule(rule, triggerType, payload);
 }
 
@@ -189,7 +228,10 @@ async function evaluateTriggerRules({ clientId, triggerType, payload, filters })
   if (!rules.length) return { match: true };
 
   for (const rule of rules) {
-    const ok = ORDER_EVENTS.includes(triggerType) && rule.attribute === 'customer_type'
+    const needsAsync =
+      (ORDER_EVENTS.includes(triggerType) && (rule.attribute === 'customer_type' || rule.attribute === 'collections' || rule.attribute === 'collections_exclude'))
+      || (CART_EVENTS.includes(triggerType) && rule.attribute === 'cart_collections');
+    const ok = needsAsync
       ? await evaluateAsyncRule(rule, clientId, triggerType, payload)
       : evaluateSyncRule(rule, triggerType, payload);
     if (!ok) {
@@ -202,6 +244,8 @@ async function evaluateTriggerRules({ clientId, triggerType, payload, filters })
 module.exports = {
   evaluateTriggerRules,
   evaluateSyncRule,
+  evaluateAsyncRule,
+  productIdsMatchCollections,
   isCodShopifyOrder,
   cartProductIdsFromPayload,
 };

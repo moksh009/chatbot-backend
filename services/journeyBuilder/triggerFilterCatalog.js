@@ -96,6 +96,24 @@ const FILTER_ATTRIBUTES = Object.freeze({
     valueType: 'product_ids',
     cartEvents: true,
   },
+  collections: {
+    label: 'Collections',
+    operator: 'includes_any',
+    valueType: 'collection_ids',
+    orderEvents: true,
+  },
+  collections_exclude: {
+    label: 'Collections',
+    operator: 'excludes',
+    valueType: 'collection_ids',
+    orderEvents: true,
+  },
+  cart_collections: {
+    label: 'Cart collections',
+    operator: 'includes_any',
+    valueType: 'collection_ids',
+    cartEvents: true,
+  },
 });
 
 const ORDER_EVENTS = Object.freeze(['order_placed', 'order_shipped', 'order_delivered']);
@@ -121,6 +139,8 @@ function productRuleIds(value) {
   return [];
 }
 
+const collectionRuleIds = productRuleIds;
+
 function createRule(attribute, value, operator) {
   const def = FILTER_ATTRIBUTES[attribute];
   if (!def) return null;
@@ -142,6 +162,10 @@ function defaultValueForAttribute(attribute) {
     case 'products':
     case 'products_exclude':
     case 'cart_products':
+    case 'collections':
+    case 'collections_exclude':
+    case 'cart_collections':
+      return { ids: [], titles: {} };
     case 'order_tags':
     case 'order_tags_exclude':
     case 'discount_code':
@@ -177,7 +201,7 @@ function isRuleActive(rule) {
     return val && val !== 'any';
   }
   if (rule.attribute === 'cart_delay') return Number(val) > 0;
-  if (['products', 'products_exclude', 'cart_products'].includes(rule.attribute)) {
+  if (['products', 'products_exclude', 'cart_products', 'collections', 'collections_exclude', 'cart_collections'].includes(rule.attribute)) {
     return productRuleIds(val).length > 0;
   }
   if (['order_tags', 'order_tags_exclude', 'discount_code', 'discount_code_exclude'].includes(rule.attribute)) {
@@ -301,6 +325,7 @@ module.exports = {
   attributesForEvent,
   isRuleActive,
   productRuleIds,
+  collectionRuleIds,
   tagListIds,
   normalizeTriggerRules,
   serializeTriggerRules,

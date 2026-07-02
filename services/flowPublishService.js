@@ -8,6 +8,7 @@ const { sanitizeFlowNodesMedia } = require('../utils/flow/sanitizeFlowMedia');
 const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 const { clearClientCache } = require('../middleware/apiCache');
 const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
+const { warmPublishedFlowGraphCache } = require('../utils/flow/flowPrewarm');
 const { emitDual } = require('../utils/core/socketEmit');
 const { normalizeFlowAutomationPlatform } = require('../constants/flowAutomationPlatform');
 const log = require('../utils/core/logger')('FlowPublish');
@@ -113,6 +114,12 @@ async function publishFlowForClient({
   clearTriggerCache(clientId);
   await clearClientCache(clientId);
   invalidateFlowGraphCache(clientId, flow.flowId);
+  warmPublishedFlowGraphCache(clientId, {
+    flowId: flow.flowId,
+    name: flow.name,
+    publishedNodes: flow.publishedNodes,
+    publishedEdges: flow.publishedEdges,
+  });
 
   if (io) {
     emitDual(io, `client_${clientId}`, 'flow_published', {
